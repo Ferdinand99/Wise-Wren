@@ -1,0 +1,36 @@
+# Rust build output
+/target/
+
+# Local override that points the vole-kit dependency at a sibling checkout
+# ([patch] → ../Vigilant-Vole/kit). Each developer creates their own; CI and
+# releases use the git tag from Cargo.toml.
+/.cargo/config.toml
+
+# vole-kit's shared askama templates, copied in at build time. The source of
+# truth lives in vole-kit; never edit or commit the copies.
+/templates/kit/
+
+# Node tooling (CSS/JS checks, Playwright)
+node_modules/
+playwright-report/
+test-results/
+
+# Runtime data: databases, snapshots and agent state from local runs
+/data/
+*.sqlite*
+
+# Claude Code local state
+.claude/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

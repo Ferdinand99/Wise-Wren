@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'sha256-WZRJfWvsnNCPcxzZwvyhovnZGqhZaC+8gPGPRbx6wTk='; style-src 'self'; img-src 'self'; font-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'none'"
+    />
+    <title>Wise Wren — Docker container updates without surprises</title>
+    <meta
+      name="description"
+      content="Wise Wren keeps your Docker containers up to date without surprises: it checks on your schedule, updates only what you approve, takes a snapshot first, checks health after and rolls back if it fails. In design: nothing to install yet."
+    />
+    <script>document.documentElement.classList.add("js");</script>
+    <link rel="canonical" href="https://hedgerow.tools/Wise-Wren/" />
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="favicon.png" type="image/png" sizes="48x48" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#0b0b0d" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hedgerow.tools/Wise-Wren/" />
+    <meta property="og:site_name" content="Wise Wren" />
+    <meta property="og:title" content="Wise Wren — Docker container updates without surprises" />
+    <meta
+      property="og:description"
+      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, in design."
+    />
+    <meta property="og:image" content="https://hedgerow.tools/Wise-Wren/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="The Wise Wren logo, a rose wren on a branch on a dark tile, with the tagline “Up to date, without surprises.”" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Wise Wren — Docker container updates without surprises" />
+    <meta
+      name="twitter:description"
+      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, in design."
+    />
+    <meta name="twitter:image" content="https://hedgerow.tools/Wise-Wren/og-image.png" />
+    <link rel="preload" href="fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Wise Wren",
+        "description": "Self-hosted updates for Docker containers, Compose stacks and script-updated stacks: notify, approve or automatic, with a snapshot before, a health check after and automatic rollback. In design.",
+        "url": "https://hedgerow.tools/Wise-Wren/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux (Docker), Unraid",
+        "image": "https://hedgerow.tools/Wise-Wren/og-image.png",
+        "license": "https://github.com/Ferdinand99/Wise-Wren/blob/main/LICENSE",
+        "sameAs": ["https://github.com/Ferdinand99/Wise-Wren"]
+      }
+    </script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <svg width="0" height="0" class="vh" aria-hidden="true" focusable="false">
+      <symbol id="gh" viewBox="0 0 16 16">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z" />
+      </symbol>
+    </svg>
+
+    <a class="skip" href="#main">Skip to content</a>
+
+    <header class="topbar" id="top">
+      <div class="wrap topbar-inner">
+        <a class="brand" href="#top">
+          <img src="favicon.svg" alt="" width="28" height="28" />
+          <span>Wise Wren</span>
+        </a>
+
+        <button class="nav-toggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="topnav" hidden>
+          <span></span><span></span>
+        </button>
+
+        <nav class="topnav" id="topnav" aria-label="Main">
+          <a class="topnav-link" href="#why">Why</a>
+          <a class="topnav-link" href="#how">Safe updates</a>
+          <a class="topnav-link" href="#modes">Modes</a>
+          <a class="topnav-link" href="#targets">Targets</a>
+          <a class="topnav-link" href="#roadmap">Roadmap</a>
+          <a class="topnav-link" href="#faq">FAQ</a>
+          <a class="topnav-link" href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">Design</a>
+          <a class="btn btn-ghost btn-sm" href="https://github.com/Ferdinand99/Wise-Wren" aria-label="Follow Wise Wren on GitHub">
+            <svg class="gh-mark" aria-hidden="true"><use href="#gh"></use></svg>
+            <span>Follow on GitHub</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- Hero ============================================================ -->
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap">
+          <div class="hero-copy">
+            <div class="hero-icon">
+              <img src="favicon.svg" width="96" height="96" alt="" />
+            </div>
+            <a class="live-pill" href="#roadmap">
+              <span class="dot is-live" aria-hidden="true"></span>
+              <span>In design · nothing to install yet</span>
+              <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-right"></use></svg>
+            </a>
+            <h1 class="display" id="hero-title">Up to date.<br class="br-wide" /> Without surprises.</h1>
+            <p class="lead">
+              Wise Wren will keep the Docker containers on your servers up to date. It checks for new
+              versions on a schedule you choose, tells you about them, and updates only what you
+              approve. Every update gets a snapshot first, a health check after, and a rollback if
+              it fails.
+            </p>
+            <p class="hero-fine">Wren never changes anything you haven’t allowed.</p>
+            <div class="hero-actions">
+              <a class="btn btn-primary btn-lg" href="https://github.com/Ferdinand99/Wise-Wren">
+                <svg class="gh-mark" aria-hidden="true"><use href="#gh"></use></svg>
+                <span>Follow on GitHub</span>
+              </a>
+              <a class="btn btn-ghost btn-lg" href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">
+                <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#file"></use></svg>
+                <span>Read the design</span>
+              </a>
+            </div>
+            <p class="hero-meta"><span>MIT licensed</span><span>Built in Rust</span><span>Sibling of Vigilant Vole</span></p>
+          </div>
+
+          <figure class="hero-shot">
+            <div
+              class="mock"
+              role="img"
+              aria-label="Concept illustration of the updates on an example home server. Nextcloud, a container, has a new version waiting for approval. Immich, a Compose stack, is scheduled for tonight at 03:00. Paperless, a container, failed its health check and was rolled back. Fluxer, a script-updated stack, has a new version and is set to notify only. Automatic updates are off. The data is made up."
+            >
+              <div class="mock-bar">
+                <span class="mock-title">home-server · updates</span>
+                <span class="pill status-accent"><span class="dot"></span>Concept</span>
+              </div>
+              <ul class="list">
+                <li>
+                  <div class="list-row">
+                    <span class="list-icon status-warning"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#box"></use></svg></span>
+                    <span class="list-main"><span class="list-title mono">nextcloud</span><span class="list-sub">Container · <span class="ver">29.0.7 → 29.0.8</span></span></span>
+                    <span class="pill status-warning">Waiting for you</span>
+                  </div>
+                </li>
+                <li>
+                  <div class="list-row">
+                    <span class="list-icon status-info"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#layers"></use></svg></span>
+                    <span class="list-main"><span class="list-title mono">immich</span><span class="list-sub">Compose stack · 3 services changed</span></span>
+                    <span class="pill status-info">Tonight 03:00</span>
+                  </div>
+                </li>
+                <li>
+                  <div class="list-row">
+                    <span class="list-icon status-down"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#undo"></use></svg></span>
+                    <span class="list-main"><span class="list-title mono">paperless</span><span class="list-sub">Container · health check failed</span></span>
+                    <span class="pill status-down">Rolled back</span>
+                  </div>
+                </li>
+                <li>
+                  <div class="list-row">
+                    <span class="list-icon status-none"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#terminal"></use></svg></span>
+                    <span class="list-main"><span class="list-title mono">fluxer</span><span class="list-sub">Script stack · <span class="ver">v0.9.2 → v0.9.3</span></span></span>
+                    <span class="pill">Notify only</span>
+                  </div>
+                </li>
+              </ul>
+              <div class="mock-foot">
+                <span>Checked 2 minutes ago · every 6 hours</span>
+                <span>Automatic updates: off</span>
+              </div>
+            </div>
+            <figcaption>Concept illustration with made-up data. Wren has no interface yet; it will follow the family design system.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- Why ============================================================= -->
+      <section class="section" id="why" aria-labelledby="why-title">
+        <div class="wrap">
+          <header class="section-head center reveal">
+            <h2 class="headline" id="why-title">Updates shouldn’t be a daily chore.</h2>
+            <p class="sub">
+              Keeping a home server current means checking every container, every day, and hoping
+              each update goes well. Wren is being built to do the checking, ask before it acts, and
+              clean up after itself when something breaks.
+            </p>
+          </header>
+
+          <ul class="grid">
+            <li class="card feature problem reveal">
+              <span class="list-icon status-warning"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#clock"></use></svg></span>
+              <h3>A manual check, every day</h3>
+              <p>Open the Unraid web UI, look for updates, press the button, check it came back. Nothing tells you when a new version is out.</p>
+            </li>
+            <li class="card feature problem reveal d1">
+              <span class="list-icon status-info"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#layers"></use></svg></span>
+              <h3>The button doesn’t cover it all</h3>
+              <p>Unraid’s update button handles containers made from its templates. <strong>Compose stacks</strong> and stacks updated by a <strong>vendor’s own script</strong> are left to you.</p>
+            </li>
+            <li class="card feature problem reveal d2">
+              <span class="list-icon status-down"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#alert"></use></svg></span>
+              <h3>Other tools pick an extreme</h3>
+              <p>Some only notify, like Diun and What’s Up Docker. Others update blindly, like Watchtower. None of them pause your monitoring, take a snapshot, check health and roll back.</p>
+            </li>
+          </ul>
+
+          <div class="callout status-accent rule reveal">
+            <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#shield-check"></use></svg>
+            <p>
+              <span class="callout-title">Wren never changes anything you haven’t allowed.</span>
+              With automatic updates off, which is the default, Wren updates nothing on its own: not a
+              container, not a stack, not a “small” dependency. A production server updated behind
+              your back is the worst outcome, so Wren is designed around avoiding it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- How a safe update works ========================================= -->
+      <section class="section section-alt" id="how" aria-labelledby="how-title">
+        <div class="wrap">
+          <header class="section-head reveal">
+            <p class="eyebrow">Safe updates</p>
+            <h2 class="headline" id="how-title">Every update, the same careful steps.</h2>
+            <p class="sub">
+              Whether you press the button, schedule it for tonight or let it run on its own, an
+              update will go through the same steps, and each one is written to the target’s history.
+            </p>
+          </header>
+
+          <ol class="steps" aria-label="The steps of an update">
+            <li class="step reveal">
+              <div class="step-head"><span class="step-n" aria-hidden="true">1</span></div>
+              <h3>Preflight</h3>
+              <p>The server is reachable, there’s room for a snapshot, and the new image is pulled <strong>before anything stops</strong>.</p>
+            </li>
+            <li class="step reveal d1">
+              <div class="step-head"><span class="step-n" aria-hidden="true">2</span></div>
+              <h3>Maintenance window</h3>
+              <p>A window opens in <a href="#vole">Vigilant Vole</a> for the linked monitors, so a planned restart doesn’t alert anyone.</p>
+            </li>
+            <li class="step reveal d2">
+              <div class="step-head"><span class="step-n" aria-hidden="true">3</span></div>
+              <h3>Stop</h3>
+              <p>The container or stack is stopped gracefully, so its databases are consistent.</p>
+            </li>
+            <li class="step reveal d3">
+              <div class="step-head"><span class="step-n" aria-hidden="true">4</span></div>
+              <h3>Snapshot</h3>
+              <p>The service’s data is saved as a local rollback point. If there isn’t room, the update is refused rather than filling the disk.</p>
+            </li>
+            <li class="step reveal">
+              <div class="step-head"><span class="step-n" aria-hidden="true">5</span></div>
+              <h3>Update</h3>
+              <p>Pull and recreate the container, bring the Compose stack up again, or run the vendor’s update script.</p>
+            </li>
+            <li class="step reveal d1">
+              <div class="step-head"><span class="step-n" aria-hidden="true">6</span></div>
+              <h3>Health check</h3>
+              <p>The containers are running and healthy, and the linked monitors stay up for a stable few minutes.</p>
+            </li>
+            <li class="step is-branch reveal d2">
+              <div class="step-head"><span class="step-n" aria-hidden="true">7</span></div>
+              <h3>Roll back if it fails</h3>
+              <p>The previous image or Compose files and the snapshot come back, and the health check runs again. If even that fails, Wren stops and tells you it <strong>needs you</strong>.</p>
+              <span class="pill status-down step-tag">Only on failure</span>
+            </li>
+            <li class="step reveal d3">
+              <div class="step-head"><span class="step-n" aria-hidden="true">8</span></div>
+              <h3>Close and report</h3>
+              <p>The maintenance window closes, and you get one notification with the result.</p>
+            </li>
+          </ol>
+
+          <div class="steps-notes">
+            <div class="callout status-info reveal">
+              <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#clock"></use></svg>
+              <p>
+                <span class="callout-title">Nothing waits forever</span>
+                Every step has a time limit, and a run can be cancelled until the moment the service
+                is stopped.
+              </p>
+            </div>
+            <div class="callout status-info reveal d1">
+              <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#archive"></use></svg>
+              <p>
+                <span class="callout-title">Snapshots are not backups</span>
+                They are short-lived rollback points on the same server, kept only while there’s room.
+                Your own backups stay your offsite copy.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Modes and schedules ============================================= -->
+      <section class="section" id="modes" aria-labelledby="modes-title">
+        <div class="wrap">
+          <header class="section-head reveal">
+            <p class="eyebrow">Modes and schedules</p>
+            <h2 class="headline" id="modes-title">You decide how much Wren may do.</h2>
+            <p class="sub">
+              Each server has a default mode, and each container or stack can override it. Checking
+              for new versions never changes anything; only updating does.
+            </p>
+          </header>
+
+          <ul class="grid modes">
+            <li class="card feature mode reveal">
+              <div class="mode-head">
+                <span class="list-icon status-none"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#bell"></use></svg></span>
+              </div>
+              <h3>Notify only</h3>
+              <p>Wren tells you a new version is out, with release notes when it can find them. Nothing else happens.</p>
+            </li>
+            <li class="card feature mode is-default reveal d1">
+              <div class="mode-head">
+                <span class="list-icon status-accent"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#check-circle"></use></svg></span>
+                <span class="pill status-accent">Default</span>
+              </div>
+              <h3>Approve</h3>
+              <p>One click runs the update now, or at a time you choose. You can also skip a version or snooze it. An approval is for that one version, never the next.</p>
+            </li>
+            <li class="card feature mode reveal d2">
+              <div class="mode-head">
+                <span class="list-icon status-warning"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#bolt"></use></svg></span>
+                <span class="pill">Off unless you turn it on</span>
+              </div>
+              <h3>Automatic</h3>
+              <p>Updates run on their own, but only inside a window you set, such as 03:00 to 05:00 at night. Any container or stack can be excluded.</p>
+            </li>
+          </ul>
+
+          <article class="row" id="schedules">
+            <div class="row-copy reveal">
+              <h3 class="title">Approve now, update tonight.</h3>
+              <p>
+                Approve an update during the day and pick when it runs. A scheduled update shows up
+                as <strong>planned maintenance in Vigilant Vole</strong> ahead of time, so the people
+                who use the service can see it coming.
+              </p>
+              <p>
+                Wren checks for new versions on an interval you choose for each server, every six
+                hours unless you say otherwise, and sends <strong>one notification per new
+                version</strong>, with a digest if you prefer. Notifications go through the same
+                ~40 channels as the rest of the family, from ntfy on your phone to email and
+                Discord.
+              </p>
+            </div>
+            <div class="row-art reveal">
+              <div
+                class="mock"
+                role="img"
+                aria-label="Concept illustration of the schedule for an example home server: an approved update of the Immich stack tonight at 03:00, shown as planned maintenance in Vigilant Vole; a nightly automatic window from 03:00 to 05:00 with four targets on automatic and two excluded; and the next version check today at 18:00."
+              >
+                <div class="mock-bar">
+                  <span class="mock-title">Schedule</span>
+                  <span class="pill status-accent"><span class="dot"></span>Concept</span>
+                </div>
+                <ul class="list">
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-info"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#calendar"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Update <span class="mono">immich</span></span><span class="list-sub">Approved · planned maintenance in Vigilant Vole</span></span>
+                      <span class="when">03:00<small>Tonight</small></span>
+                    </div>
+                  </li>
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-warning"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#bolt"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Automatic window</span><span class="list-sub">4 targets on automatic · 2 excluded</span></span>
+                      <span class="when">03:00–05:00<small>Nightly</small></span>
+                    </div>
+                  </li>
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-none"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#refresh"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Version check</span><span class="list-sub">Every 6 hours · changes nothing</span></span>
+                      <span class="when">18:00<small>Today</small></span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- Targets ========================================================= -->
+      <section class="section section-alt" id="targets" aria-labelledby="targets-title">
+        <div class="wrap">
+          <header class="section-head reveal">
+            <p class="eyebrow">What it updates</p>
+            <h2 class="headline" id="targets-title">Three kinds of targets.</h2>
+            <p class="sub">
+              A target is one thing Wren updates as a unit. Containers and Compose stacks are found
+              on their own; script stacks you add by hand.
+            </p>
+          </header>
+
+          <ul class="grid">
+            <li class="card feature kind reveal">
+              <span class="list-icon"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#box"></use></svg></span>
+              <h3>Containers</h3>
+              <p>Single containers, including the ones Unraid creates from its templates. The aim is to recreate those the way Unraid does, so its web UI stays in step.</p>
+              <p class="kind-new"><strong>New version:</strong> the image in the registry has changed, or a newer tag matches the range you follow.</p>
+            </li>
+            <li class="card feature kind reveal d1">
+              <span class="list-icon"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#layers"></use></svg></span>
+              <h3>Compose stacks</h3>
+              <p>Docker Compose projects, found from Compose’s own labels. The stack is pulled and brought up again as one unit.</p>
+              <p class="kind-new"><strong>New version:</strong> any of the stack’s images has changed.</p>
+            </li>
+            <li class="card feature kind reveal d2">
+              <span class="list-icon"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#terminal"></use></svg></span>
+              <h3>Script stacks</h3>
+              <p>Apps such as Fluxer that update with the vendor’s own installer. Wren runs a script you defined on that server, and only by name.</p>
+              <p class="kind-new"><strong>New version:</strong> a source such as GitHub releases reports a newer version than the one installed.</p>
+            </li>
+          </ul>
+
+          <div class="arch-wrap">
+            <header class="section-head center reveal">
+              <h3 class="headline" id="arch-title">One Wren, several servers.</h3>
+              <p class="sub">
+                One central Wren keeps the list, the policies and the history. A small agent on each
+                server does the work there.
+              </p>
+            </header>
+
+            <figure class="arch reveal">
+              <div class="arch-col">
+                <p class="arch-label">Checks</p>
+                <ul class="arch-list">
+                  <li>Docker Hub · GHCR · Quay</li>
+                  <li>Any OCI registry</li>
+                  <li>GitHub releases</li>
+                </ul>
+              </div>
+              <div class="arch-arrow" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#chevron-right"></use></svg></div>
+              <div class="arch-core">
+                <div class="arch-core-head">
+                  <img src="assets/wren-mark.svg" alt="" width="28" height="26" />
+                  <span>wren <small>one Rust binary · SQLite</small></span>
+                </div>
+                <ol class="arch-pipe">
+                  <li>Check</li>
+                  <li>Approve</li>
+                  <li>Update</li>
+                </ol>
+                <div class="arch-agents">
+                  <div class="db">
+                    <span class="db-name">wren-agent</span>
+                    <span class="db-sub">On your production server</span>
+                  </div>
+                  <div class="db">
+                    <span class="db-name">wren-agent</span>
+                    <span class="db-sub">On your test server</span>
+                  </div>
+                </div>
+              </div>
+              <div class="arch-arrow" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#chevron-right"></use></svg></div>
+              <div class="arch-col">
+                <p class="arch-label">Out</p>
+                <ul class="arch-list">
+                  <li>Web interface</li>
+                  <li>REST API · MCP</li>
+                  <li>~40 notification channels</li>
+                  <li>Vigilant Vole</li>
+                </ul>
+              </div>
+              <figcaption class="vh">
+                Diagram: Wren checks Docker Hub, GHCR, Quay, any OCI registry and GitHub releases for
+                new versions. One Wren server checks, takes approvals and runs updates through a small
+                agent on each server, for example a production server and a test server. Out come the
+                web interface, a REST API and MCP tools, notifications to about 40 channels, and
+                maintenance windows in Vigilant Vole.
+              </figcaption>
+            </figure>
+            <p class="arch-note reveal">
+              The agents connect out to Wren, so your servers open no ports, and they only run
+              scripts defined in their own local config. Wren is designed so that it can never become
+              a remote shell on your servers.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Vigilant Vole =================================================== -->
+      <section class="section" id="vole" aria-labelledby="vole-title">
+        <div class="wrap">
+          <div class="split">
+            <header class="split-copy reveal">
+              <p class="eyebrow">Better together</p>
+              <h2 class="headline" id="vole-title">Works with Vigilant Vole.</h2>
+              <p class="sub">
+                Wren and <a href="https://hedgerow.tools/Vigilant-Vole/">Vigilant Vole</a> are
+                siblings. Connect them, and an update stops looking like an outage.
+              </p>
+              <ul class="ticks vole-ticks">
+                <li>A <strong>maintenance window</strong> opens before anything stops, so a planned restart doesn’t page you.</li>
+                <li>A <strong>scheduled update</strong> shows as planned maintenance on your status pages ahead of time.</li>
+                <li>Your <strong>monitors</strong> become part of the health check: the service has to stay up for a few minutes before the update counts as done.</li>
+                <li>Without Vigilant Vole, Wren checks the containers themselves, and says so.</li>
+              </ul>
+            </header>
+
+            <div class="split-art reveal">
+              <div
+                class="mock"
+                role="img"
+                aria-label="Concept illustration of a planned maintenance window in Vigilant Vole: tonight from 03:00 to 03:15, for the update of the Immich stack, scheduled by Wise Wren, affecting two monitors, Photos over HTTP and the Photos database over TCP. Alerts for these monitors are paused during the window, the status page shows it as planned, and the health check waits for both monitors to be up for 3 minutes."
+              >
+                <div class="mock-bar">
+                  <span class="mock-title">Vigilant Vole · maintenance</span>
+                  <span class="pill status-info"><span class="dot"></span>Planned</span>
+                </div>
+                <div class="window">
+                  <span class="window-time">Tonight, 03:00–03:15</span>
+                  <span class="window-sub">Update <span class="mono">immich</span> · scheduled by Wise Wren</span>
+                  <ul class="chips" aria-label="Affected monitors">
+                    <li class="chip">Photos · HTTP</li>
+                    <li class="chip">Photos database · TCP</li>
+                  </ul>
+                </div>
+                <ul class="list">
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-info"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#megaphone"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Shown on the status page</span><span class="list-sub">As planned maintenance, from now</span></span>
+                    </div>
+                  </li>
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-none"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#pause"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Alerts paused</span><span class="list-sub">For the two linked monitors, during the window</span></span>
+                    </div>
+                  </li>
+                  <li>
+                    <div class="list-row">
+                      <span class="list-icon status-up"><svg class="icon" aria-hidden="true"><use href="assets/icons.svg#heart"></use></svg></span>
+                      <span class="list-main"><span class="list-title">Health check</span><span class="list-sub">Both monitors up for 3 minutes</span></span>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Roadmap ========================================================= -->
+      <section class="section section-alt" id="roadmap" aria-labelledby="roadmap-title">
+        <div class="wrap">
+          <header class="section-head reveal">
+            <h2 class="headline" id="roadmap-title">Where it stands.</h2>
+            <p class="sub">
+              Wren is in design, and nothing is built yet. It will be built in phases, riskiest part
+              first. There are no dates: each step is done when it works, and the
+              <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md#12-phases-risk-first">phase table in the design</a>
+              says what “works” means.
+            </p>
+          </header>
+
+          <ol class="roadmap">
+            <li class="milestone is-now reveal">
+              <span class="ms-marker" aria-hidden="true"><span class="dot is-live"></span></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill status-accent"><span class="dot"></span>Now</span></p>
+                <h3>Design</h3>
+                <p>What Wren is for, its goals and anti-goals, and the safe update flow, written down and being finalised.</p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill status-accent">Next</span></p>
+                <h3>Spike: the risky parts first</h3>
+                <p>
+                  A throwaway test on a real Unraid server: recreate a template container the way
+                  Unraid does, run a vendor’s update script from an agent, compare snapshots with
+                  copies, and check registries without hitting their rate limits.
+                </p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill">Then</span></p>
+                <h3>Skeleton on vole-kit</h3>
+                <p>Sign-in, users, settings and translations from the family’s shared foundation, and servers with agents that show as online.</p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill">Then</span></p>
+                <h3>Finding versions</h3>
+                <p>Containers, Unraid templates, Compose stacks and script stacks, with release notes and one notification per new version.</p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill">Then</span></p>
+                <h3>Safe update runs</h3>
+                <p>Approvals, snapshots, health checks, rollback and history. Done when a deliberately broken update rolls back on its own.</p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill">Then</span></p>
+                <h3>Vigilant Vole and schedules</h3>
+                <p>Maintenance windows, planned maintenance, health checks from your monitors, and automatic mode with windows and exclusions.</p>
+              </div>
+            </li>
+            <li class="milestone reveal">
+              <span class="ms-marker" aria-hidden="true"></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill">Then</span></p>
+                <h3>v0.1</h3>
+                <p>The REST API and MCP tools, hardening, docs and Unraid templates: the first release.</p>
+              </div>
+            </li>
+          </ol>
+
+          <p class="later reveal">
+            <strong>Later:</strong> an iOS app to see available updates and approve them, with push
+            notifications. Wren’s API is being designed to cover everything the app will need.
+          </p>
+        </div>
+      </section>
+
+      <!-- FAQ ============================================================= -->
+      <section class="section" id="faq" aria-labelledby="faq-title">
+        <div class="wrap">
+          <header class="section-head reveal">
+            <h2 class="headline" id="faq-title">Questions.</h2>
+          </header>
+          <ul class="faq reveal">
+            <li>
+              <details>
+                <summary>When can I use it?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    Not yet. Wren is in design, and there is nothing to install. The
+                    <a href="#roadmap">roadmap</a> shows what comes first. Watch or star the
+                    <a href="https://github.com/Ferdinand99/Wise-Wren">repository</a> to hear about the
+                    first release.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>Is it open source?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    Yes, under the <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/LICENSE">MIT license</a>,
+                    like Vigilant Vole, Nimble Newt and Keen Kestrel. No paid tier, no account.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>Does it work outside Unraid?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    Unraid first, any Docker host planned. Wren starts where its maker runs his own
+                    containers, including the ones Unraid creates from its templates. Plain containers
+                    and Compose stacks on any Linux server with Docker are part of the plan.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>Will it ever update without asking?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    No, unless you turn on automatic updates for that container or stack. Automatic
+                    mode is <strong>off by default</strong> for every server and every target.
+                  </p>
+                  <p>
+                    Even when it’s on, updates only run inside the window you set, and you can exclude
+                    anything you’d rather update yourself. In approve mode, an approval covers one
+                    version: if a newer one appears before the update runs, Wren asks again.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>Will there be an iOS app?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    Yes, later. It is planned after v1: an app to see available updates and approve
+                    them, with push notifications. Until then, notifications reach your phone through
+                    ntfy or any of the other channels.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>Is it a backup tool?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    No. Wren’s snapshots are short-lived rollback points on the same server, there to
+                    undo one update. Keep your own backups, ideally somewhere else.
+                  </p>
+                </div>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary>How can I help?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
+                <div class="faq-body">
+                  <p>
+                    Read the <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">design</a>
+                    and <a href="https://github.com/Ferdinand99/Wise-Wren/issues">open an issue</a> with
+                    questions or objections. Stories about how you update Compose stacks or
+                    script-updated apps today are especially welcome.
+                  </p>
+                </div>
+              </details>
+            </li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer-top">
+          <a class="brand" href="#top">
+            <img src="favicon.svg" alt="" width="24" height="24" loading="lazy" />
+            <span>Wise Wren</span>
+          </a>
+          <span>Made in Norway</span>
+        </div>
+        <nav aria-label="Project links">
+          <ul class="footer-links">
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren">GitHub</a></li>
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">Design</a></li>
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren#readme">README</a></li>
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren/issues">Issues</a></li>
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/LICENSE">MIT license</a></li>
+          </ul>
+        </nav>
+        <p class="sibling">
+          Part of <a href="https://hedgerow.tools/">Hedgerow</a>, small self-hosted apps that live
+          together, with <a href="https://hedgerow.tools/Vigilant-Vole/">Vigilant Vole</a>, a
+          lightweight uptime monitor, <a href="https://hedgerow.tools/Nimble-Newt/">Nimble Newt</a>,
+          a fast text editor, and <a href="https://hedgerow.tools/Keen-Kestrel/">Keen Kestrel</a>,
+          error tracking and analytics.
+        </p>
+        <p>
+          Wise Wren is open source under the MIT license and not affiliated with Docker or Unraid.
+          This site uses no cookies or analytics and makes no requests to other sites.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
