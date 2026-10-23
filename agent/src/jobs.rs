@@ -232,6 +232,16 @@ impl Plan {
     }
 }
 
+/// `path` lies under `root`, by whole components and without `..` (which
+/// `Path::starts_with` would let climb back out).
+pub fn under(path: &Path, root: &Path) -> bool {
+    path.is_absolute()
+        && path.starts_with(root)
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
@@ -323,7 +333,7 @@ pub fn check(
                     .collect();
             }
             let wd = &plan.working_dir;
-            if !wd.is_absolute() || !config.roots.iter().any(|r| wd.starts_with(r)) {
+            if !config.roots.iter().any(|r| under(wd, r)) {
                 return Err(format!(
                     "refused: the stack's folder {} is not under the agent's roots",
                     wd.display()
@@ -338,7 +348,7 @@ pub fn check(
             if plan
                 .files
                 .iter()
-                .any(|f| !config.roots.iter().any(|r| f.starts_with(r)))
+                .any(|f| !config.roots.iter().any(|r| under(f, r)))
             {
                 return Err("refused: a Compose file is outside the agent's roots".into());
             }
@@ -390,7 +400,7 @@ pub fn check(
             ));
         }
         for b in &c.binds {
-            let Some(root) = config.roots.iter().find(|r| b.starts_with(r)) else {
+            let Some(root) = config.roots.iter().find(|r| under(b, r)) else {
                 continue;
             };
             if b == root {
@@ -779,6 +789,18 @@ mod tests {
             "{:?}",
             p.notes
         );
+    }
+
+    #[test]
+    fn paths_with_dotdot_are_not_under_a_root() {
+        let root = Path::new("/mnt/user/appdata/ww-test");
+        assert!(under(Path::new("/mnt/user/appdata/ww-test/compose"), root));
+        assert!(!under(
+            Path::new("/mnt/user/appdata/ww-test/../../../etc"),
+            root
+        ));
+        assert!(!under(Path::new("/mnt/user/appdata/ww-test-other"), root));
+        assert!(!under(Path::new("ww-test/compose"), root));
     }
 
     #[test]

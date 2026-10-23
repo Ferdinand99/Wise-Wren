@@ -12,10 +12,12 @@
 
 pub mod agent_api;
 pub mod api;
+pub mod api_settings;
 pub mod channels;
 pub mod checks;
 pub mod config;
 pub mod db;
+pub mod fetch;
 pub mod inventory;
 pub mod pages;
 pub mod product;
@@ -75,6 +77,24 @@ pub struct Wren {
     /// Wakes the Vigilant Vole reconciler ([`vv::sync`]): a run ended, a
     /// scheduled run was moved or cancelled.
     pub vv_sync: Arc<tokio::sync::Notify>,
+    /// Lets user-influenced fetches (version URLs) reach private addresses.
+    /// Off unless `WW_ALLOW_PRIVATE_VERSION_URLS` is set ([`fetch`]); tests
+    /// serve their fakes on loopback.
+    pub allow_private_fetch: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Wren {
+    /// Which addresses a user-influenced fetch may reach.
+    pub fn fetch_allow(&self) -> fetch::Allow {
+        if self
+            .allow_private_fetch
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            fetch::any
+        } else {
+            fetch::is_public
+        }
+    }
 }
 
 /// Installs the configuration, opens and migrates the database in
@@ -119,6 +139,7 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         jobs: Arc::new(tokio::sync::Notify::new()),
         job_budgets: Arc::new(TokenBuckets::new()),
         vv_sync: Arc::new(tokio::sync::Notify::new()),
+        allow_private_fetch: Arc::default(),
     })
 }
 

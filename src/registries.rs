@@ -427,6 +427,96 @@ async fn remove(
         .into_response())
 }
 
+// ---------------------------------------------------------------------------
+// REST API (api_settings.rs): the password is write-only.
+// ---------------------------------------------------------------------------
+
+fn row_json(r: &RegistryRow) -> serde_json::Value {
+    serde_json::json!({ "id": r.id, "host": r.host, "username": r.username, "has_password": true })
+}
+
+/// `GET /api/v1/registries`.
+pub async fn api_list(core: &Core) -> ApiResult<serde_json::Value> {
+    let rows = rows(core).await?;
+    Ok(serde_json::json!({ "registries": rows.iter().map(row_json).collect::<Vec<_>>() }))
+}
+
+/// Adds credentials for a registry host.
+pub async fn api_add(
+    core: &Core,
+    host: &str,
+    username: &str,
+    password: &str,
+    who: &str,
+) -> ApiResult<serde_json::Value> {
+    let host =
+        normal_host(host).ok_or_else(|| ApiError::bad_request(i18n::t("registries.err_host")))?;
+    let username = username.trim().to_string();
+    if username.is_empty() || password.trim().is_empty() {
+        return Err(ApiError::bad_request(i18n::t("registries.err_login")));
+    }
+    let sealed = seal(core, password.trim());
+    let h = host.clone();
+    let id = core
+        .with_conn(move |c| {
+            let taken: bool = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM registries WHERE host = ?1)",
+                [&h],
+                |r| r.get(0),
+            )?;
+            if taken {
+                return Ok(None);
+            }
+            c.execute(
+                "INSERT INTO registries (host, username, secret) VALUES (?1, ?2, ?3)",
+                params![h, username, sealed],
+            )?;
+            Ok(Some(c.last_insert_rowid()))
+        })
+        .await?
+        .ok_or_else(|| ApiError::bad_request(i18n::t("registries.err_taken")))?;
+    tracing::info!(user = who, host, "registry credentials added");
+    Ok(row_json(&load(core, id).await?))
+}
+
+/// Changes the user name and, when given (not empty, not the mask), the
+/// password.
+pub async fn api_change(
+    core: &Core,
+    id: i64,
+    username: Option<&str>,
+    password: Option<&str>,
+    who: &str,
+) -> ApiResult<serde_json::Value> {
+    let row = load(core, id).await?;
+    let username = username.map_or(row.username.clone(), |u| u.trim().to_string());
+    if username.is_empty() {
+        return Err(ApiError::bad_request(i18n::t("registries.err_login")));
+    }
+    let sealed = password
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != SECRET_MASK)
+        .map(|p| seal(core, p));
+    core.with_conn(move |c| {
+        c.execute(
+            "UPDATE registries SET username = ?2, secret = COALESCE(?3, secret) WHERE id = ?1",
+            params![id, username, sealed],
+        )
+    })
+    .await?;
+    tracing::info!(user = who, host = %row.host, "registry credentials changed");
+    Ok(row_json(&load(core, id).await?))
+}
+
+/// Deletes a registry's credentials.
+pub async fn api_delete(core: &Core, id: i64, who: &str) -> ApiResult<serde_json::Value> {
+    let row = load(core, id).await?;
+    core.with_conn(move |c| c.execute("DELETE FROM registries WHERE id = ?1", [id]))
+        .await?;
+    tracing::info!(user = who, host = %row.host, "registry credentials deleted");
+    Ok(serde_json::json!({ "deleted": true }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2140,3 +2140,64 @@ code.nw {
   }
 }
 
+/* Install ================================================================ */
+.code-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 44px;
+  padding: 6px 12px 6px 16px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+pre {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-5);
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  letter-spacing: 0;
+  tab-size: 4;
+}
+pre:focus-visible {
+  outline-offset: -2px;
+}
+pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  overflow-wrap: normal;
+}
+pre .c {
+  color: var(--muted);
+}
+pre .k {
+  color: var(--brand);
+}
+pre .s {
+  color: var(--accent-text);
+}
+.steps-plain {
+  margin: var(--sp-4) 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: var(--sp-2);
+  color: var(--muted);
+}
+@media (forced-colors: active) {
+  .code-card {
+    border: 1px solid CanvasText;
+  }
+}

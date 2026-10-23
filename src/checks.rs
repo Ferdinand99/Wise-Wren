@@ -95,7 +95,7 @@ async fn run(wren: &Wren) -> Result<Report, vole_kit::http::ApiError> {
         let result = if !source.github.is_empty() {
             wren.github.latest_release(&core.http, &source.github).await
         } else if !source.url.is_empty() {
-            versions::from_url(&core.http, &source).await
+            versions::from_url(&source, wren.fetch_allow()).await
         } else {
             continue;
         };

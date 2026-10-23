@@ -652,3 +652,44 @@ async fn api_and_mcp_runs_and_approve() {
     assert!(res.body.contains("ww-test-b"), "{}", res.body);
     let _ = token;
 }
+
+#[tokio::test]
+async fn revoked_token_gets_no_job_from_a_waiting_poll() {
+    let (app, server_id, token) = setup().await;
+    let a = target(&app, "ww-test-a").await;
+    // The agent is already waiting when its token is revoked.
+    let router = app.router.clone();
+    let t = token.clone();
+    let waiting = tokio::spawn(async move {
+        use tower::ServiceExt as _;
+        let mut req = Request::get("/api/agent/v1/jobs?wait=10")
+            .header(header::AUTHORIZATION, format!("Bearer {t}"))
+            .header(header::HOST, common::HOST)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                40000,
+            ))));
+        router.oneshot(req).await.unwrap().status()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let key = a.available_key.clone();
+    app.wren
+        .core
+        .with_conn(move |c| {
+            wise_wren::db::set_token(c, server_id, None)?;
+            let _ = runs::approve_at(c, a.id, Some(&key), "owner", None)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    app.wren.jobs.notify_waiters();
+    assert_eq!(waiting.await.unwrap(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE status = 'running'")
+            .await,
+        0
+    );
+}

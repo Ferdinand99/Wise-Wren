@@ -373,7 +373,9 @@ impl Checker {
             .get(&c.realm)
             .query(&[("service", c.service.as_str()), ("scope", scope.as_str())])
             .timeout(TIMEOUT);
-        if let Some(auth) = self.basic(image) {
+        if let Some(auth) = self.basic(image)
+            && creds_may_go_to(&c.realm, image.host())
+        {
             req = req.header(AUTHORIZATION, auth);
         }
         self.requests += 1;
@@ -402,6 +404,22 @@ impl Checker {
     }
 }
 
+/// Whether saved credentials may go to a token `realm` the registry at
+/// `host` named: over https, or to the registry's own host (a plain-http
+/// registry on the LAN). Never to some other plain-http address, where
+/// anyone on the path could read them.
+fn creds_may_go_to(realm: &str, host: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(realm) else {
+        return false;
+    };
+    let authority = match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_string(),
+        _ => return false,
+    };
+    url.scheme() == "https" || (url.scheme() == "http" && authority.eq_ignore_ascii_case(host))
+}
+
 /// A request error without the URL (it may carry a token in its query).
 fn without_url(err: &reqwest::Error) -> String {
     let mut msg = err.to_string();
@@ -418,6 +436,29 @@ fn without_url(err: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_only_to_https_realm() {
+        assert!(creds_may_go_to(
+            "https://auth.docker.io/token",
+            "registry-1.docker.io"
+        ));
+        assert!(creds_may_go_to("https://ghcr.io/token", "ghcr.io"));
+        assert!(creds_may_go_to(
+            "http://10.0.3.26:5056/token",
+            "10.0.3.26:5056"
+        ));
+        assert!(!creds_may_go_to(
+            "http://evil.example/token",
+            "10.0.3.26:5056"
+        ));
+        assert!(!creds_may_go_to(
+            "http://10.0.3.26:9999/token",
+            "10.0.3.26:5056"
+        ));
+        assert!(!creds_may_go_to("ftp://ghcr.io/token", "ghcr.io"));
+        assert!(!creds_may_go_to("not a url", "ghcr.io"));
+    }
     use std::sync::{Arc, Mutex};
 
     fn r(registry: &str, repo: &str, tag: &str) -> ImageRef {

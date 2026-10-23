@@ -703,6 +703,178 @@ async fn send_test(core: &Core, kind: &str, config: &Value, language: &str) -> R
     .await
 }
 
+// ---------------------------------------------------------------------------
+// REST API (api_settings.rs): the same rules as the pages. Saved secrets are
+// never returned (redacted with the kit's mask), an absent or masked secret
+// keeps the stored one, and a changed destination needs the secrets again.
+// ---------------------------------------------------------------------------
+
+/// A channel as the API shows it: its settings with secrets masked.
+fn channel_json(ch: &Channel) -> Value {
+    let schema = vole_kit::notify::provider(&ch.kind);
+    json!({
+        "id": ch.id,
+        "name": ch.name,
+        "kind": ch.kind,
+        "active": ch.active,
+        "language": ch.language,
+        "digest": ch.digest,
+        "config": schema::redact(schema, &stored_config(ch)),
+    })
+}
+
+/// `GET /api/v1/notification-channels`.
+pub async fn api_list(core: &Core) -> ApiResult<Value> {
+    let rows = core.with_conn(|c| db::channels(c)).await?;
+    Ok(json!({ "channels": rows.iter().map(channel_json).collect::<Vec<_>>() }))
+}
+
+/// `GET /api/v1/notification-channels/{id}`.
+pub async fn api_get(core: &Core, id: i64) -> ApiResult<Value> {
+    Ok(channel_json(&load_channel(core, id).await?))
+}
+
+/// The providers and their settings' keys, for building a channel.
+pub fn api_providers() -> Value {
+    json!({ "providers": vole_kit::notify::PROVIDERS.iter().map(|p| json!({
+        "kind": p.kind,
+        "label": p.label,
+        "docs_url": p.docs_url,
+        "fields": p.fields.iter().map(|f| json!({
+            "key": f.key,
+            "type": format!("{:?}", f.kind).to_lowercase(),
+            "required": f.required,
+            "secret": f.secret,
+        })).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>() })
+}
+
+/// JSON `config` → the form pairs the kit's parser reads.
+fn config_pairs(schema: &ProviderSchema, config: Option<&Value>) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let Some(obj) = config.and_then(Value::as_object) else {
+        return pairs;
+    };
+    for f in schema.fields {
+        let Some(v) = obj.get(f.key) else { continue };
+        let text = match v {
+            Value::Null => continue,
+            Value::String(s) => s.clone(),
+            Value::Bool(b) => b.to_string(),
+            other => other.to_string(),
+        };
+        pairs.push((f.form_name(), text));
+    }
+    pairs
+}
+
+fn invalid(schema: &ProviderSchema, errors: &[FieldError]) -> ApiError {
+    let (key, msg) = errors.first().cloned().unwrap_or_default();
+    let label = schema
+        .field(&key)
+        .map_or(i18n::t("notif.settings_label"), |f| f.tr_label(schema.kind));
+    ApiError::bad_request(format!("{label} ({key}): {msg}"))
+}
+
+/// Creates (`id` None) or changes a channel from JSON: `kind` (create
+/// only), `name`, `language`, `digest`, `active` (change only), `config`.
+pub async fn api_save(core: &Core, id: Option<i64>, body: &Value, who: &str) -> ApiResult<Value> {
+    let text = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or_default();
+    let old = match id {
+        Some(id) => Some(load_channel(core, id).await?),
+        None => None,
+    };
+    let kind = old
+        .as_ref()
+        .map_or(text("kind").to_string(), |c| c.kind.clone());
+    let schema = vole_kit::notify::provider(&kind)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown kind “{kind}”")))?;
+    let name = match (body.get("name").and_then(Value::as_str), &old) {
+        (Some(n), _) => n.trim().to_string(),
+        (None, Some(c)) => c.name.clone(),
+        (None, None) => String::new(),
+    };
+    if let Some(problem) = validate_name(&name) {
+        return Err(ApiError::bad_request(problem));
+    }
+    let language = match body.get("language").and_then(Value::as_str) {
+        Some(code) => language_of(&[("language".into(), code.into())]),
+        None => old.as_ref().map(|c| c.language.clone()).unwrap_or_default(),
+    };
+    let flag = |k: &str, default: bool| body.get(k).and_then(Value::as_bool).unwrap_or(default);
+    let digest = flag("digest", old.as_ref().is_some_and(|c| c.digest));
+    let active = flag("active", old.as_ref().is_none_or(|c| c.active));
+    if let Some(obj) = body.get("config").and_then(Value::as_object)
+        && let Some(unknown) = obj.keys().find(|k| schema.field(k).is_none())
+    {
+        return Err(ApiError::bad_request(format!(
+            "{kind} has no setting “{unknown}” (see GET /api/v1/notification-providers)"
+        )));
+    }
+    let mut config = schema::parse_form(schema, &config_pairs(schema, body.get("config"))).config;
+    if let Some(ch) = &old {
+        // Unchanged settings and secrets stay as stored.
+        let stored = stored_config(ch);
+        if body.get("config").is_none() {
+            config = stored.clone();
+        } else if let Err(errors) = schema::merge_secrets_checked(schema, &mut config, &stored, &[])
+        {
+            return Err(invalid(schema, &errors));
+        }
+    }
+    if let Err(errors) = schema::validate(schema, &config) {
+        return Err(invalid(schema, &errors));
+    }
+    let config = config.to_string();
+    let kind = schema.kind;
+    let id = match id {
+        Some(id) => {
+            core.with_conn(move |c| {
+                db::update_channel(c, id, &name, &config, active, &language, digest)
+            })
+            .await?;
+            tracing::info!(user = who, channel_id = id, "notification channel updated");
+            id
+        }
+        None => {
+            let id = core
+                .with_conn(move |c| db::insert_channel(c, &name, kind, &config, &language, digest))
+                .await?;
+            tracing::info!(user = who, kind, "notification channel created");
+            id
+        }
+    };
+    api_get(core, id).await
+}
+
+/// Pauses or resumes a channel.
+pub async fn api_active(core: &Core, id: i64, active: bool) -> ApiResult<Value> {
+    load_channel(core, id).await?;
+    core.with_conn(move |c| db::set_channel_active(c, id, active))
+        .await?;
+    api_get(core, id).await
+}
+
+/// Sends a test message with the saved settings: `{"sent": true}` or
+/// `{"sent": false, "error": …}` (the kit scrubs secrets from errors).
+pub async fn api_test(core: &Core, id: i64) -> ApiResult<Value> {
+    let ch = load_channel(core, id).await?;
+    Ok(
+        match send_test(core, &ch.kind, &stored_config(&ch), &ch.language).await {
+            Ok(()) => json!({ "sent": true }),
+            Err(err) => json!({ "sent": false, "error": err }),
+        },
+    )
+}
+
+/// Deletes a channel.
+pub async fn api_delete(core: &Core, id: i64, who: &str) -> ApiResult<Value> {
+    load_channel(core, id).await?;
+    core.with_conn(move |c| db::delete_channel(c, id)).await?;
+    tracing::info!(user = who, channel_id = id, "notification channel deleted");
+    Ok(json!({ "deleted": true }))
+}
+
 /// The `notification_channels` table.
 mod db {
     use rusqlite::{Connection, OptionalExtension, Row, params};

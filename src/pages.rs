@@ -436,7 +436,7 @@ async fn target_page(
 // Actions
 // ---------------------------------------------------------------------------
 
-async fn request(wren: &Wren, server_id: i64, target_id: Option<i64>) -> ApiResult<()> {
+pub(crate) async fn request(wren: &Wren, server_id: i64, target_id: Option<i64>) -> ApiResult<()> {
     wren.core
         .with_conn(move |c| targets::request_check(c, server_id, target_id))
         .await?;
