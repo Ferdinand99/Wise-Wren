@@ -179,11 +179,36 @@ fn normal(repo: &str) -> &str {
 
 /// The container's repo digest for its own reference.
 pub fn local_digest(image: &str, repo_digests: &[String]) -> Option<String> {
-    let repo = repo_of(image)?;
-    repo_digests.iter().find_map(|d| {
-        let (r, digest) = d.split_once('@')?;
-        (normal(r) == normal(&repo)).then(|| digest.to_string())
-    })
+    local_digests(image, repo_digests).into_iter().next()
+}
+
+/// Every repo digest of the container's image for its own reference: an
+/// image pulled again by another digest of the same content has several.
+pub fn local_digests(image: &str, repo_digests: &[String]) -> Vec<String> {
+    let Some(repo) = repo_of(image) else {
+        return Vec::new();
+    };
+    repo_digests
+        .iter()
+        .filter_map(|d| {
+            let (r, digest) = d.split_once('@')?;
+            (normal(r) == normal(&repo)).then(|| digest.to_string())
+        })
+        .collect()
+}
+
+/// Whether every image of an update job already runs its `to` digest: the
+/// approved version is there and there is nothing to do.
+pub fn already_on(job: &Job, ctrs: &[Ctr]) -> bool {
+    job.kind == JobKind::Update
+        && !job.images.is_empty()
+        && job.images.iter().all(|i| {
+            ctrs.iter().any(|c| {
+                c.name == i.container
+                    && c.image == i.image
+                    && local_digests(&c.image, &c.repo_digests).contains(&i.to)
+            })
+        })
 }
 
 pub fn valid_digest(d: &str) -> bool {
@@ -371,9 +396,9 @@ pub fn check(
         if !valid_digest(&i.to) || repo_of(&i.image).is_none() {
             return Err(format!("refused: {} has no updatable reference", c.name));
         }
-        if job.kind == JobKind::Update
-            && local_digest(&c.image, &c.repo_digests).as_deref() != Some(i.from.as_str())
-        {
+        // Any repo digest counts; already on `to` is "already up to date".
+        let digests = local_digests(&c.image, &c.repo_digests);
+        if job.kind == JobKind::Update && !digests.contains(&i.from) && !digests.contains(&i.to) {
             return Err(format!(
                 "refused: {} changed since Wren's check (it no longer runs {})",
                 c.name, i.from
@@ -496,7 +521,13 @@ impl JobClient {
         use crate::heartbeat::SendError;
         let res = self
             .http
-            .get(format!("{}{JOBS_PATH}", self.server))
+            // Which process asks (hex and dashes): a run handed to an
+            // earlier one is over.
+            .get(format!(
+                "{}{JOBS_PATH}?boot={}",
+                self.server,
+                crate::heartbeat::boot().id
+            ))
             .send()
             .await
             .map_err(|e| SendError::Failed(format!("can't reach Wren: {e}")))?;
@@ -801,6 +832,36 @@ mod tests {
         ));
         assert!(!under(Path::new("/mnt/user/appdata/ww-test-other"), root));
         assert!(!under(Path::new("ww-test/compose"), root));
+    }
+
+    #[test]
+    fn several_repo_digests_and_already_up_to_date() {
+        let c = config("");
+        let img = "localhost:5056/ww-test/app:latest";
+        // Pulled again by a new index digest: the image has both.
+        let mut both = ctr("ww-test-c", img, &[]);
+        both.repo_digests = vec![
+            format!("localhost:5056/ww-test/app@{A}"),
+            format!("localhost:5056/ww-test/app@{B}"),
+            format!("other/app@sha256:{}", "f".repeat(64)),
+        ];
+        assert_eq!(local_digests(img, &both.repo_digests), [A, B]);
+        let j = job("container", "ww-test-c", "ww-test-c", img);
+        // From A to B while B is already the image: checked, nothing to do.
+        let plan = check(&j, &c, std::slice::from_ref(&both), &[], "").unwrap();
+        assert!(already_on(&j, &plan.ctrs));
+        // Wren saw another digest, but the approved one runs: still fine.
+        let mut moved = j.clone();
+        moved.images[0].from = format!("sha256:{}", "c".repeat(64));
+        assert!(check(&moved, &c, std::slice::from_ref(&both), &[], "").is_ok());
+        // Only on A: a real update.
+        let one = ctr("ww-test-c", img, &[]);
+        let plan = check(&j, &c, std::slice::from_ref(&one), &[], "").unwrap();
+        assert!(!already_on(&j, &plan.ctrs));
+        // A rollback is never "already up to date".
+        let mut back = j.clone();
+        back.kind = JobKind::Rollback;
+        assert!(!already_on(&back, &[both]));
     }
 
     #[test]

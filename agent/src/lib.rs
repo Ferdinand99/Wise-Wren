@@ -76,6 +76,8 @@ pub async fn run(
     config: Config,
     stop: impl std::future::Future<Output = ()>,
 ) -> Result<(), String> {
+    // The process's boot id and start, before anything is sent.
+    let boot = heartbeat::boot();
     let client = Arc::new(Client::new(&config.server, &config.token)?);
     let config = Arc::new(config);
     let scans = Scans::default();
@@ -85,6 +87,7 @@ pub async fn run(
         server = %config.server,
         roots = config.roots.len(),
         script_stacks = config.script_stacks.len(),
+        boot = %boot.id,
         "wren-agent started"
     );
     tokio::pin!(stop);

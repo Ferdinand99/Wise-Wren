@@ -228,8 +228,9 @@ inventory go away; a failed Docker read keeps the last ones.
 **Checks** run on the server, never on the agent: an anonymous manifest `HEAD` with the index-first `Accept`
 list and the `WWW-Authenticate: Bearer` challenge (spike Q1), one answer per image reference per run, Docker Hub's
 token fetched without a probe, a `Retry-After` up to 10 s waited out once (longer: the registry is skipped for the
-run). Never a pull or a manifest `GET`. Status per image: `current` (the registry's digest equals the running
-image's repo digest for that repository), `update` (they differ) or `unknown` (pinned by digest, an image ID, no repo
+run). Never a pull or a manifest `GET`. Status per image: `current` (the registry's digest equals one of the running
+image's repo digests for that repository: an image pulled again by a new index digest over the same content keeps
+both), `update` (none does) or `unknown` (pinned by digest, an image ID, no repo
 digest because it was built locally, not checked yet, or the registry failed). A target is `update` when any image
 is (or its version source reports a newer version), else `current` when any part is, else `unknown`.
 
@@ -424,6 +425,18 @@ has a time limit.
 Script stacks with `handles_own_backup = true` skip steps 2 and 3. One run at a time per server; a stack updates
 as one unit. A running run whose agent goes offline and stays silent for 10 minutes (or any run silent for 26
 hours) is closed as `rollback_failed`, never retried.
+
+**Agent restarts.** Each agent process has a random boot id; it sends it with every heartbeat (`boot_id`, with
+`uptime_seconds`) and on its job polls (`GET /api/agent/v1/jobs?boot=…`), and the run remembers the process it was
+handed to. When the agent reports another boot id, its running runs are closed at once as `rollback_failed` ("The
+agent restarted during the run; check <target>: it may be on the new or the old version.", with the name of a
+`<name>-wren-old-<run>` container that may be left), the urgent notification goes out and the next approved run
+goes. Runs handed out before 0.2.1 (no boot id) are closed when the agent reports it started after the run did.
+Agents before 0.2.1 send no boot id and keep the old behaviour. The agent leaves a `-wren-old-` container alone:
+it is the way back by hand.
+
+**Already up to date.** An approved version that already runs (its digest is among the image's repo digests) ends
+as `succeeded` without stopping anything, in Wren before the job goes out and in the agent after its check.
 
 **Notifications:** run succeeded, failed and rolled back, failed with nothing changed, rollback failed (urgent),
 and the agent offline (once per outage, after 90 s without a heartbeat) and back.

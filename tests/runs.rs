@@ -38,20 +38,30 @@ async fn post_json(app: &App, path: &str, token: &str, body: Value) -> common::R
 async fn setup() -> (App, i64, String) {
     let app = App::new().await;
     let (id, token) = app.add_server("LANBox").await;
+    send_inventory(&app, &token, &[OLD]).await;
+    set_remote(&app, "localhost:5056/ww-test/app:latest", NEW).await;
+    set_remote(&app, "localhost:5056/ww-test/other:latest", NEW).await;
+    set_remote(&app, "localhost:5056/ww-test/db:1", NEW).await;
+    (app, id, token)
+}
+
+/// The inventory of [`setup`], with these repo digests for ww-test-a.
+async fn send_inventory(app: &App, token: &str, a_digests: &[&str]) {
+    let mut a = container("ww-test-a", "localhost:5056/ww-test/app:latest", json!({}));
+    a["repo_digests"] = a_digests
+        .iter()
+        .map(|d| json!(format!("localhost:5056/ww-test/app@{d}")))
+        .collect();
     let inv = json!({
         "containers": [
-            container("ww-test-a", "localhost:5056/ww-test/app:latest", json!({})),
+            a,
             container("ww-test-b", "localhost:5056/ww-test/other:latest", json!({})),
             container("pz-db", "localhost:5056/ww-test/db:1", json!({"com.docker.compose.project": "postiz"})),
         ],
         "compose_projects": [{"name": "postiz", "working_dir": "/boot/x/postiz", "files_reachable": false}],
     });
-    let res = post_json(&app, "/api/agent/v1/inventory", &token, inv).await;
+    let res = post_json(app, "/api/agent/v1/inventory", token, inv).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    set_remote(&app, "localhost:5056/ww-test/app:latest", NEW).await;
-    set_remote(&app, "localhost:5056/ww-test/other:latest", NEW).await;
-    set_remote(&app, "localhost:5056/ww-test/db:1", NEW).await;
-    (app, id, token)
 }
 
 async fn set_remote(app: &App, image: &'static str, digest: &'static str) {
@@ -692,4 +702,224 @@ async fn revoked_token_gets_no_job_from_a_waiting_poll() {
             .await,
         0
     );
+}
+
+async fn heartbeat(app: &App, token: &str, beat: Value) {
+    let res = post_json(app, "/api/agent/v1/heartbeat", token, beat).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}
+
+/// The job poll of the agent process `boot`, without waiting.
+async fn poll_as(app: &App, token: &str, boot: &str) -> common::Res {
+    bearer(
+        app,
+        "GET",
+        &format!("/api/agent/v1/jobs?wait=0&boot={boot}"),
+        token,
+    )
+    .await
+}
+
+async fn approve_both(app: &App) {
+    let (a, b) = (
+        target(app, "ww-test-a").await,
+        target(app, "ww-test-b").await,
+    );
+    let mut web = Web::new(app, "ed", "editor").await;
+    approve(&mut web, a.id, &a.available_key).await;
+    approve(&mut web, b.id, &b.available_key).await;
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE status = 'queued'")
+            .await,
+        2
+    );
+}
+
+#[tokio::test]
+async fn agent_restart_mid_run_closes_it_and_the_next_one_goes() {
+    let (app, _, token) = setup().await;
+    let (url, got) = hooks().await;
+    add_hook(&app, url).await;
+    approve_both(&app).await;
+    let first = run_id_of(&poll_as(&app, &token, "one").await.json());
+    for (s, st) in [
+        ("preflight", "ok"),
+        ("stop", "ok"),
+        ("snapshot", "ok"),
+        ("update", "ok"),
+        ("health", "running"),
+    ] {
+        assert_eq!(
+            step(&app, &token, first, s, st).await.status,
+            StatusCode::OK
+        );
+    }
+    // The same process: its heartbeats and polls change nothing.
+    heartbeat(
+        &app,
+        &token,
+        json!({"boot_id": "one", "uptime_seconds": 600}),
+    )
+    .await;
+    assert_eq!(
+        poll_as(&app, &token, "one").await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(run(&app, first).await.status, "running");
+
+    // agent.toml was edited and the agent restarted in the health step: the
+    // new process's first heartbeat closes the run for a person to check.
+    heartbeat(&app, &token, json!({"boot_id": "two", "uptime_seconds": 2})).await;
+    let r = run(&app, first).await;
+    assert_eq!(r.status, "rollback_failed");
+    assert!(
+        r.detail.starts_with(
+            "The agent restarted during the run; check ww-test-a: it may be on the new or the old version."
+        ),
+        "{}",
+        r.detail
+    );
+    assert!(
+        r.detail.contains(&format!("ww-test-a-wren-old-{first}")),
+        "{}",
+        r.detail
+    );
+    // The queue is free: the next approved run goes to the new process.
+    let res = poll_as(&app, &token, "two").await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let second = run_id_of(&res.json());
+    assert_eq!(run(&app, second).await.target_name, "ww-test-b");
+    heartbeat(
+        &app,
+        &token,
+        json!({"boot_id": "two", "uptime_seconds": 40}),
+    )
+    .await;
+    assert_eq!(run(&app, second).await.status, "running");
+    // Refused by agent.toml's [updates]: closed at once, nothing waits.
+    assert_eq!(
+        finish(&app, &token, second, "refused").await.status,
+        StatusCode::OK
+    );
+    assert_eq!(run(&app, second).await.status, "refused");
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE status IN ('queued', 'running')")
+            .await,
+        0
+    );
+    // The urgent "needs you" went out.
+    for _ in 0..50 {
+        if got
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v.to_string().contains("The agent restarted"))
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let sent: Vec<String> = got.lock().unwrap().iter().map(Value::to_string).collect();
+    assert!(
+        sent.iter()
+            .any(|t| t.contains("needs you") && t.contains("The agent restarted")),
+        "{sent:?}"
+    );
+}
+
+#[tokio::test]
+async fn old_agents_and_runs_handed_out_before_the_update() {
+    let (app, _, token) = setup().await;
+    approve_both(&app).await;
+    // An agent before 0.2.1 sends no boot id: nothing changes for it.
+    let first = run_id_of(&poll(&app, &token).await.json());
+    heartbeat(&app, &token, json!({"agent_version": "0.2.0"})).await;
+    assert_eq!(run(&app, first).await.status, "running");
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE agent_boot IS NOT NULL")
+            .await,
+        0
+    );
+    app.exec(format!(
+        "UPDATE runs SET started_at = datetime('now', '-2 minutes') WHERE id = {first}"
+    ))
+    .await;
+    // A new agent up since before the run (updated before Wren was) is the
+    // process the run was handed to: it keeps running, also through polls.
+    heartbeat(
+        &app,
+        &token,
+        json!({"boot_id": "new", "uptime_seconds": 3600}),
+    )
+    .await;
+    assert_eq!(
+        poll_as(&app, &token, "new").await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(run(&app, first).await.status, "running");
+    // An agent started after the run (Tower: restarted mid-run, then
+    // updated): its first heartbeat closes it.
+    heartbeat(
+        &app,
+        &token,
+        json!({"boot_id": "newer", "uptime_seconds": 20}),
+    )
+    .await;
+    let r = run(&app, first).await;
+    assert_eq!(r.status, "rollback_failed");
+    assert!(r.detail.contains("The agent restarted"), "{}", r.detail);
+    // An old agent's poll still gets the next run.
+    let second = run_id_of(&poll(&app, &token).await.json());
+    assert_ne!(first, second);
+}
+
+#[tokio::test]
+async fn any_repo_digest_of_the_image_is_current() {
+    let (app, _, token) = setup().await;
+    assert_eq!(target(&app, "ww-test-a").await.status, "update");
+    // Pulled again by a new index digest: RepoDigests has both.
+    send_inventory(&app, &token, &[OLD, NEW]).await;
+    let a = target(&app, "ww-test-a").await;
+    assert_eq!(
+        (a.status.as_str(), a.available_key.as_str()),
+        ("current", "")
+    );
+    let id = a.id;
+    let images = app
+        .wren
+        .core
+        .with_conn(move |c| targets::images(c, id))
+        .await
+        .unwrap();
+    assert_eq!(images[0].local_digest, NEW);
+    // A newer digest is an update again, from a digest the image has.
+    set_remote(&app, "localhost:5056/ww-test/app:latest", NEWER).await;
+    let a = target(&app, "ww-test-a").await;
+    assert_eq!(a.status, "update");
+    assert_eq!(a.available_key, format!("ww-test-a={NEWER}"));
+    let mut web = Web::new(&app, "ed", "editor").await;
+    approve(&mut web, a.id, &a.available_key).await;
+    let job = poll(&app, &token).await.json();
+    let from = job["job"]["images"][0]["from"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(from == OLD || from == NEW, "{job}");
+    assert_eq!(job["job"]["images"][0]["to"], NEWER);
+}
+
+#[tokio::test]
+async fn approval_of_the_version_already_running_succeeds_at_once() {
+    let (app, _, token) = setup().await;
+    approve_both(&app).await;
+    // The approved digest arrived meanwhile under another repo digest of the
+    // same image (Tower's arrgresql18 after run 1).
+    send_inventory(&app, &token, &[OLD, NEW]).await;
+    let res = poll(&app, &token).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json()["job"]["target"]["name"], "ww-test-b");
+    let r = run(&app, 1).await;
+    assert_eq!(r.status, "succeeded");
+    assert!(r.detail.starts_with("already up to date"), "{}", r.detail);
+    assert_eq!(r.started_at, None);
 }

@@ -19,7 +19,9 @@ image.
 
 Upgrade while no update run is in progress (the Overview shows running runs). A run that loses Wren half-way keeps
 going on its agent, but Wren may miss its result and close it as "rollback failed" after 10 minutes of silence;
-then look at the target yourself.
+then look at the target yourself. Restarting an agent (a new image, an edited `agent.toml`) ends its running run:
+from 0.2.1 Wren closes it as "rollback failed" at the agent's next heartbeat and goes on with the next approved
+update.
 
 ## Agents
 

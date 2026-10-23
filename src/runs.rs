@@ -31,7 +31,7 @@ use vole_kit::http::ApiError;
 use vole_kit::http::ratelimit::{Rate, too_many_requests};
 
 use crate::Wren;
-use crate::inventory::{COMPOSE, SCRIPT};
+use crate::inventory::{COMPOSE, CONTAINER, SCRIPT, UNRAID};
 use crate::targets;
 
 pub const JOBS_PATH: &str = "/api/agent/v1/jobs";
@@ -52,6 +52,9 @@ pub const MAX_LOG: usize = 4000;
 pub const SILENT_MINUTES: i64 = 10;
 /// The longest a run may go without a report even with its agent online.
 pub const MAX_SILENT_HOURS: i64 = 26;
+/// How far Wren's idea of when the agent started may be off (network,
+/// whole seconds), in seconds.
+pub const BOOT_MARGIN_SECONDS: u64 = 5;
 
 /// Modes. `approve` is the default; only admins set `auto`.
 pub const APPROVE: &str = "approve";
@@ -631,9 +634,55 @@ fn close(c: &Connection, run_id: i64, status: &str, detail: &str) -> rusqlite::R
     Ok(())
 }
 
+/// Whether the target already runs everything `to_key` names (`container=
+/// digest` among that container's repo digests, `version=` its installed
+/// version): the approved version is there, pulled by another digest of the
+/// same image or by hand.
+pub fn already_on(c: &Connection, target_id: i64, to_key: &str) -> rusqlite::Result<bool> {
+    let mut found = 0;
+    for part in to_key.split(',').filter(|p| !p.is_empty()) {
+        let Some((name, want)) = part.split_once('=') else {
+            return Ok(false);
+        };
+        let on = if name == "version" {
+            c.query_row(
+                "SELECT installed_version FROM targets WHERE id = ?1",
+                [target_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some_and(|v| !v.is_empty() && v == want)
+        } else {
+            c.query_row(
+                "SELECT local_digest, local_digests FROM target_images
+                 WHERE target_id = ?1 AND container = ?2",
+                params![target_id, name],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .is_some_and(|(one, all)| one == want || all.split_whitespace().any(|d| d == want))
+        };
+        if !on {
+            return Ok(false);
+        }
+        found += 1;
+    }
+    Ok(found > 0)
+}
+
 /// The next job for a server's agent: its oldest queued run, checked once
 /// more (one run at a time per server). Runs that can't go any more lapse.
 pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value>> {
+    dispatch_to(c, server_id, None)
+}
+
+/// [`dispatch`] for the agent process `boot` (its boot id, `None` for an
+/// agent before 0.2.1), which the run remembers.
+pub fn dispatch_to(
+    c: &Connection,
+    server_id: i64,
+    boot: Option<&str>,
+) -> rusqlite::Result<Option<Value>> {
     let busy: bool = c.query_row(
         "SELECT EXISTS (SELECT 1 FROM runs WHERE server_id = ?1 AND status = 'running')",
         [server_id],
@@ -662,6 +711,19 @@ pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value
                 close(c, id, LAPSED, "the target is gone")?;
                 continue;
             };
+            // Nothing to do: the approved version already runs.
+            if already_on(c, target_id, &run.to_key)? {
+                close(
+                    c,
+                    id,
+                    SUCCEEDED,
+                    &format!(
+                        "already up to date: {} already runs the approved version; nothing was stopped",
+                        run.target_name
+                    ),
+                )?;
+                continue;
+            }
             // The approval is for one version: a newer one needs a new one.
             if t.available_key != run.to_key {
                 let why = if t.status == targets::UPDATE {
@@ -705,9 +767,9 @@ pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value
         }
         let job = job_json(c, &run)?;
         c.execute(
-            "UPDATE runs SET status = 'running', job = ?2, started_at = datetime('now'),
-                 last_report_at = datetime('now') WHERE id = ?1",
-            params![id, job.to_string()],
+            "UPDATE runs SET status = 'running', job = ?2, agent_boot = ?3,
+                 started_at = datetime('now'), last_report_at = datetime('now') WHERE id = ?1",
+            params![id, job.to_string(), boot],
         )?;
         return Ok(Some(job));
     }
@@ -821,6 +883,81 @@ pub fn close_silent(c: &Connection) -> rusqlite::Result<Vec<Run>> {
         }
     }
     Ok(out)
+}
+
+/// Closes the server's running runs that a restarted agent can't finish:
+/// handed to another agent process than `boot` (the boot id the agent
+/// reports now), or, for runs from before 0.2.1 that don't know their
+/// process, started before this one did (`uptime` seconds ago). They are
+/// "needs you": the target may be on the new or the old version.
+pub fn close_interrupted(
+    c: &Connection,
+    server_id: i64,
+    boot: &str,
+    uptime: Option<u64>,
+) -> rusqlite::Result<Vec<Run>> {
+    // Clamped: a modifier SQLite can't read would make the test NULL.
+    let started = uptime.map(|u| {
+        format!(
+            "-{} seconds",
+            u.min(100 * 365 * 86_400) + BOOT_MARGIN_SECONDS
+        )
+    });
+    let ids: Vec<i64> = c
+        .prepare(
+            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'running' AND (
+                 (agent_boot IS NOT NULL AND agent_boot != ?2)
+                 OR (agent_boot IS NULL AND ?3 IS NOT NULL AND started_at < datetime('now', ?3)))",
+        )?
+        .query_map(params![server_id, boot, started], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut out = Vec::new();
+    for id in ids {
+        let Some(run) = get(c, id)? else { continue };
+        let name = &run.target_name;
+        let mut detail = format!(
+            "The agent restarted during the run; check {name}: it may be on the new or the old version."
+        );
+        // Recreating renames the old container first; nothing removes it now.
+        let recreated = steps(c, id)?.iter().any(|s| s.step == "update");
+        if recreated && (run.target_kind == CONTAINER || run.target_kind == UNRAID) {
+            detail.push_str(&format!(
+                " A stopped container {name}-wren-old-{id} may be left: it is the old one, kept for going back by hand; remove it once {name} works."
+            ));
+        }
+        close(c, id, ROLLBACK_FAILED, &detail)?;
+        // A fresh inventory shows what runs now.
+        targets::request_check(c, server_id, run.target_id)?;
+        if let Some(r) = get(c, id)? {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+/// What follows runs [`close_interrupted`] closed: the pages, the checks,
+/// the Vigilant Vole windows, the next queued run and the urgent "needs
+/// you" notification.
+pub fn after_interrupted(wren: &Wren, runs: Vec<Run>) {
+    if runs.is_empty() {
+        return;
+    }
+    let _ = wren.changes.send(());
+    wren.checks.notify_one();
+    wren.vv_sync.notify_one();
+    wren.jobs.notify_waiters();
+    let w = wren.clone();
+    tokio::spawn(async move {
+        for run in runs {
+            tracing::error!(
+                run_id = run.id,
+                server_id = run.server_id,
+                target = %run.target_name,
+                "run closed: the agent restarted during it"
+            );
+            crate::run_notify::send_result(&w, &run).await;
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,6 +1291,8 @@ pub fn set_server_mode(
 pub struct PollQuery {
     /// Seconds to wait for a job (at most [`POLL_SECONDS`]).
     pub wait: Option<u64>,
+    /// The agent process's boot id (0.2.1+; see [`close_interrupted`]).
+    pub boot: Option<String>,
 }
 
 pub(crate) async fn agent(wren: &Wren, headers: &HeaderMap) -> Result<i64, Box<Response>> {
@@ -1185,21 +1324,35 @@ pub async fn jobs(
     let hash = vole_kit::auth::tokens::token_from_headers(&headers)
         .map(|t| vole_kit::auth::tokens::hash(&t))
         .unwrap_or_default();
+    let boot = q.boot.as_deref().and_then(crate::agent_api::boot_id);
     loop {
         let notified = wren.jobs.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        let h = hash.clone();
-        match wren
+        let (h, b) = (hash.clone(), boot.clone());
+        let polled = wren
             .core
             .with_conn(move |c| {
                 if crate::db::by_token_hash(c, &h)?.map(|(id, _)| id) != Some(server_id) {
                     return Ok(Err(()));
                 }
-                Ok(Ok(dispatch(c, server_id)?))
+                // A poll from a new agent process: runs handed to the one
+                // before can't finish (a restart mid-run).
+                let closed = match &b {
+                    Some(b) => close_interrupted(c, server_id, b, None)?,
+                    None => Vec::new(),
+                };
+                Ok(Ok((closed, dispatch_to(c, server_id, b.as_deref())?)))
             })
-            .await
-        {
+            .await;
+        let polled = match polled {
+            Ok(Ok((closed, job))) => {
+                after_interrupted(&wren, closed);
+                Ok(Ok(job))
+            }
+            other => other.map(|r| r.map(|(_, job)| job)),
+        };
+        match polled {
             Ok(Err(())) => return ApiError::Unauthorized.into_response(),
             Ok(Ok(None)) => {}
             Ok(Ok(Some(job))) => {

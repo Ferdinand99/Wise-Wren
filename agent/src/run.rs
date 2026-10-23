@@ -1269,6 +1269,18 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
             return;
         }
     };
+    // The approved digest already runs (pulled by another digest of the
+    // same image): nothing is stopped or recreated. Not for script stacks,
+    // whose script may do more than the images show.
+    if plan.kind() != Kind::Script && jobs::already_on(&job, &plan.ctrs) {
+        let why = format!(
+            "already up to date: {} already runs the approved version; nothing was stopped",
+            job.target.name
+        );
+        tracing::info!(run, "{why}");
+        report.finish("succeeded", &why).await;
+        return;
+    }
     let outcome = execute(&DockerHost { config }, &report, &plan).await;
     tracing::info!(run, outcome, "run finished");
 }

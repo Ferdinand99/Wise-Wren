@@ -141,11 +141,24 @@ impl ImageRef {
 /// that repository: built locally, or tagged under another name. Never a
 /// guess from another repository (it would show a false "update").
 pub fn local_digest(image: &ImageRef, repo_digests: &[String]) -> Option<String> {
-    repo_digests.iter().find_map(|entry| {
-        let (name, digest) = entry.split_once('@')?;
+    local_digests(image, repo_digests).into_iter().next()
+}
+
+/// Every repo digest of the image for `image`'s repository. An image pulled
+/// again by another digest of the same content (a new index over the same
+/// platform manifest) keeps both: each of them is the image.
+pub fn local_digests(image: &ImageRef, repo_digests: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in repo_digests {
+        let Some((name, digest)) = entry.split_once('@') else {
+            continue;
+        };
         let (registry, repo) = split_name(name);
-        (registry == image.registry && repo == image.repo).then(|| digest.to_string())
-    })
+        if registry == image.registry && repo == image.repo && !out.iter().any(|d| d == digest) {
+            out.push(digest.to_string());
+        }
+    }
+    out
 }
 
 /// What a registry answered for a reference.
@@ -540,6 +553,13 @@ mod tests {
         assert_eq!(local_digest(&pg, &full).as_deref(), Some("sha256:b0f9"));
         // Another repository's digest is never used.
         assert_eq!(local_digest(&pg, &digests[..1]), None);
+        // Pulled again by a new index digest: both are the image.
+        let both = [
+            "postgres@sha256:1267".to_string(),
+            "docker.io/library/postgres@sha256:edb0".to_string(),
+            "other/postgres@sha256:ffff".to_string(),
+        ];
+        assert_eq!(local_digests(&pg, &both), ["sha256:1267", "sha256:edb0"]);
         let ghcr = ImageRef::parse("ghcr.io/a/b:1").unwrap();
         assert_eq!(
             local_digest(&ghcr, &["ghcr.io/a/b@sha256:c".into()]).as_deref(),

@@ -1,8 +1,11 @@
 //! The heartbeat: what the agent reports to Wren, and the client that posts
 //! it (`POST /api/agent/v1/heartbeat` with `Authorization: Bearer wwa_…`).
 
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 use std::path::Path;
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -14,6 +17,36 @@ pub const PATH: &str = "/api/agent/v1/heartbeat";
 /// This agent's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// This agent process: a random id and when it started. Wren closes a run
+/// handed to another process (the agent restarted mid-run: nothing will
+/// finish it).
+pub struct Boot {
+    pub id: String,
+    started: Instant,
+}
+
+impl Boot {
+    pub fn uptime_seconds(&self) -> u64 {
+        self.started.elapsed().as_secs()
+    }
+}
+
+/// This process's [`Boot`], made on the first call (at start).
+pub fn boot() -> &'static Boot {
+    static BOOT: OnceLock<Boot> = OnceLock::new();
+    BOOT.get_or_init(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        // Randomly keyed per process: what the clock doesn't add.
+        let salt = RandomState::new().hash_one(nanos);
+        Boot {
+            id: format!("{nanos:x}-{:x}-{salt:x}", std::process::id()),
+            started: Instant::now(),
+        }
+    })
+}
+
 /// What one heartbeat reports.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Heartbeat {
@@ -23,6 +56,9 @@ pub struct Heartbeat {
     pub docker_version: String,
     pub docker_error: String,
     pub unraid: bool,
+    /// This process ([`boot`]).
+    pub boot_id: String,
+    pub uptime_seconds: u64,
 }
 
 /// Reads Docker on `socket` and looks for Unraid under `root`.
@@ -35,6 +71,8 @@ pub async fn collect(socket: &str, root: &Path) -> Heartbeat {
         docker_version: facts.version,
         docker_error: facts.error,
         unraid: docker::is_unraid(root),
+        boot_id: boot().id.clone(),
+        uptime_seconds: boot().uptime_seconds(),
     }
 }
 
