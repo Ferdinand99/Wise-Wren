@@ -1,8 +1,10 @@
-//! Runs in the web UI (design §9): approving, skipping and snoozing updates
-//! (one or several), a target's mode and health period, the run page with
-//! each step live, cancelling a run before anything stops and rolling back
-//! a successful one. Everyone signed in sees runs; editors and admins act,
-//! and every action is stored with who did it.
+//! Runs in the web UI (design §9): approving (now or for a chosen time),
+//! skipping and snoozing updates (one or several), a target's mode, health
+//! period and "require VV", a server's mode and auto window, the run page
+//! with each step live, cancelling a run before anything stops, rolling back
+//! a successful one, and the Schedules page. Everyone signed in sees runs;
+//! editors and admins act (only admins turn automatic updates on), and every
+//! action is stored with who did it.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -24,12 +26,16 @@ use vole_kit::state::Core;
 
 use crate::Wren;
 use crate::runs::{self, Refusal, Run, Step};
+use crate::schedule;
 use crate::updates_notify::kind_label;
 
 pub fn router() -> Router<Core> {
     Router::new()
         .route("/updates/approve", post(approve_many))
         .route("/targets/{id}/approve", post(approve_one))
+        .route("/targets/{id}/schedule", post(schedule_one))
+        .route("/runs/{id}/reschedule", post(reschedule))
+        .route("/schedules", get(schedules_page))
         .route("/targets/{id}/skip", post(skip))
         .route("/targets/{id}/snooze", post(snooze))
         .route("/targets/{id}/resume", post(resume))
@@ -78,6 +84,9 @@ fn step_label(step: &str) -> &'static str {
         "snapshot" => "runs.step_snapshot",
         "update" => "runs.step_update",
         "health" => "runs.step_health",
+        "maintenance" => "runs.step_maintenance",
+        "monitors" => "runs.step_monitors",
+        "close" => "runs.step_close",
         _ => "runs.step_rollback",
     })
 }
@@ -102,9 +111,42 @@ pub struct RunView {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub cancel_requested: bool,
+    pub trigger: String,
+    pub trigger_label: &'static str,
+    /// When a scheduled run starts, in the site's time zone.
+    pub scheduled_for: Option<String>,
+    /// The same, `YYYY-MM-DDTHH:MM` for a date-time field.
+    pub scheduled_input: String,
+    pub vv_state: String,
+    pub vv_window_id: Option<i64>,
 }
 
 impl RunView {
+    /// Shows the scheduled time in `tz`.
+    pub fn localize(mut self, tz: &jiff::tz::TimeZone) -> RunView {
+        if let Some(at) = self.scheduled_for.take() {
+            let local = schedule::local(&at, tz);
+            self.scheduled_input = local.replacen(' ', "T", 1);
+            self.scheduled_for = Some(local);
+        }
+        self
+    }
+
+    /// Waiting for its scheduled time.
+    pub fn waiting(&self) -> bool {
+        self.status == runs::QUEUED && self.scheduled_for.is_some()
+    }
+
+    /// The Vigilant Vole window in words ('' when there is none).
+    pub fn vv_label(&self) -> &'static str {
+        match self.vv_state.as_str() {
+            "planned" | "replan" => i18n::t("vv.window_planned"),
+            "open" => i18n::t("vv.window_open"),
+            "closed" => i18n::t("vv.window_closed"),
+            _ => "",
+        }
+    }
+
     pub fn new(r: Run) -> RunView {
         let (status_class, status_label) = run_look(&r.status);
         RunView {
@@ -126,6 +168,12 @@ impl RunView {
             started_at: r.started_at,
             finished_at: r.finished_at,
             cancel_requested: r.cancel_requested,
+            trigger_label: crate::run_notify::trigger_label(&r.trigger),
+            trigger: r.trigger,
+            scheduled_for: r.scheduled_for,
+            scheduled_input: String::new(),
+            vv_state: r.vv_state,
+            vv_window_id: r.vv_window_id,
         }
     }
 
@@ -163,19 +211,25 @@ impl StepView {
 
 /// The newest runs (`target_id`: of one target).
 pub async fn recent(core: &Core, target_id: Option<i64>, limit: i64) -> ApiResult<Vec<RunView>> {
-    let rows = core
+    let (rows, tz) = core
         .with_conn(move |c| {
-            runs::list(
-                c,
-                runs::Filter {
-                    target_id,
-                    server_id: None,
-                    limit,
-                },
-            )
+            Ok((
+                runs::list(
+                    c,
+                    runs::Filter {
+                        target_id,
+                        server_id: None,
+                        limit,
+                    },
+                )?,
+                schedule::site_tz(c)?,
+            ))
         })
         .await?;
-    Ok(rows.into_iter().map(RunView::new).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| RunView::new(r).localize(&tz))
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +260,84 @@ fn back(f: &BTreeMap<String, Vec<String>>, fallback: String) -> Redirect {
 
 fn changed(wren: &Wren) {
     wren.jobs.notify_waiters();
+    wren.vv_sync.notify_one();
     let _ = wren.changes.send(());
+}
+
+/// A refusal as a flash message.
+fn refused(jar: SignedCookieJar, r: Refusal) -> Result<SignedCookieJar, ApiError> {
+    match r {
+        Refusal::NotFound => Err(ApiError::NotFound),
+        r => Ok(flash(jar, "error", r.message())),
+    }
+}
+
+/// A date-time field (site time zone) as a timestamp.
+async fn parse_local(core: &Core, raw: &str) -> ApiResult<Option<jiff::Timestamp>> {
+    let tz = core.with_conn(|c| schedule::site_tz(c)).await?;
+    Ok(schedule::parse_at(raw, &tz))
+}
+
+/// Approves the target's available version for a chosen time.
+async fn schedule_one(
+    Extension(wren): Extension<Wren>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> ApiResult<Response> {
+    user.require_editor()?;
+    let f = form(&body);
+    let key = field(&f, "key").to_string();
+    let to = back(&f, format!("/targets/{id}"));
+    let Some(at) = parse_local(&wren.core, field(&f, "at")).await? else {
+        return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response());
+    };
+    let who = user.username.clone();
+    let res = wren
+        .core
+        .with_conn(move |c| runs::approve_at(c, id, Some(&key), &who, Some(at)))
+        .await?;
+    let jar = match res {
+        Ok(run) => {
+            changed(&wren);
+            flash(
+                jar,
+                "success",
+                i18n::tf("runs.scheduled", &[("id", &run.to_string())]),
+            )
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, to).into_response())
+}
+
+async fn reschedule(
+    Extension(wren): Extension<Wren>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> ApiResult<Response> {
+    user.require_editor()?;
+    let f = form(&body);
+    let to = back(&f, format!("/runs/{id}"));
+    let Some(at) = parse_local(&wren.core, field(&f, "at")).await? else {
+        return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response());
+    };
+    let who = user.username.clone();
+    let res = wren
+        .core
+        .with_conn(move |c| runs::reschedule(c, id, at, &who))
+        .await?;
+    let jar = match res {
+        Ok(()) => {
+            changed(&wren);
+            flash(jar, "success", i18n::t("runs.rescheduled"))
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, to).into_response())
 }
 
 async fn approve_one(
@@ -376,12 +507,14 @@ async fn resume(
     Ok((jar, back(&f, format!("/targets/{id}"))).into_response())
 }
 
-/// A mode as a form sends it: `""` (the server's), `approve` or `notify`.
-fn parse_mode(raw: &str) -> Result<Option<&'static str>, String> {
+/// A mode as a form sends it: `""` (the server's), `approve`, `notify` or
+/// `auto`.
+pub fn parse_mode(raw: &str) -> Result<Option<&'static str>, String> {
     match raw {
         "" => Ok(None),
         runs::APPROVE => Ok(Some(runs::APPROVE)),
         runs::NOTIFY => Ok(Some(runs::NOTIFY)),
+        runs::AUTO => Ok(Some(runs::AUTO)),
         _ => Err(i18n::t("runs.err_mode").to_string()),
     }
 }
@@ -416,16 +549,24 @@ async fn target_policy(
             }
         },
     };
-    let who = user.username.clone();
-    if !wren
+    let settings = runs::TargetSettings {
+        mode: mode.map(str::to_string),
+        health_seconds: health,
+        require_vv: matches!(field(&f, "require_vv"), "true" | "1" | "on"),
+    };
+    let (who, admin) = (user.username.clone(), user.is_admin());
+    let res = wren
         .core
-        .with_conn(move |c| runs::set_target_policy(c, id, mode, health, &who))
-        .await?
-    {
-        return Err(ApiError::NotFound);
-    }
-    changed(&wren);
-    Ok((flash(jar, "success", i18n::t("runs.policy_saved")), to).into_response())
+        .with_conn(move |c| runs::set_target_policy(c, id, &settings, &who, admin))
+        .await?;
+    let jar = match res {
+        Ok(()) => {
+            changed(&wren);
+            flash(jar, "success", i18n::t("runs.policy_saved"))
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, to).into_response())
 }
 
 async fn server_mode(
@@ -442,16 +583,35 @@ async fn server_mode(
         Ok(Some(m)) => m,
         _ => return Ok((flash(jar, "error", i18n::t("runs.err_mode")), to).into_response()),
     };
-    let who = user.username.clone();
-    if !wren
+    // The window fields come only with an admin's form.
+    let window = if f.contains_key("auto_start") {
+        match (field(&f, "auto_start"), field(&f, "auto_end")) {
+            ("", "") => Some(None),
+            (s, e) => match (schedule::normal_hhmm(s), schedule::normal_hhmm(e)) {
+                (Some(s), Some(e)) if s != e => Some(Some((s, e))),
+                _ => {
+                    return Ok(
+                        (flash(jar, "error", i18n::t("runs.err_window")), to).into_response()
+                    );
+                }
+            },
+        }
+    } else {
+        None
+    };
+    let (who, admin) = (user.username.clone(), user.is_admin());
+    let res = wren
         .core
-        .with_conn(move |c| runs::set_server_mode(c, id, mode, &who))
-        .await?
-    {
-        return Err(ApiError::NotFound);
-    }
-    changed(&wren);
-    Ok((flash(jar, "success", i18n::t("runs.policy_saved")), to).into_response())
+        .with_conn(move |c| runs::set_server_mode(c, id, mode, window, &who, admin))
+        .await?;
+    let jar = match res {
+        Ok(()) => {
+            changed(&wren);
+            flash(jar, "success", i18n::t("runs.policy_saved"))
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, to).into_response())
 }
 
 async fn cancel(
@@ -526,7 +686,7 @@ struct RunBody {
 }
 
 async fn body(core: &Core, id: i64, can_act: bool) -> ApiResult<RunBody> {
-    let (run, steps, newest) = core
+    let (run, steps, newest, tz) = core
         .with_conn(move |c| {
             let run = runs::get(c, id)?;
             let steps = runs::steps(c, id)?;
@@ -538,10 +698,10 @@ async fn body(core: &Core, id: i64, can_act: bool) -> ApiResult<RunBody> {
                 )?,
                 None => None,
             };
-            Ok((run, steps, newest))
+            Ok((run, steps, newest, schedule::site_tz(c)?))
         })
         .await?;
-    let run = RunView::new(run.ok_or(ApiError::NotFound)?);
+    let run = RunView::new(run.ok_or(ApiError::NotFound)?).localize(&tz);
     let can_roll_back =
         can_act && !run.is_rollback && run.status == runs::SUCCEEDED && newest == Some(run.id);
     Ok(RunBody {
@@ -616,5 +776,70 @@ async fn run_live(
                 }
             }
         },
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+#[derive(Template)]
+#[template(path = "schedules.html")]
+struct SchedulesPage {
+    ctx: PageCtx,
+    tz: String,
+    runs: Vec<RunView>,
+    servers: Vec<schedule::ServerAuto>,
+    can_act: bool,
+}
+
+impl SchedulesPage {
+    pub fn mode_label(&self, mode: &str) -> &'static str {
+        i18n::t(match mode {
+            runs::AUTO => "runs.mode_auto",
+            runs::NOTIFY => "runs.mode_notify",
+            _ => "runs.mode_approve",
+        })
+    }
+}
+
+/// Upcoming scheduled updates, and per server its auto window and the
+/// targets that update on their own (design §9).
+async fn schedules_page(
+    State(core): State<Core>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+) -> ApiResult<impl IntoResponse> {
+    let (runs, servers, tz, tz_name) = core
+        .with_conn(|c| {
+            Ok((
+                runs::scheduled(c)?,
+                schedule::servers_auto(c, jiff::Timestamp::now())?,
+                schedule::site_tz(c)?,
+                schedule::site_tz_name(c)?,
+            ))
+        })
+        .await?;
+    let (ctx, jar) = PageCtx::build(
+        &core,
+        Some(&user),
+        &jar,
+        i18n::t("schedules.title"),
+        "schedules",
+        "",
+    )
+    .await;
+    Ok((
+        jar,
+        HtmlTemplate(SchedulesPage {
+            ctx,
+            tz: tz_name,
+            runs: runs
+                .into_iter()
+                .map(|r| RunView::new(r).localize(&tz))
+                .collect(),
+            servers,
+            can_act: user.can_edit(),
+        }),
     ))
 }

@@ -36,3 +36,6 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | host name | ホスト名 | VV: 「ホスト」 |
 | operating system | OS | as Kestrel |
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; 「Dockerソケット」 |
+| auto window | 自動更新時間帯 | per-server window in which automatic updates may run |
+| scheduled update | 予約済みのアップデート | an update approved to run at a chosen time |
+| monitor (Vigilant Vole) | モニター | VV: 「モニター」 |

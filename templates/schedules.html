@@ -1,0 +1,71 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("schedules.title"), tr1("schedules.sub", "tz", tz)) %}{% endcall %}
+
+<div class="stack">
+  <section class="card card-flush" aria-labelledby="upcoming-title">
+    <div class="card-head card-pad"><h2 class="card-title" id="upcoming-title">{{ tr("schedules.upcoming") }}</h2></div>
+    {%- if runs.is_empty() %}
+    <div class="card-pad"><p class="help">{{ tr("schedules.none") }}</p></div>
+    {%- else %}
+    <div class="table-wrap">
+      <table class="table table-stack" id="scheduled">
+        <thead><tr><th>{{ tr("schedules.col_when") }}</th><th>{{ tr("targets.col_target") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("vv.window") }}</th><th>{{ tr("runs.requested_by") }}</th>{% if can_act %}<th><span class="vh">{{ tr("common.actions") }}</span></th>{% endif %}</tr></thead>
+        <tbody>
+          {%- for r in runs %}
+          <tr>
+            <td class="td-primary"><a href="/runs/{{ r.id }}">{% if let Some(at) = r.scheduled_for %}{{ at }}{% endif %}</a></td>
+            <td data-label="{{ tr("targets.col_target") }}">{% if let Some(t) = r.target_id %}<a href="/targets/{{ t }}">{{ r.target_name }}</a>{% else %}{{ r.target_name }}{% endif %} <span class="muted">{{ r.server_name }}</span></td>
+            <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ r.shown }}</td>
+            <td data-label="{{ tr("vv.window") }}">{% if r.vv_label().is_empty() %}–{% else %}{{ r.vv_label() }}{% if let Some(w) = r.vv_window_id %} <span class="muted">#{{ w }}</span>{% endif %}{% endif %}</td>
+            <td data-label="{{ tr("runs.requested_by") }}">{{ r.requested_by }}</td>
+            {%- if can_act %}
+            <td class="td-actions">
+              <form method="post" action="/runs/{{ r.id }}/reschedule" class="cluster">
+                <input type="hidden" name="back" value="/schedules">
+                <label class="vh" for="at-{{ r.id }}">{{ tr("schedules.col_when") }}</label>
+                <input id="at-{{ r.id }}" type="datetime-local" name="at" value="{{ r.scheduled_input }}" required>
+                <button type="submit" class="btn btn-secondary btn-sm">{{ tr("schedules.move") }}</button>
+                <button type="submit" class="btn btn-ghost btn-sm" formaction="/runs/{{ r.id }}/cancel">{{ tr("runs.cancel") }}</button>
+              </form>
+            </td>
+            {%- endif %}
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+    {%- endif %}
+  </section>
+
+  <section class="card card-flush" aria-labelledby="auto-title">
+    <div class="card-head card-pad">
+      <div>
+        <h2 class="card-title" id="auto-title">{{ tr("schedules.auto") }}</h2>
+        <p class="card-sub">{{ tr("schedules.auto_sub") }}</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="table table-stack" id="auto-windows">
+        <thead><tr><th>{{ tr("updates.col_server") }}</th><th>{{ tr("runs.server_mode") }}</th><th>{{ tr("schedules.window") }}</th><th>{{ tr("schedules.auto_targets") }}</th></tr></thead>
+        <tbody>
+          {%- for s in servers %}
+          <tr data-mode="{{ s.mode }}">
+            <td class="td-primary"><a href="/servers/{{ s.id }}">{{ s.name }}</a></td>
+            <td data-label="{{ tr("runs.server_mode") }}">{{ mode_label(s.mode.as_str()) }}</td>
+            <td data-label="{{ tr("schedules.window") }}">{% if let Some((a, b)) = s.window %}{{ a }}–{{ b }}{% if s.open_now %} <span class="badge">{{ tr("schedules.open_now") }}</span>{% endif %}{% else %}{{ tr("schedules.no_window") }}{% endif %}</td>
+            <td data-label="{{ tr("schedules.auto_targets") }}">{% if s.targets.is_empty() %}<span class="muted">{{ tr("schedules.no_auto_targets") }}</span>{% else %}{% for (id, name) in s.targets %}<a href="/targets/{{ id }}">{{ name }}</a>{% if !loop.last %}, {% endif %}{% endfor %}{% endif %}</td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}

@@ -70,6 +70,10 @@ pub struct TargetView {
     pub source_url: String,
     pub interval: String,
     pub server_interval: i64,
+    /// Updates on its own in the server's auto window.
+    pub auto: bool,
+    /// Wren's or VV's own image: never updated by Wren in v1.
+    pub own: bool,
 }
 
 /// The status's design-system class and label.
@@ -140,6 +144,8 @@ impl TargetView {
                 .map(|h| h.to_string())
                 .unwrap_or_default(),
             server_interval: t.server_interval_hours,
+            auto: false,
+            own: false,
         }
     }
 
@@ -189,16 +195,30 @@ impl ImageView {
 pub async fn server_targets(core: &Core, server_id: i64) -> ApiResult<Vec<TargetView>> {
     let rows = core
         .with_conn(move |c| {
-            targets::list(
+            let list = targets::list(
                 c,
                 Filter {
                     server_id: Some(server_id),
                     updates_only: false,
                 },
-            )
+            )?;
+            let mut out = Vec::new();
+            for t in list {
+                let p = crate::runs::policy(c, t.id)?.unwrap_or_default();
+                out.push((t, p));
+            }
+            Ok(out)
         })
         .await?;
-    Ok(rows.into_iter().map(TargetView::new).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(t, p)| {
+            let mut v = TargetView::new(t);
+            v.auto = p.updates_itself();
+            v.own = p.own;
+            v
+        })
+        .collect())
 }
 
 /// How many targets have an update (the Overview).
@@ -225,6 +245,10 @@ struct UpdatesPage {
 pub struct UpdateRow {
     pub t: TargetView,
     pub notify_only: bool,
+    /// Wren's or VV's own image: never updated by Wren in v1.
+    pub own: bool,
+    /// Updates on its own in the server's auto window.
+    pub auto: bool,
     pub skipped: bool,
     pub snoozed_until: Option<String>,
     pub active: Option<crate::run_pages::RunView>,
@@ -233,7 +257,7 @@ pub struct UpdateRow {
 impl UpdateRow {
     /// Approve, skip and snooze apply.
     pub fn approvable(&self) -> bool {
-        !self.notify_only && self.active.is_none() && !self.t.files_missing()
+        !self.notify_only && !self.own && self.active.is_none() && !self.t.files_missing()
     }
 }
 
@@ -260,8 +284,9 @@ pub async fn update_rows(core: &Core) -> ApiResult<Vec<UpdateRow>> {
     Ok(rows
         .into_iter()
         .map(|(t, p, active)| UpdateRow {
-            notify_only: crate::runs::effective_mode(p.mode.as_deref(), &p.server_mode)
-                != crate::runs::APPROVE,
+            notify_only: p.effective() == crate::runs::NOTIFY,
+            own: p.own,
+            auto: p.updates_itself(),
             skipped: p.skipped,
             snoozed_until: p.snoozed_until,
             active: active.map(crate::run_pages::RunView::new),
@@ -315,11 +340,31 @@ struct TargetPage {
     health: String,
     runs: Vec<crate::run_pages::RunView>,
     show_target: bool,
+    is_admin: bool,
+    require_vv: bool,
+    /// The server's auto window.
+    window: Option<(String, String)>,
+    vv: crate::vv_pages::VvCard,
+    /// The site's time zone (scheduled times are in it).
+    tz: String,
 }
 
 impl TargetPage {
     pub fn mode_is(&self, m: &str) -> bool {
         self.mode == m
+    }
+
+    /// `auto` may be chosen (admins), or is the current choice.
+    pub fn auto_offered(&self) -> bool {
+        self.is_admin || self.mode == crate::runs::AUTO
+    }
+
+    pub fn server_mode_label(&self) -> &'static str {
+        i18n::t(match self.server_mode.as_str() {
+            crate::runs::NOTIFY => "runs.mode_server_notify",
+            crate::runs::AUTO => "runs.mode_server_auto",
+            _ => "runs.mode_server_approve",
+        })
     }
 }
 
@@ -337,20 +382,23 @@ async fn target_page(
 ) -> ApiResult<impl IntoResponse> {
     let target = TargetView::new(load(&core, id).await?);
     let back_href = format!("/servers/{}", target.server_id);
-    let (images, policy, active) = core
+    let (images, policy, active, tz) = core
         .with_conn(move |c| {
             Ok((
                 targets::images(c, id)?,
                 crate::runs::policy(c, id)?.unwrap_or_default(),
                 crate::runs::active_for(c, id)?,
+                crate::schedule::site_tz_name(c)?,
             ))
         })
         .await?;
+    let vv = crate::vv_pages::card(&core, id, user.is_admin()).await?;
     let images = images.into_iter().map(ImageView::new).collect();
     let runs = crate::run_pages::recent(&core, Some(id), 20).await?;
     let row = UpdateRow {
-        notify_only: crate::runs::effective_mode(policy.mode.as_deref(), &policy.server_mode)
-            != crate::runs::APPROVE,
+        notify_only: policy.effective() == crate::runs::NOTIFY,
+        own: policy.own,
+        auto: policy.updates_itself(),
         skipped: policy.skipped,
         snoozed_until: policy.snoozed_until.clone(),
         active: active.map(crate::run_pages::RunView::new),
@@ -375,6 +423,11 @@ async fn target_page(
                 .unwrap_or_default(),
             runs,
             show_target: false,
+            is_admin: user.is_admin(),
+            require_vv: policy.require_vv,
+            window: policy.window.clone(),
+            vv,
+            tz,
         }),
     ))
 }

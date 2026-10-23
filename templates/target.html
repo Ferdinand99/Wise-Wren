@@ -19,6 +19,13 @@
   {%- if target.files_missing() %}
   {{ m::callout("warning", tr1("targets.files_missing_help", "dir", target.working_dir)) }}
   {%- endif %}
+  {%- if row.own %}
+  {{ m::callout("info", tr("runs.own_help"), tr("runs.own")) }}
+  {%- else if row.auto %}
+  {%- if let Some((a, b)) = window %}
+  {{ m::callout("info", tr2("runs.auto_help", "from", a, "to", b), tr("runs.auto_badge")) }}
+  {%- endif %}
+  {%- endif %}
   <section class="card" aria-labelledby="versions-title">
     <div class="card-head"><h2 class="card-title" id="versions-title">{{ tr("targets.versions") }}</h2></div>
     <dl class="dl">
@@ -77,6 +84,8 @@
     <div class="card-head"><h2 class="card-title" id="update-title">{{ tr("runs.update_card") }}</h2></div>
     {%- if let Some(run) = row.active %}
     <p><a href="/runs/{{ run.id }}" class="pill status-{{ run.status_class }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</a> <a href="/runs/{{ run.id }}">{{ tr1("runs.title_short", "id", run.id) }}</a></p>
+    {%- else if row.own %}
+    <p class="help">{{ tr("runs.own_help") }}</p>
     {%- else if row.notify_only %}
     <p class="help">{{ tr("runs.notify_only_help") }}</p>
     {%- else if target.files_missing() %}
@@ -95,6 +104,15 @@
       <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/snooze" name="hours" value="168">{{ tr("updates.snooze_week") }}</button>
     </form>
     <p class="help">{{ tr("runs.approve_help") }}</p>
+    <form method="post" action="/targets/{{ target.id }}/schedule" class="cluster">
+      <input type="hidden" name="key" value="{{ target.available_key }}">
+      <div class="field">
+        <label class="label" for="f-at">{{ tr("runs.schedule_at") }}</label>
+        <input id="f-at" type="datetime-local" name="at" required>
+        <p class="help">{{ tr1("runs.schedule_help", "tz", tz) }}</p>
+      </div>
+      <button type="submit" class="btn btn-secondary btn-sm">{{ tr("runs.schedule") }}</button>
+    </form>
     {%- endif %}
     {%- endif %}
   </section>
@@ -116,17 +134,66 @@
       <div class="field">
         <label class="label" for="f-mode">{{ tr("runs.mode") }}</label>
         <select id="f-mode" name="mode">
-          <option value=""{% if mode_is("") %} selected{% endif %}>{% if server_mode == "notify" %}{{ tr("runs.mode_server_notify") }}{% else %}{{ tr("runs.mode_server_approve") }}{% endif %}</option>
+          <option value=""{% if mode_is("") %} selected{% endif %}>{{ server_mode_label() }}</option>
           <option value="approve"{% if mode_is("approve") %} selected{% endif %}>{{ tr("runs.mode_approve") }}</option>
           <option value="notify"{% if mode_is("notify") %} selected{% endif %}>{{ tr("runs.mode_notify") }}</option>
+          {%- if auto_offered() %}
+          <option value="auto"{% if mode_is("auto") %} selected{% endif %}>{{ tr("runs.mode_auto") }}</option>
+          {%- endif %}
         </select>
         <p class="help">{{ tr("runs.mode_help") }}</p>
       </div>
       {{ m::field_number("health_seconds", tr("runs.health"), health, tr("runs.seconds"), "5", "3600", "1", tr("runs.health_help")) }}
+      {{ m::checkbox("require_vv", tr("vv.require"), require_vv, tr("vv.require_help")) }}
       <div><button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button></div>
     </form>
   </section>
   {%- endif %}
+
+  <section class="card" aria-labelledby="vv-title">
+    <div class="card-head"><h2 class="card-title" id="vv-title">{{ tr("vv.monitors") }}</h2></div>
+    {%- if vv.links.is_empty() %}
+    <p class="help">{{ tr("vv.no_links") }}</p>
+    {%- else %}
+    <ul class="stack-sm" id="vv-links">
+      {%- for l in vv.links %}
+      <li class="cluster"><span class="badge">{{ vv.kind_label(l) }}</span> <span>{% if l.label.is_empty() %}{{ l.ref }}{% else %}{{ l.label }}{% endif %}</span>
+        {%- if is_admin %}
+        <form method="post" action="/targets/{{ target.id }}/monitors/{{ l.id }}/remove"><button type="submit" class="btn btn-ghost btn-sm">{{ tr("vv.unlink") }}</button></form>
+        {%- endif %}
+      </li>
+      {%- endfor %}
+    </ul>
+    <p class="help">{{ tr("vv.links_help") }}</p>
+    {%- endif %}
+    {%- if is_admin %}
+    {%- if !vv.connected %}
+    <p class="help"><a href="/settings/vigilant-vole">{{ tr("vv.connect_first") }}</a></p>
+    {%- else if !vv.error.is_empty() %}
+    {{ m::callout("warning", vv.error) }}
+    {%- else %}
+    <form method="post" action="/targets/{{ target.id }}/monitors" class="cluster">
+      <div class="field">
+        <label class="label" for="f-pick">{{ tr("vv.link") }}</label>
+        <select id="f-pick" name="pick" required>
+          <option value="">{{ tr("vv.pick") }}</option>
+          {%- if !vv.monitors.is_empty() %}
+          <optgroup label="{{ tr("vv.link_monitor") }}">
+            {%- for c in vv.monitors %}<option value="{{ c.value }}">{{ c.label }}</option>{% endfor %}
+          </optgroup>
+          {%- endif %}
+          {%- if !vv.tags.is_empty() %}
+          <optgroup label="{{ tr("vv.link_tag") }}">
+            {%- for c in vv.tags %}<option value="{{ c.value }}">{{ c.label }}</option>{% endfor %}
+          </optgroup>
+          {%- endif %}
+        </select>
+      </div>
+      <button type="submit" class="btn btn-secondary btn-sm">{{ tr("vv.add") }}</button>
+    </form>
+    {%- endif %}
+    {%- endif %}
+  </section>
 
   {%- if can_check %}
   <section class="card" aria-labelledby="interval-title">

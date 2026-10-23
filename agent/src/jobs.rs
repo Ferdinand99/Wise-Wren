@@ -551,6 +551,31 @@ impl JobClient {
             .cancel)
     }
 
+    /// Asks about the target's Vigilant Vole monitors: `(verdict, log)`. A
+    /// Wren without the endpoint (404) counts as `skipped`.
+    pub async fn monitors(&self, run: i64) -> Result<(String, String), String> {
+        let res = self
+            .http
+            .post(format!("{}/api/agent/v1/runs/{run}/monitors", self.server))
+            .send()
+            .await
+            .map_err(|e| format!("can't reach Wren: {e}"))?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(("skipped".into(), String::new()));
+        }
+        if !res.status().is_success() {
+            return Err(format!("Wren answered {}", res.status()));
+        }
+        let v: Value = res
+            .json()
+            .await
+            .map_err(|e| format!("Wren's answer wasn't understood: {e}"))?;
+        Ok((
+            v["verdict"].as_str().unwrap_or("skipped").to_string(),
+            v["log"].as_str().unwrap_or_default().to_string(),
+        ))
+    }
+
     pub async fn finish(&self, run: i64, outcome: &str, detail: &str) -> Result<(), String> {
         self.post(
             format!("/api/agent/v1/runs/{run}/finish"),

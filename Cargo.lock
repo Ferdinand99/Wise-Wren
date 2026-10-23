@@ -3080,6 +3080,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "futures-util",
+ "jiff",
  "regex",
  "reqwest",
  "rusqlite",

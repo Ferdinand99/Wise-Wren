@@ -1,0 +1,31 @@
+{% extends "kit/settings_layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block settings_content %}
+{% call m::page_header(tr("vv.title"), tr("vv.sub")) %}{% endcall %}
+
+<form class="form form-narrow" method="post" action="/settings/vigilant-vole">
+  <div class="card">
+    {%- if !error.is_empty() %}
+    {{ m::callout("danger", error) }}
+    {%- endif %}
+    {{ m::field_text("url", tr("vv.url"), url, "url", "http://10.0.3.26:3001", tr("vv.url_help"), true) }}
+    {{ m::field_text("token", tr("vv.token"), "", "password", placeholder(), tr("vv.token_help"), !has_token, "new-password") }}
+  </div>
+  <div class="form-actions">
+    {{ m::button(tr("common.save")) }}
+  </div>
+</form>
+
+{%- if has_token && !url.is_empty() %}
+<div class="cluster">
+  <form method="post" action="/settings/vigilant-vole/test">
+    {{ m::button(tr("vv.test"), "secondary", "pulse") }}
+  </form>
+  <form method="post" action="/settings/vigilant-vole/remove">
+    {{ m::button(tr("vv.remove"), "ghost") }}
+  </form>
+</div>
+{%- endif %}
+<p class="section-foot">{{ tr("vv.foot") }}</p>
+{% endblock %}

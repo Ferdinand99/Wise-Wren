@@ -32,8 +32,12 @@ src/
   servers.rs          # Overview and Servers pages, add/token/revoke/delete, live updates (SSE)
   agent_api.rs        # POST /api/agent/v1/heartbeat, the agent's `docker run` lines
   inventory.rs        # POST /api/agent/v1/inventory: the agent's report → targets (grouping rules)
-  runs.rs             # approvals, skip/snooze, the job channel (GET /api/agent/v1/jobs), step reports, lapses
-  run_pages.rs        # Updates actions, the run page (live), cancel, rollback, modes and health period
+  runs.rs             # approvals (now or scheduled), auto runs, skip/snooze, the job channel
+                      # (GET /api/agent/v1/jobs), step reports, lapses, modes
+  run_pages.rs        # Updates actions, the run page (live), cancel, rollback, modes, auto windows, Schedules
+  schedule.rs         # auto windows (site time zone), the auto picker, Wren's and VV's own images
+  vv.rs               # Vigilant Vole: client, maintenance windows, monitor health, the reconciler
+  vv_pages.rs         # Settings → Vigilant Vole, monitor links on the target page
   run_notify.rs       # run results, agent offline/back
   targets.rs          # targets, their images, remote digests; status derived from both
   registry.rs         # image refs, manifest HEAD with the Bearer challenge, Retry-After
@@ -51,7 +55,8 @@ locales/              # Wren's strings, 26 languages; glossaries in locales/glos
 agent/src/            # config.rs (agent.toml), docker.rs (socket, CLI), discover.rs (inventory), heartbeat.rs,
                       # jobs.rs (job channel, the re-check), run.rs (the run), snapshot.rs, lib.rs (the loops)
 tests/                # wren.rs (in-process app), discovery.rs (targets, checks, notifications against fakes),
-                      # agent.rs (the real agent against Wren), runs.rs (approvals, jobs, runs), i18n.rs
+                      # agent.rs (the real agent against Wren), runs.rs (approvals, jobs, runs),
+                      # vv.rs (VV windows and health against a fake VV, schedules, auto mode), i18n.rs
 Dockerfile            # targets `server` and `agent`
 docker/               # the server's entrypoint (PUID/PGID), the agent's PHP setting
 ```
@@ -342,13 +347,13 @@ The agent image carries what later phases need on the host: `docker-cli` with Co
 
 ## Update runs
 
-**Nothing runs unless someone allowed it** (design §2). There is no automatic mode yet (phase 5): an update runs
-only because an editor or admin approved **one exact version** of a target, and the agent on that server only
-runs what its own `agent.toml` allows.
+**Nothing runs unless someone allowed it** (design §2). An update runs only because an editor or admin approved
+**one exact version** of a target (now or for a chosen time), or because an admin set the target to `auto` and its
+server's auto window is open; and the agent on that server only runs what its own `agent.toml` allows.
 
-- **Modes.** Each server has a mode (`approve`, the default, or `notify`) on its Targets card; a target can
-  override it on its page. `notify` targets are never updated: Wren only tells you about new versions. `auto`
-  comes with phase 5 and isn't offered.
+- **Modes.** Each server has a mode (`approve`, the default, `notify` or `auto`) on its Targets card; a target can
+  override it on its page. `notify` targets are never updated: Wren only tells you about new versions. `auto` is
+  described under [Scheduling and automatic updates](#scheduling-and-automatic-updates).
 - **Approve, skip, snooze** (Updates page, target page, `POST /api/v1/targets/{id}/{approve,skip,snooze}`, MCP
   `approve_update`). An approval is for the version key shown (`version_key` in the API): if a newer version
   appears before the run starts, the approval **lapses** and nothing happens. Several updates can be approved
@@ -388,8 +393,8 @@ has a time limit.
 1. **Preflight**, nothing stopped yet: free space for the snapshot (below), the old images kept as
    `wren-rollback/<target>:<run>-<container>`, and the **approved digest pulled** (`repo@sha256:…` of the image the
    container already runs, then tagged as its reference: never "whatever the tag is now"). Wren's answer to the
-   preflight report is the last moment to cancel (and phase 5's hook for the Vigilant Vole maintenance window,
-   `runs::before_stop`). If Wren can't be reached then, the run stops with nothing changed.
+   preflight report is the last moment to cancel; before it answers, Wren opens the Vigilant Vole maintenance window
+   (`vv::before_stop`, see [Vigilant Vole](#vigilant-vole)). If Wren can't be reached then, the run stops with nothing changed.
 2. **Stop** what runs of the target (`docker stop -t 60`).
 3. **Snapshot** of the target's data paths: its own bind mounts under `roots`, never a root itself and never a path
    another container also mounts (both are listed in the log). `/mnt/user/…` is resolved to its disk or pool with
@@ -423,6 +428,57 @@ and the agent offline (once per outage, after 90 s without a heartbeat) and back
 mode and health period, the Overview the recent runs. `GET /api/v1/runs[?target_id=&server_id=&limit=]`,
 `GET /api/v1/runs/{id}` (with steps), `POST /api/v1/targets/{id}/{approve,skip,snooze}` (an API token with write
 access of an editor or admin; session cookies don't work here), MCP `list_runs` and `approve_update`.
+
+## Scheduling and automatic updates
+
+- **Approve for a time** (target page, `POST /api/v1/targets/{id}/schedule`, MCP `approve_update` with `at`): the
+  run waits until then, for the version key approved (a newer version makes it lapse). Times on pages are in the
+  site's time zone (Settings → General); the API takes RFC 3339 with an offset or UTC. A scheduled run can be moved
+  or cancelled until it starts (Schedules page, `POST /api/v1/runs/{id}/reschedule|cancel`).
+- **Automatic updates are off by default** and only admins turn them on: a server's mode `auto` (or a target's)
+  needs the server's **auto window** (`HH:MM`–`HH:MM`, site time zone, may run past midnight). A picker looks every
+  minute and queues one run per target whose effective mode is `auto`, for the version key it sees then, only
+  while the window is open; a run still queued when the window closes lapses. A target set to `approve` or
+  `notify` on an `auto` server is excluded; skipped and snoozed versions are left alone; a version whose auto run
+  failed, rolled back or was refused is not tried again on its own. Every mode change is logged (`actions`).
+- **Not updated by Wren in v1:** images named `…/wise-wren*` and `…/vigilant-vole*` (Wren, its agents, VV) can't be
+  approved, scheduled or auto-updated; their pages say so.
+- **Schedules** (nav): upcoming scheduled updates with their VV window, and per server the auto window and the
+  targets that update on their own. `GET /api/v1/schedules`, MCP `list_schedules`; modes through
+  `POST /api/v1/targets/{id}/mode`, `POST /api/v1/servers/{id}/mode` and MCP `set_mode`.
+- Run results name what started them (approved now, scheduled, automatic).
+
+## Vigilant Vole
+
+Settings → Vigilant Vole (admins): VV's address and an API token, sealed like registry credentials (AES-256-GCM
+under the instance key), never shown again; **Test connection** checks the token, the version and the monitors.
+
+**The token:** in Vigilant Vole, Settings → API tokens, create a token with access **`write`** for a user whose role
+is **editor** or **admin** (a `read` token, or a viewer's, can't change maintenance windows). Wren uses
+`GET /api/v1/me`, `/health`, `/monitors`, `/monitors/{id}/heartbeats`, `/status-pages` and
+`POST/PATCH/DELETE /api/v1/maintenance[/{id}]`. VV has no finer token scopes.
+
+**VV 0.9.0 or later** reports a monitor's real result during maintenance (`raw_status` on monitors and heartbeats).
+With an older VV the monitor health check is skipped: the container checks decide, and the run log and Test
+connection say "Vigilant Vole is too old to report results during maintenance; update to 0.9.0 or later".
+
+- **Links** (target page, admins): monitors by monitor or by VV tag (every monitor with that tag at run time).
+  A target without links relies on the container checks only, and its page says so.
+- **Step 2:** when the agent's preflight is through, Wren opens a `once` window for the linked monitors (also on
+  the status pages that show them) from now for at least two hours, or makes the run's planned window start now.
+  If VV can't be reached the run goes on without a window (the run's *Maintenance window* step says why, and a
+  notification goes out), unless the target is set to **Require Vigilant Vole**: then the run is cancelled before
+  anything stops.
+- **Step 6:** after its container checks passed, the agent asks `POST /api/agent/v1/runs/{id}/monitors` every 10 s.
+  Wren reads each monitor's heartbeats since the health step began: `ok` once every monitor's latest `raw_status`
+  is `up` and has been for the health period, `failed` (→ rollback) when a monitor is `down` after the period or
+  the period isn't reached within twice it plus 5 minutes, else `wait`. When Wren can't be reached three times in a
+  row, the container checks decide.
+- **Step 8:** a reconciler (every 30 s, and at once when a run ends) ends the window a minute after the run ended,
+  whatever the outcome (rolled back too), so the status page never shows the update as down.
+- **Planned windows:** a scheduled run with linked monitors gets a planned window in VV ahead of time (title, start,
+  twice the health period plus 15 minutes, monitors, status pages); moving the run moves it, cancelling it (or a
+  lapse) deletes it, and it becomes the run's window when the run starts.
 
 ## Translations
 

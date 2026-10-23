@@ -91,6 +91,46 @@ pub trait Report: Sync {
         ms: u64,
     ) -> impl Future<Output = Result<bool, String>> + Send;
     fn finish(&self, outcome: &str, detail: &str) -> impl Future<Output = ()> + Send;
+    /// Asks Wren whether the target's Vigilant Vole monitors are up:
+    /// `(verdict, log)` with `ok`, `wait`, `failed` or `skipped`.
+    fn monitors(&self) -> impl Future<Output = Result<(String, String), String>> + Send;
+    /// How long to wait before asking again.
+    fn monitor_pause(&self) -> Duration {
+        MONITOR_PAUSE
+    }
+}
+
+/// How often the agent asks Wren about the monitors.
+pub const MONITOR_PAUSE: Duration = Duration::from_secs(10);
+/// Failed questions in a row after which the container checks decide.
+pub const MONITOR_TRIES: u32 = 3;
+
+/// Waits for Wren's monitor verdict (design §6 step 6). `Err`: the
+/// monitors say the update is broken. When Wren can't be reached the
+/// container checks, which passed, decide.
+pub async fn wait_monitors<R: Report>(report: &R) -> Result<String, String> {
+    let mut errors = 0;
+    loop {
+        match report.monitors().await {
+            Ok((verdict, log)) => {
+                errors = 0;
+                match verdict.as_str() {
+                    "ok" | "skipped" => return Ok(log),
+                    "failed" => return Err(log),
+                    _ => {}
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                if errors >= MONITOR_TRIES {
+                    return Ok(format!(
+                        "Wren couldn't be asked about the monitors ({e}); the container checks decide"
+                    ));
+                }
+            }
+        }
+        tokio::time::sleep(report.monitor_pause()).await;
+    }
 }
 
 /// Runs a step with its time limit and reports it; the step's result and
@@ -230,10 +270,21 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
     let (res, _) = step(report, "update", limit, host.update(plan, &mut st)).await;
     let res = match res {
         Ok(_) => {
-            let health = Duration::from_secs(job.health_seconds) + START_GRACE + STOP_LIMIT;
-            step(report, "health", health, host.health(plan, &mut st))
-                .await
-                .0
+            // The container checks, then the monitors (their own stable
+            // period, within twice it and the grace).
+            let health = Duration::from_secs(job.health_seconds) * 3 + START_GRACE * 2 + STOP_LIMIT;
+            let st = &mut st;
+            step(report, "health", health, async move {
+                let mut log = host.health(plan, st).await?;
+                let m = wait_monitors(report).await?;
+                if !m.is_empty() {
+                    log.push('\n');
+                    log.push_str(&m);
+                }
+                Ok(log)
+            })
+            .await
+            .0
         }
         Err(e) => Err(e),
     };
@@ -1170,6 +1221,10 @@ impl Report for ClientReport<'_> {
             tracing::warn!(run = self.run, "result not sent: {err}");
         }
     }
+
+    async fn monitors(&self) -> Result<(String, String), String> {
+        self.client.monitors(self.run).await
+    }
 }
 
 /// This container's id, as Docker sets the hostname (empty outside one).
@@ -1278,6 +1333,8 @@ mod tests {
     #[derive(Default)]
     struct Log {
         cancel: bool,
+        /// What Wren says about the monitors, in turn ('' = skipped).
+        monitors: Mutex<Vec<&'static str>>,
         steps: Mutex<Vec<String>>,
         finished: Mutex<Option<(String, String)>>,
     }
@@ -1289,6 +1346,56 @@ mod tests {
         }
         async fn finish(&self, outcome: &str, detail: &str) {
             *self.finished.lock().unwrap() = Some((outcome.into(), detail.into()));
+        }
+        async fn monitors(&self) -> Result<(String, String), String> {
+            let mut m = self.monitors.lock().unwrap();
+            match m.first().copied() {
+                None => Ok(("skipped".into(), String::new())),
+                Some("error") => {
+                    m.remove(0);
+                    Err("down".into())
+                }
+                Some(v) => {
+                    m.remove(0);
+                    Ok((v.into(), format!("monitors {v}")))
+                }
+            }
+        }
+        fn monitor_pause(&self) -> Duration {
+            Duration::ZERO
+        }
+    }
+
+    #[tokio::test]
+    async fn monitor_failure_rolls_back() {
+        let fake = Fake::default();
+        let log = Log {
+            monitors: Mutex::new(vec!["wait", "wait", "failed"]),
+            ..Log::default()
+        };
+        assert_eq!(
+            run(&fake, &log, &plan(JobKind::Update, false)).await,
+            "rolled_back"
+        );
+        assert!(fake.calls().contains(&"rollback".to_string()));
+        assert_eq!(
+            log.finished.lock().unwrap().as_ref().unwrap().1,
+            "monitors failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn monitors_ok_or_unreachable_keep_the_update() {
+        for answers in [vec!["wait", "ok"], vec!["error", "error", "error"]] {
+            let fake = Fake::default();
+            let log = Log {
+                monitors: Mutex::new(answers),
+                ..Log::default()
+            };
+            assert_eq!(
+                run(&fake, &log, &plan(JobKind::Update, false)).await,
+                "succeeded"
+            );
         }
     }
 

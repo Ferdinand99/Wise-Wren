@@ -1,4 +1,4 @@
-{#- A server's targets with their versions and status. Needs: server, targets, can_check, interval, mode, inventory_at, inventory_error. -#}
+{#- A server's targets with their versions and status. Needs: server, targets, can_check, interval, mode, inventory_at, inventory_error, is_admin, auto_start, auto_end, tz. -#}
 {%- import "kit/macros.html" as m -%}
 <section class="card card-flush" id="targets-card" aria-labelledby="targets-title">
   <div class="card-head card-pad">
@@ -24,7 +24,7 @@
       <tbody>
         {%- for t in targets %}
         <tr data-status="{{ t.status }}">
-          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge" title="{{ tr1("targets.files_missing_help", "dir", t.working_dir) }}">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
+          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge" title="{{ tr1("targets.files_missing_help", "dir", t.working_dir) }}">{{ tr("targets.files_missing") }}</span>{% endif %}{% if t.own %} <span class="badge" title="{{ tr("runs.own_help") }}" data-own="1">{{ tr("runs.own") }}</span>{% else if t.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}" data-auto="1">{{ tr("runs.auto_badge") }}</span>{% endif %}</td>
           <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
           <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
           <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if t.is_update() %}{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{{ tr("targets.notes") }}</a>{% endif %}{% else %}–{% endif %}</td>
@@ -43,9 +43,18 @@
       <select id="f-server-mode" name="mode">
         <option value="approve"{% if mode == "approve" %} selected{% endif %}>{{ tr("runs.mode_approve") }}</option>
         <option value="notify"{% if mode == "notify" %} selected{% endif %}>{{ tr("runs.mode_notify") }}</option>
+        {%- if is_admin || mode == "auto" %}
+        <option value="auto"{% if mode == "auto" %} selected{% endif %}>{{ tr("runs.mode_auto") }}</option>
+        {%- endif %}
       </select>
       <p class="help">{{ tr("runs.server_mode_help") }}</p>
     </div>
+    {%- if is_admin %}
+    {{ m::field_text("auto_start", tr("runs.window_from"), auto_start, "time", "03:00", "") }}
+    {{ m::field_text("auto_end", tr("runs.window_to"), auto_end, "time", "05:00", tr1("runs.window_help", "tz", tz)) }}
+    {%- else if !auto_start.is_empty() %}
+    <p class="help">{{ tr2("runs.window_is", "from", auto_start, "to", auto_end) }}</p>
+    {%- endif %}
     <button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button>
   </form>
   {%- endif %}

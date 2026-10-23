@@ -42,8 +42,9 @@
             <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ r.t.available }}{% if !r.t.notes_url.is_empty() %} · <a href="{{ r.t.notes_url }}" target="_blank" rel="noopener noreferrer">{% if r.t.notes_title.is_empty() %}{{ tr("targets.notes") }}{% else %}{{ r.t.notes_title }}{% endif %}</a>{% endif %}</td>
             <td data-label="{{ tr("targets.col_status") }}">
               {%- if let Some(run) = r.active %}<a href="/runs/{{ run.id }}" class="pill status-{{ run.status_class }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</a>
+              {%- else if r.own %}<span class="badge" title="{{ tr("runs.own_help") }}">{{ tr("runs.own") }}</span>
               {%- else if r.notify_only %}<span class="badge">{{ tr("runs.mode_notify") }}</span>
-              {%- else %}<span class="pill status-{{ r.t.status_class }}"><span class="dot" aria-hidden="true"></span>{{ r.t.status_label }}</span>{% endif %}
+              {%- else %}<span class="pill status-{{ r.t.status_class }}"><span class="dot" aria-hidden="true"></span>{{ r.t.status_label }}</span>{% if r.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}">{{ tr("runs.auto_badge") }}</span>{% endif %}{% endif %}
             </td>
             {%- if can_act %}
             <td data-label="{{ tr("updates.col_actions") }}">

@@ -152,10 +152,30 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
         ));
     }
     facts.push((
-        i18n::t("notify_msg.fact_by").to_string(),
-        run.requested_by.clone(),
+        i18n::t("notify_msg.fact_trigger").to_string(),
+        trigger_label(&run.trigger).to_string(),
     ));
-    let detail = (!run.detail.is_empty()).then(|| run.detail.chars().take(500).collect::<String>());
+    if run.trigger != runs::BY_AUTO {
+        facts.push((
+            i18n::t("notify_msg.fact_by").to_string(),
+            run.requested_by.clone(),
+        ));
+    }
+    // Every channel says what started the run, also those without facts.
+    let started = format!(
+        "{}: {}",
+        i18n::t("notify_msg.fact_trigger"),
+        trigger_label(&run.trigger)
+    );
+    let detail = Some(if run.detail.is_empty() {
+        started
+    } else {
+        format!(
+            "{}
+{started}",
+            run.detail.chars().take(500).collect::<String>()
+        )
+    });
     Some(alert(
         kind,
         level,
@@ -167,6 +187,49 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
         link(base, &format!("/runs/{}", run.id)),
         (Some(run.id), run.target_name.clone(), "run"),
     ))
+}
+
+/// What started a run, in words.
+pub fn trigger_label(trigger: &str) -> &'static str {
+    i18n::t(match trigger {
+        runs::BY_AUTO => "runs.trigger_auto",
+        runs::BY_SCHEDULE => "runs.trigger_schedule",
+        _ => "runs.trigger_user",
+    })
+}
+
+/// The message about a run that goes on without a maintenance window
+/// because Vigilant Vole couldn't be reached.
+pub fn no_window_alert(run: &Run, why: &str, base: Option<&str>) -> Alert {
+    let args = [
+        ("name", run.target_name.as_str()),
+        ("server", run.server_name.as_str()),
+    ];
+    alert(
+        AlertKind::Unstable,
+        Level::Warning,
+        "\u{1f6a7}",
+        "run_no_window",
+        i18n::tf("notify_msg.no_window_title", &args),
+        Some(why.chars().take(500).collect()),
+        vec![
+            (
+                i18n::t("notify_msg.fact_server").to_string(),
+                run.server_name.clone(),
+            ),
+            (
+                i18n::t("notify_msg.fact_trigger").to_string(),
+                trigger_label(&run.trigger).to_string(),
+            ),
+        ],
+        link(base, &format!("/runs/{}", run.id)),
+        (Some(run.id), run.target_name.clone(), "run"),
+    )
+}
+
+pub async fn send_no_window(wren: &Wren, run: &Run, why: &str) {
+    let (run, why) = (run.clone(), why.to_string());
+    broadcast(&wren.core, move |base| no_window_alert(&run, &why, base)).await;
 }
 
 /// Sends the result of a run.

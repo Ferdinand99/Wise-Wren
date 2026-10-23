@@ -114,6 +114,13 @@ pub static KIT: KitConfig = KitConfig {
                 icon: "download",
             },
             NavItem {
+                id: "schedules",
+                href: "/schedules",
+                label: "schedules.title",
+                short_label: "schedules.title",
+                icon: "calendar",
+            },
+            NavItem {
                 id: "servers",
                 href: "/servers",
                 label: "servers.title",
@@ -135,6 +142,7 @@ pub static KIT: KitConfig = KitConfig {
             SettingsTab::TOKENS,
             crate::channels::TAB,
             crate::registries::TAB,
+            crate::vv_pages::TAB,
         ],
         home_url: "https://hedgerow.tools/Wise-Wren/",
     },
