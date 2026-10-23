@@ -4,7 +4,7 @@ Wise Wren is a Cargo workspace with two crates:
 
 - **`wise-wren`** (the root, binary `wise-wren`): the server, built on
   [vole-kit](https://github.com/Ferdinand99/Vigilant-Vole/blob/main/docs/vole-kit.md), the shared kit in the
-  Vigilant Vole repository (tag `vole-kit-v0.2.0`). The kit brings sign-in, setup, users and roles, API tokens,
+  Vigilant Vole repository (tag `vole-kit-v0.3.0`). The kit brings sign-in, setup, users and roles, API tokens,
   2FA, Security, General settings, the API reference, i18n in 26 languages, the database plumbing, request
   budgets, live updates, the notification providers and the design system. Wren adds servers and their agents,
   targets and version checks, registry credentials, notifications for new versions, the notification channels
