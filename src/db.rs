@@ -17,6 +17,10 @@ const MIGRATION_FILES: &[(&str, &str)] = &[
         "0002_channels.sql",
         include_str!("../migrations/0002_channels.sql"),
     ),
+    (
+        "0003_targets.sql",
+        include_str!("../migrations/0003_targets.sql"),
+    ),
 ];
 
 fn migrations() -> Vec<(String, String)> {
@@ -43,6 +47,9 @@ pub static MIGRATIONS: MigrationSet = MigrationSet {
 /// How long after its last heartbeat an agent still counts as online: three
 /// missed beats of [`crate::agent_api::INTERVAL_SECONDS`].
 pub const ONLINE_WINDOW_SECONDS: i64 = 90;
+
+/// How often a server's targets are checked unless changed (hours).
+pub const DEFAULT_CHECK_HOURS: i64 = 6;
 
 // ---------------------------------------------------------------------------
 // Agent tokens
@@ -276,6 +283,15 @@ pub fn record_heartbeat(c: &Connection, id: i64, f: &Facts) -> rusqlite::Result<
             f.unraid
         ],
     )? > 0)
+}
+
+/// Whether "Check now" asked this server's agent for a fresh inventory.
+pub fn scan_requested(c: &Connection, id: i64) -> rusqlite::Result<bool> {
+    c.query_row(
+        "SELECT scan_requested_at IS NOT NULL FROM servers WHERE id = ?1",
+        [id],
+        |r| r.get(0),
+    )
 }
 
 /// The ids of the servers that are online now (the watcher compares them).

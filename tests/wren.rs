@@ -257,7 +257,7 @@ async fn heartbeat_marks_online_and_records_facts() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert_eq!(
         res.json(),
-        json!({"server": {"id": id, "name": "LANBox"}, "interval_seconds": 30})
+        json!({"server": {"id": id, "name": "LANBox"}, "interval_seconds": 30, "scan": false})
     );
     // Machine headers on the agent endpoint.
     assert_eq!(

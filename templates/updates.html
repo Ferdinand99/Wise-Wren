@@ -1,0 +1,37 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("updates.title"), tr("updates.sub")) %}{% endcall %}
+
+{%- if rows.is_empty() %}
+<div class="empty-card">
+  {{ m::empty_state("check-circle", tr("updates.empty_title"), tr("updates.empty_text")) }}
+</div>
+{%- else %}
+<div class="card card-flush">
+  <div class="table-wrap">
+    <table class="table table-stack table-hover" id="updates">
+      <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("updates.col_server") }}</th><th>{{ tr("targets.col_kind") }}</th><th>{{ tr("targets.col_current") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_checked") }}</th></tr></thead>
+      <tbody>
+        {%- for t in rows %}
+        <tr data-status="{{ t.status }}">
+          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
+          <td data-label="{{ tr("updates.col_server") }}"><a href="/servers/{{ t.server_id }}">{{ t.server_name }}</a></td>
+          <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
+          <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
+          <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{% if t.notes_title.is_empty() %}{{ tr("targets.notes") }}{% else %}{{ t.notes_title }}{% endif %}</a>{% endif %}</td>
+          <td data-label="{{ tr("targets.col_checked") }}">{% if let Some(at) = t.last_checked_at %}{{ m::time_ago(at) }}{% else %}{{ tr("servers.never") }}{% endif %}</td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{%- endif %}
+<p class="section-foot">{{ tr("updates.foot") }}</p>
+{% endblock %}

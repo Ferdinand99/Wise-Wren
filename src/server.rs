@@ -12,6 +12,8 @@ pub async fn run(config: Config) -> Result<(), crate::StartError> {
     vole_kit::i18n::site_language(&wren.core).await;
     // Turns silent agents offline on the live pages.
     crate::servers::spawn_watcher(wren.clone());
+    // Version checks on each target's interval, and on "Check now".
+    crate::checks::spawn_scheduler(wren.clone());
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(addr)

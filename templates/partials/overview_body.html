@@ -4,6 +4,7 @@
   {{ m::stat(tr("overview.servers"), num(counts.total as i64)) }}
   {{ m::stat(tr("overview.online"), num(counts.online as i64), "up") }}
   {{ m::stat(tr("overview.not_online"), num(counts.not_online as i64), "down") }}
+  {{ m::stat(tr("overview.updates"), num(counts.updates), "update") }}
 </div>
 <section class="section" aria-labelledby="overview-servers">
   {% call m::section_head(tr("overview.servers"), "", "overview-servers") %}{% endcall %}

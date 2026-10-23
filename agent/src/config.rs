@@ -21,7 +21,17 @@
 //!
 //! [script_stack.rollback]
 //! command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\""
+//!
+//! # Optional: where the stack's versions come from. One of github, url
+//! # (+ regex or json_pointer) or latest_command; the agent runs the
+//! # commands itself, in working_dir, and only prints what they print.
+//! [script_stack.version]
+//! github = "owner/repo"
+//! installed_command = "cat VERSION"
 //! ```
+//!
+//! `scan_interval` (default `"30m"`) is how often the agent sends its
+//! inventory on its own.
 //!
 //! Every problem names the field it is about; the agent refuses to start
 //! with any of them.
@@ -66,6 +76,22 @@ pub struct Config {
     pub roots: Vec<PathBuf>,
     pub script_stacks: Vec<ScriptStack>,
     pub docker_socket: String,
+    /// How often the agent sends its inventory on its own.
+    pub scan_interval: Duration,
+}
+
+/// Where a script stack's versions come from: one source of the newest
+/// version (Wren looks up `github` and `url` itself; the agent runs
+/// `latest_command`) and, optionally, a command printing the installed one.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VersionConfig {
+    pub github: String,
+    pub url: String,
+    pub regex: String,
+    pub json_pointer: String,
+    pub latest_command: Option<String>,
+    pub installed_command: Option<String>,
+    pub timeout: Duration,
 }
 
 /// A Compose project updated by scripts of its own (like Fluxer's installer).
@@ -81,6 +107,7 @@ pub struct ScriptStack {
     pub timeout: Duration,
     pub update: String,
     pub rollback: Option<String>,
+    pub version: Option<VersionConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -93,6 +120,102 @@ struct RawConfig {
     #[serde(default)]
     script_stack: Vec<RawStack>,
     docker_socket: Option<String>,
+    scan_interval: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVersion {
+    github: Option<String>,
+    url: Option<String>,
+    regex: Option<String>,
+    json_pointer: Option<String>,
+    latest_command: Option<String>,
+    installed_command: Option<String>,
+    timeout: Option<String>,
+}
+
+/// Default and longest time a version command may take.
+pub const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const MAX_VERSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Default time between inventories; shortest one.
+pub const SCAN_INTERVAL: Duration = Duration::from_secs(30 * 60);
+pub const MIN_SCAN_INTERVAL: Duration = Duration::from_secs(60);
+
+fn valid_github(repo: &str) -> bool {
+    let parts: Vec<&str> = repo.split('/').collect();
+    parts.len() == 2
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && *p != "."
+                && *p != ".."
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+}
+
+/// Checks `[script_stack.version]`; problems are prefixed with `at`.
+fn check_version(raw: RawVersion, at: &str, problems: &mut Vec<String>) -> Option<VersionConfig> {
+    let set = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let before = problems.len();
+    let v = VersionConfig {
+        github: set(raw.github).unwrap_or_default(),
+        url: set(raw.url).unwrap_or_default(),
+        regex: set(raw.regex).unwrap_or_default(),
+        json_pointer: set(raw.json_pointer).unwrap_or_default(),
+        latest_command: set(raw.latest_command),
+        installed_command: set(raw.installed_command),
+        timeout: match raw.timeout.as_deref() {
+            None => VERSION_TIMEOUT,
+            Some(t) => match parse_duration(t) {
+                Some(d) if d <= MAX_VERSION_TIMEOUT => d,
+                _ => {
+                    problems.push(format!(
+                        "{at}: version.timeout \"{t}\" must be like \"30s\" or \"2m\" (at most 10m)"
+                    ));
+                    Duration::ZERO
+                }
+            },
+        },
+    };
+    let sources = [
+        !v.github.is_empty(),
+        !v.url.is_empty(),
+        v.latest_command.is_some(),
+    ]
+    .iter()
+    .filter(|s| **s)
+    .count();
+    if sources != 1 {
+        problems.push(format!(
+            "{at}: version needs exactly one of github, url or latest_command"
+        ));
+    }
+    if !v.github.is_empty() && !valid_github(&v.github) {
+        problems.push(format!("{at}: version.github must be owner/repo"));
+    }
+    if !v.url.is_empty() {
+        if !(v.url.starts_with("https://") || v.url.starts_with("http://")) {
+            problems.push(format!(
+                "{at}: version.url must start with https:// or http://"
+            ));
+        }
+        if v.regex.is_empty() == v.json_pointer.is_empty() {
+            problems.push(format!(
+                "{at}: version.url needs exactly one of regex or json_pointer"
+            ));
+        }
+        if !v.json_pointer.is_empty() && !v.json_pointer.starts_with('/') {
+            problems.push(format!(
+                "{at}: version.json_pointer must start with / (like \"/version\")"
+            ));
+        }
+    } else if !v.regex.is_empty() || !v.json_pointer.is_empty() {
+        problems.push(format!(
+            "{at}: version.regex and json_pointer go with version.url"
+        ));
+    }
+    (problems.len() == before).then_some(v)
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +231,7 @@ struct RawStack {
     timeout: Option<String>,
     update: Option<RawScript>,
     rollback: Option<RawScript>,
+    version: Option<RawVersion>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,6 +445,7 @@ impl Config {
                     problems.push(format!("{at}: env name \"{key}\" is not a variable name"));
                 }
             }
+            let version = s.version.and_then(|v| check_version(v, &at, &mut problems));
             if problems.len() == before {
                 script_stacks.push(ScriptStack {
                     compose_project: set(s.compose_project).unwrap_or_else(|| name.clone()),
@@ -331,9 +456,23 @@ impl Config {
                     timeout,
                     update: update.unwrap_or_default(),
                     rollback,
+                    version,
                 });
             }
         }
+
+        let scan_interval = match raw.scan_interval.as_deref() {
+            None => SCAN_INTERVAL,
+            Some(t) => match parse_duration(t) {
+                Some(d) if d >= MIN_SCAN_INTERVAL => d,
+                _ => {
+                    problems.push(format!(
+                        "scan_interval \"{t}\" must be like \"30m\" or \"6h\" (1m to 24h)"
+                    ));
+                    SCAN_INTERVAL
+                }
+            },
+        };
 
         if problems.is_empty() {
             Ok(Config {
@@ -342,6 +481,7 @@ impl Config {
                 roots,
                 script_stacks,
                 docker_socket,
+                scan_interval,
             })
         } else {
             Err(ConfigError(problems))
@@ -530,6 +670,69 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
                 .any(|p| p.starts_with("token: not an agent token"))
         );
         assert!(err.0.iter().any(|p| p.starts_with("server: use an http")));
+    }
+
+    #[test]
+    fn version_config_errors_name_the_field() {
+        let stack = "[[script_stack]]\nname = \"s\"\nworking_dir = \"/mnt/user/appdata/s\"\ntimeout = \"1m\"\nupdate = { command = \"x\" }\n";
+        let ok = format!(
+            "{}{stack}[script_stack.version]\ngithub = \"traefik/whoami\"\ninstalled_command = \"cat VERSION\"\n",
+            base()
+        );
+        let c = Config::from_parts(Some(&ok), no_env).unwrap();
+        let v = c.script_stacks[0].version.as_ref().unwrap();
+        assert_eq!(v.github, "traefik/whoami");
+        assert_eq!(v.installed_command.as_deref(), Some("cat VERSION"));
+        assert_eq!(v.timeout, VERSION_TIMEOUT);
+        assert_eq!(c.scan_interval, SCAN_INTERVAL);
+        let cases = [
+            (
+                "installed_command = \"x\"",
+                "version needs exactly one of github, url or latest_command",
+            ),
+            (
+                "github = \"a\"\nlatest_command = \"x\"",
+                "version needs exactly one",
+            ),
+            (
+                "github = \"not a repo\"",
+                "version.github must be owner/repo",
+            ),
+            (
+                "url = \"ftp://x\"\nregex = \"v(.*)\"",
+                "version.url must start with",
+            ),
+            (
+                "url = \"https://x\"",
+                "version.url needs exactly one of regex or json_pointer",
+            ),
+            (
+                "url = \"https://x\"\njson_pointer = \"version\"",
+                "version.json_pointer must start with /",
+            ),
+            ("github = \"a/b\"\nregex = \"x\"", "go with version.url"),
+            (
+                "github = \"a/b\"\ntimeout = \"1h\"",
+                "version.timeout \"1h\"",
+            ),
+            (
+                "github = \"a/b\"\ncommand = \"x\"",
+                "unknown field `command`",
+            ),
+        ];
+        for (extra, want) in cases {
+            let text = format!("{}{stack}[script_stack.version]\n{extra}\n", base());
+            let got = Config::from_parts(Some(&text), no_env)
+                .unwrap_err()
+                .to_string();
+            assert!(got.contains(want), "{extra:?}: want {want:?}, got {got:?}");
+        }
+        let err = Config::from_parts(
+            Some(&format!("{}scan_interval = \"10s\"\n", base())),
+            no_env,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("scan_interval \"10s\""), "{err}");
     }
 
     #[test]

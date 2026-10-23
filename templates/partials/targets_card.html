@@ -1,0 +1,45 @@
+{#- A server's targets with their versions and status. Needs: server, targets, can_check, interval, inventory_at, inventory_error. -#}
+{%- import "kit/macros.html" as m -%}
+<section class="card card-flush" id="targets-card" aria-labelledby="targets-title">
+  <div class="card-head card-pad">
+    <div>
+      <h2 class="card-title" id="targets-title">{{ tr("targets.title") }}</h2>
+      <p class="card-sub">{% if let Some(at) = inventory_at %}{{ tr("targets.scanned") }} {{ m::time_ago(at) }}{% else %}{{ tr("targets.not_scanned") }}{% endif %} · {{ tr1("targets.every", "hours", interval) }}</p>
+    </div>
+    {%- if can_check %}
+    <form method="post" action="/servers/{{ server.id }}/check" class="toolbar">
+      <button type="submit" class="btn btn-secondary btn-sm">{{ m::icon("refresh") }}<span>{{ tr("targets.check_now") }}</span></button>
+    </form>
+    {%- endif %}
+  </div>
+  {%- if !inventory_error.is_empty() %}
+  <div class="card-pad">{{ m::callout("warning", tr1("targets.scan_error", "error", inventory_error)) }}</div>
+  {%- endif %}
+  {%- if targets.is_empty() %}
+  <div class="card-pad"><p class="help">{{ tr("targets.empty") }}</p></div>
+  {%- else %}
+  <div class="table-wrap">
+    <table class="table table-stack table-hover" id="targets">
+      <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("targets.col_kind") }}</th><th>{{ tr("targets.col_current") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th><th>{{ tr("targets.col_checked") }}</th></tr></thead>
+      <tbody>
+        {%- for t in targets %}
+        <tr data-status="{{ t.status }}">
+          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge" title="{{ tr1("targets.files_missing_help", "dir", t.working_dir) }}">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
+          <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
+          <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
+          <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if t.is_update() %}{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{{ tr("targets.notes") }}</a>{% endif %}{% else %}–{% endif %}</td>
+          <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ t.status_class }}"{% if !t.why.is_empty() %} title="{{ t.why }}"{% endif %}><span class="dot" aria-hidden="true"></span>{{ t.status_label }}</span></td>
+          <td data-label="{{ tr("targets.col_checked") }}">{% if let Some(at) = t.last_checked_at %}{{ m::time_ago(at) }}{% else %}{{ tr("servers.never") }}{% endif %}</td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+  {%- endif %}
+  {%- if can_check %}
+  <form method="post" action="/servers/{{ server.id }}/interval" class="card-pad cluster">
+    {{ m::field_number("hours", tr("targets.interval"), interval, tr("targets.hours"), "1", "168", "1", tr("targets.interval_help")) }}
+    <button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button>
+  </form>
+  {%- endif %}
+</section>

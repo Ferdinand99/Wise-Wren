@@ -1,5 +1,6 @@
-//! What the agent reads from Docker: `GET /version` and `GET /info` over the
-//! Unix socket, nothing else (phase 2). A tiny HTTP/1.0 client keeps the
+//! What the agent reads from Docker over the Unix socket, `GET`s only:
+//! `/version`, `/info`, the container list and container and image inspect
+//! (phase 3 discovery). A tiny HTTP/1.0 client keeps the
 //! agent free of a Docker client crate: the daemon answers HTTP/1.0 with a
 //! plain body and closes the connection.
 
@@ -11,7 +12,7 @@ use serde_json::Value;
 /// How long one request to Docker may take.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 /// The most the agent reads of one answer.
-const MAX_RESPONSE: usize = 1 << 20;
+const MAX_RESPONSE: usize = 16 << 20;
 
 /// What Docker says about its host.
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -18,7 +18,7 @@ path = "src/main.rs"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { version = "1.53.1", features = ["rt", "macros", "net", "time", "signal", "io-util"] }
+tokio = { version = "1.53.1", features = ["rt", "macros", "net", "time", "signal", "io-util", "process", "fs"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

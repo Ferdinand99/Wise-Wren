@@ -117,6 +117,8 @@ pub struct Counts {
     pub total: usize,
     pub online: usize,
     pub not_online: usize,
+    /// Targets with an update.
+    pub updates: i64,
 }
 
 async fn views(core: &Core) -> ApiResult<Vec<ServerView>> {
@@ -124,12 +126,13 @@ async fn views(core: &Core) -> ApiResult<Vec<ServerView>> {
     Ok(rows.into_iter().map(ServerView::new).collect())
 }
 
-fn counts(rows: &[ServerView]) -> Counts {
+fn counts(rows: &[ServerView], updates: i64) -> Counts {
     let online = rows.iter().filter(|r| r.status == "online").count();
     Counts {
         total: rows.len(),
         online,
         not_online: rows.len() - online,
+        updates,
     }
 }
 
@@ -185,6 +188,12 @@ struct DetailPage {
     agent: AgentCard,
     delete_url: String,
     delete_question: String,
+    targets: Vec<crate::pages::TargetView>,
+    can_check: bool,
+    /// The server's check interval (hours).
+    interval: i64,
+    inventory_at: Option<String>,
+    inventory_error: String,
 }
 
 #[derive(Template)]
@@ -225,7 +234,7 @@ async fn overview(
         jar,
         HtmlTemplate(OverviewPage {
             ctx,
-            counts: counts(&rows),
+            counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add: user.is_admin(),
         }),
@@ -383,12 +392,27 @@ async fn render_detail(
         PageCtx::build(core, Some(user), jar, server.name.clone(), "servers", "").await;
     let delete_url = format!("/servers/{id}");
     let delete_question = i18n::tf("servers.delete_q", &[("name", &server.name)]);
+    let targets = crate::pages::server_targets(core, id).await?;
+    let (interval, inventory_at, inventory_error) = core
+        .with_conn(move |c| {
+            c.query_row(
+                "SELECT check_interval_hours, inventory_at, inventory_error FROM servers WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+        })
+        .await?;
     let page = DetailPage {
         ctx,
         server,
         agent,
         delete_url,
         delete_question,
+        targets,
+        can_check: user.can_edit(),
+        interval,
+        inventory_at,
+        inventory_error,
     };
     Ok((jar, HtmlTemplate(page)).into_response())
 }
@@ -502,7 +526,7 @@ async fn render_view(core: Core, view: View, can_add: bool) -> Result<String, Ap
     let rows = views(&core).await?;
     let html = match view {
         View::Overview => OverviewBody {
-            counts: counts(&rows),
+            counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add,
         }

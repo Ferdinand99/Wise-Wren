@@ -1,0 +1,85 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(target.name.as_str(), target.kind_label, back_href.as_str(), target.server_name.as_str()) %}
+  <span class="pill pill-lg status-{{ target.status_class }}" data-status="{{ target.status }}"><span class="dot" aria-hidden="true"></span>{{ target.status_label }}</span>
+  {%- if can_check %}
+  <form method="post" action="/targets/{{ target.id }}/check">
+    <button type="submit" class="btn btn-secondary">{{ m::icon("refresh") }}<span>{{ tr("targets.check_now") }}</span></button>
+  </form>
+  {%- endif %}
+{% endcall %}
+
+<div class="stack">
+  {%- if target.files_missing() %}
+  {{ m::callout("warning", tr1("targets.files_missing_help", "dir", target.working_dir)) }}
+  {%- endif %}
+  <section class="card" aria-labelledby="versions-title">
+    <div class="card-head"><h2 class="card-title" id="versions-title">{{ tr("targets.versions") }}</h2></div>
+    <dl class="dl">
+      <div class="dl-row"><dt>{{ tr("targets.col_current") }}</dt><dd class="mono break">{{ target.current }}</dd></div>
+      {%- if target.is_update() %}
+      <div class="dl-row"><dt>{{ tr("targets.col_available") }}</dt><dd class="mono break">{{ target.available }}</dd></div>
+      {%- endif %}
+      {%- if !target.why.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.why") }}</dt><dd class="break">{{ target.why }}</dd></div>
+      {%- endif %}
+      {%- if !target.version_source.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.version_source") }}</dt><dd class="break">{{ target.version_source }}</dd></div>
+      <div class="dl-row"><dt>{{ tr("targets.installed") }}</dt><dd class="mono">{% if target.installed_version.is_empty() %}–{% else %}{{ target.installed_version }}{% endif %}</dd></div>
+      <div class="dl-row"><dt>{{ tr("targets.latest") }}</dt><dd class="mono">{% if target.latest_version.is_empty() %}–{% else %}{{ target.latest_version }}{% endif %}</dd></div>
+      {%- endif %}
+      {%- if !target.version_error.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.version_error") }}</dt><dd class="break">{{ target.version_error }}</dd></div>
+      {%- endif %}
+      {%- if !target.notes_url.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.notes") }}</dt><dd class="break"><a href="{{ target.notes_url }}" target="_blank" rel="noopener noreferrer">{% if target.notes_title.is_empty() %}{{ target.notes_url }}{% else %}{{ target.notes_title }}{% endif %}</a></dd></div>
+      {%- endif %}
+      {%- if !target.source_url.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.source") }}</dt><dd class="break">{{ target.source_url }}</dd></div>
+      {%- endif %}
+      {%- if !target.working_dir.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.working_dir") }}</dt><dd class="mono break">{{ target.working_dir }}</dd></div>
+      {%- endif %}
+      <div class="dl-row"><dt>{{ tr("targets.col_checked") }}</dt><dd>{% if let Some(at) = target.last_checked_at %}{{ m::time_ago(at) }}{% else %}{{ tr("servers.never") }}{% endif %}{% if target.check_requested %} · {{ tr("targets.check_pending") }}{% endif %}</dd></div>
+    </dl>
+  </section>
+
+  {%- if !images.is_empty() %}
+  <section class="card card-flush" aria-labelledby="images-title">
+    <div class="card-head card-pad"><h2 class="card-title" id="images-title">{{ tr("targets.images") }}</h2></div>
+    <div class="table-wrap">
+      <table class="table table-stack" id="images">
+        <thead><tr><th>{{ tr("targets.col_container") }}</th><th>{{ tr("targets.col_image") }}</th><th>{{ tr("targets.col_local") }}</th><th>{{ tr("targets.col_remote") }}</th><th>{{ tr("targets.col_status") }}</th></tr></thead>
+        <tbody>
+          {%- for i in images %}
+          <tr data-status="{{ i.status }}">
+            <td class="td-primary">{{ i.container }}{% if !i.service.is_empty() && i.service != i.container %} <span class="muted">{{ i.service }}</span>{% endif %}</td>
+            <td data-label="{{ tr("targets.col_image") }}" class="mono break">{{ i.image }}</td>
+            <td data-label="{{ tr("targets.col_local") }}" class="mono">{% if i.local.is_empty() %}–{% else %}{{ i.local }}{% endif %}</td>
+            <td data-label="{{ tr("targets.col_remote") }}" class="mono">{% if i.remote.is_empty() %}–{% else %}{{ i.remote }}{% endif %}</td>
+            <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ i.status_class }}"><span class="dot" aria-hidden="true"></span>{{ i.status_label }}</span>{% if !i.why.is_empty() %} <span class="muted">{{ i.why }}</span>{% endif %}</td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {%- endif %}
+
+  {%- if can_check %}
+  <section class="card" aria-labelledby="interval-title">
+    <div class="card-head"><h2 class="card-title" id="interval-title">{{ tr("targets.interval") }}</h2></div>
+    <form method="post" action="/targets/{{ target.id }}/interval" class="cluster">
+      {{ m::field_number("hours", tr("targets.interval"), target.interval, tr("targets.hours"), "1", "168", "1", tr1("targets.interval_target_help", "hours", target.server_interval)) }}
+      <button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button>
+    </form>
+  </section>
+  {%- endif %}
+</div>
+{% endblock %}

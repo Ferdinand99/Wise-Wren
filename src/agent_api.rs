@@ -10,8 +10,12 @@
 //!   401 for a missing, unknown or revoked token, 429 with `Retry-After`
 //!   over [`RATE`], 400 for a body that isn't a heartbeat.
 //!
+//! - `POST /api/agent/v1/inventory` ([`crate::inventory`]): what runs on
+//!   the server, sent on the agent's own schedule and when a heartbeat's
+//!   answer says `"scan": true` ("Check now").
+//!
 //! There is no job or command channel: Wren can't make an agent do
-//! anything (§8). When jobs come, the agent will fetch them with a
+//! anything but report (§8). When jobs come, the agent will fetch them with a
 //! long-poll `GET` on the same footing (named jobs from its own config
 //! only), so the protocol stays request/response.
 //!
@@ -88,23 +92,32 @@ impl Heartbeat {
     }
 }
 
+/// The server whose agent token `headers` carry: `(id, name)`, or the 401
+/// error to answer (401).
+pub async fn authenticate(wren: &Wren, headers: &HeaderMap) -> Result<(i64, String), ApiError> {
+    let Some(token) = tokens::token_from_headers(headers).filter(|t| db::is_agent_token(t)) else {
+        return Err(ApiError::Unauthorized);
+    };
+    let hash = tokens::hash(&token);
+    match wren
+        .core
+        .with_conn(move |c| db::by_token_hash(c, &hash))
+        .await
+    {
+        Ok(Some(found)) => Ok(found),
+        Ok(None) => Err(ApiError::Unauthorized),
+        Err(err) => Err(err),
+    }
+}
+
 /// `POST /api/agent/v1/heartbeat`.
 pub async fn heartbeat(
     Extension(wren): Extension<Wren>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(token) = tokens::token_from_headers(&headers).filter(|t| db::is_agent_token(t)) else {
-        return ApiError::Unauthorized.into_response();
-    };
-    let hash = tokens::hash(&token);
-    let (id, name) = match wren
-        .core
-        .with_conn(move |c| db::by_token_hash(c, &hash))
-        .await
-    {
-        Ok(Some(found)) => found,
-        Ok(None) => return ApiError::Unauthorized.into_response(),
+    let (id, name) = match authenticate(&wren, &headers).await {
+        Ok(found) => found,
         Err(err) => return err.into_response(),
     };
     if let Err(wait) = wren.budgets.take(&id, RATE, Instant::now()) {
@@ -118,17 +131,23 @@ pub async fn heartbeat(
         }
     };
     let facts = beat.facts();
-    if let Err(err) = wren
+    let scan = match wren
         .core
-        .with_conn(move |c| db::record_heartbeat(c, id, &facts))
+        .with_conn(move |c| {
+            db::record_heartbeat(c, id, &facts)?;
+            db::scan_requested(c, id)
+        })
         .await
     {
-        return err.into_response();
-    }
+        Ok(scan) => scan,
+        Err(err) => return err.into_response(),
+    };
     let _ = wren.changes.send(());
+    // `scan` is all Wren can ask for: a fresh inventory (§8).
     Json(json!({
         "server": { "id": id, "name": name },
         "interval_seconds": INTERVAL_SECONDS,
+        "scan": scan,
     }))
     .into_response()
 }

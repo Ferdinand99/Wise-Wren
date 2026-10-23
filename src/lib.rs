@@ -12,11 +12,19 @@
 pub mod agent_api;
 pub mod api;
 pub mod channels;
+pub mod checks;
 pub mod config;
 pub mod db;
+pub mod inventory;
+pub mod pages;
 pub mod product;
+pub mod registries;
+pub mod registry;
 pub mod server;
 pub mod servers;
+pub mod targets;
+pub mod updates_notify;
+pub mod versions;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -45,6 +53,14 @@ pub struct Wren {
     pub changes: broadcast::Sender<()>,
     /// Heartbeats per server ([`agent_api::RATE`]).
     pub budgets: Arc<TokenBuckets<i64>>,
+    /// Inventories per server ([`inventory::RATE`]).
+    pub inventory_budgets: Arc<TokenBuckets<i64>>,
+    /// Wakes the check scheduler (an inventory arrived, "Check now").
+    pub checks: Arc<tokio::sync::Notify>,
+    /// One check run at a time.
+    pub check_lock: Arc<tokio::sync::Mutex<()>>,
+    /// GitHub releases (release notes, version sources), cached.
+    pub github: Arc<versions::GitHub>,
 }
 
 /// Installs the configuration, opens and migrates the database in
@@ -82,6 +98,10 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         core,
         changes: broadcast::channel(64).0,
         budgets: Arc::new(TokenBuckets::new()),
+        inventory_budgets: Arc::new(TokenBuckets::new()),
+        checks: Arc::new(tokio::sync::Notify::new()),
+        check_lock: Arc::new(tokio::sync::Mutex::new(())),
+        github: Arc::new(versions::GitHub::new("https://api.github.com")),
     })
 }
 
@@ -92,12 +112,15 @@ pub fn router(wren: Wren) -> Router {
     let protected = Router::new()
         .merge(servers::router())
         .merge(channels::router())
+        .merge(pages::router())
+        .merge(registries::router())
         .merge(api::router())
         .merge(kit_pages::router())
         .route_layer(from_fn_with_state(core.clone(), guard::require_auth));
     // Programs, not browsers: the machine headers on every answer.
     let machines = Router::new()
         .route("/api/agent/v1/heartbeat", post(agent_api::heartbeat))
+        .route(inventory::PATH, post(inventory::receive))
         .route("/mcp", post(api::mcp).get(vole_kit::mcp::not_offered))
         .route_layer(map_response(headers::machine));
     let public = Router::new()
