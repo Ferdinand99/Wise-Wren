@@ -86,9 +86,18 @@ pub fn apply(
         tx.execute("DELETE FROM target_images WHERE target_id = ?1", [id])?;
         for i in &p.images {
             tx.execute(
-                "INSERT OR REPLACE INTO target_images (target_id, container, service, image, state, local_digest)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, i.container, i.service, i.image, i.state, i.local_digest],
+                "INSERT OR REPLACE INTO target_images (target_id, container, service, image, state,
+                     local_digest, local_digests)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    i.container,
+                    i.service,
+                    i.image,
+                    i.state,
+                    i.local_digest,
+                    i.local_digests
+                ],
             )?;
         }
         refresh(&tx, id)?;
@@ -143,14 +152,14 @@ pub fn short(digest: &str) -> String {
 
 /// Recomputes one target's images and status from what is stored.
 pub fn refresh(c: &Connection, target_id: i64) -> rusqlite::Result<()> {
-    let images: Vec<(i64, String, String, String)> = c
-        .prepare("SELECT id, container, image, local_digest FROM target_images WHERE target_id = ?1 ORDER BY container")?
-        .query_map([target_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+    let images: Vec<(i64, String, String, String, String)> = c
+        .prepare("SELECT id, container, image, local_digest, local_digests FROM target_images WHERE target_id = ?1 ORDER BY container")?
+        .query_map([target_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut statuses = Vec::new();
     let mut updated: Vec<(String, String)> = Vec::new();
     let mut first_detail = String::new();
-    for (id, container, image, local) in &images {
+    for (id, container, image, local, all) in &images {
         let remote: Option<(String, String)> = match ImageRef::parse(image) {
             Ok(r) => c
                 .query_row(
@@ -161,14 +170,21 @@ pub fn refresh(c: &Connection, target_id: i64) -> rusqlite::Result<()> {
                 .optional()?,
             Err(_) => None,
         };
+        // The image is current when any of its repo digests is the
+        // registry's: that one is its local digest from now on.
+        let local = match &remote {
+            Some((d, _)) if !d.is_empty() && all.split_whitespace().any(|x| x == d) => d,
+            _ => local,
+        };
         let (status, detail, digest) = image_status(
             image,
             local,
             remote.as_ref().map(|(d, e)| (d.as_str(), e.as_str())),
         );
         c.execute(
-            "UPDATE target_images SET status = ?2, detail = ?3, remote_digest = ?4 WHERE id = ?1",
-            params![id, status, detail, digest],
+            "UPDATE target_images SET status = ?2, detail = ?3, remote_digest = ?4, local_digest = ?5
+             WHERE id = ?1",
+            params![id, status, detail, digest, local],
         )?;
         if status == UPDATE {
             updated.push((container.clone(), digest));

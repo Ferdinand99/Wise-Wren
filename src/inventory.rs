@@ -127,6 +127,8 @@ pub struct PlannedImage {
     pub image: String,
     pub state: String,
     pub local_digest: String,
+    /// Every repo digest for the image's repository, space separated.
+    pub local_digests: String,
 }
 
 pub fn clip(s: &str) -> String {
@@ -144,16 +146,24 @@ pub fn is_kept_aside(name: &str) -> bool {
 }
 
 fn image_of(c: &Container) -> PlannedImage {
-    let local = ImageRef::parse(&c.image)
-        .ok()
-        .and_then(|r| registry::local_digest(&r, &c.repo_digests))
+    let all = ImageRef::parse(&c.image)
+        .map(|r| registry::local_digests(&r, &c.repo_digests))
         .unwrap_or_default();
+    // A digest is 71 characters: a handful fit in MAX_TEXT whole.
+    let mut kept = Vec::new();
+    for d in all.iter().filter(|d| !d.contains(char::is_whitespace)) {
+        if kept.iter().map(|k: &String| k.len() + 1).sum::<usize>() + d.len() > MAX_TEXT {
+            break;
+        }
+        kept.push(d.clone());
+    }
     PlannedImage {
         container: clip(&c.name),
         service: clip(c.labels.get(SERVICE_LABEL).map_or("", String::as_str)),
         image: clip(&c.image),
         state: clip(&c.state),
-        local_digest: clip(&local),
+        local_digest: clip(all.first().map_or("", String::as_str)),
+        local_digests: kept.join(" "),
     }
 }
 

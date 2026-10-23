@@ -70,6 +70,25 @@ pub struct Heartbeat {
     /// Unraid's `/boot/config` and dockerMan paths are there.
     #[serde(default)]
     pub unraid: bool,
+    /// A random id of the agent process (0.2.1+). Another one than the
+    /// process a running run was handed to means the agent restarted.
+    #[serde(default)]
+    pub boot_id: String,
+    /// Seconds since the agent process started (0.2.1+): runs handed out
+    /// before it started can't finish any more.
+    #[serde(default)]
+    pub uptime_seconds: Option<u64>,
+}
+
+/// A boot id as Wren keeps it: letters, digits, `-` and `_`, at most 64;
+/// `None` when the agent sent none (an agent before 0.2.1).
+pub fn boot_id(raw: &str) -> Option<String> {
+    let id: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    (!id.is_empty()).then_some(id)
 }
 
 fn clip(s: &str) -> String {
@@ -132,18 +151,26 @@ pub async fn heartbeat(
         }
     };
     let facts = beat.facts();
-    let scan = match wren
+    let boot = boot_id(&beat.boot_id);
+    let uptime = beat.uptime_seconds;
+    let (scan, interrupted) = match wren
         .core
         .with_conn(move |c| {
             db::record_heartbeat(c, id, &facts)?;
-            db::scan_requested(c, id)
+            // An agent that restarted mid-run never finishes that run.
+            let interrupted = match &boot {
+                Some(boot) => crate::runs::close_interrupted(c, id, boot, uptime)?,
+                None => Vec::new(),
+            };
+            Ok((db::scan_requested(c, id)?, interrupted))
         })
         .await
     {
-        Ok(scan) => scan,
+        Ok(found) => found,
         Err(err) => return err.into_response(),
     };
     let _ = wren.changes.send(());
+    crate::runs::after_interrupted(&wren, interrupted);
     // `scan` is all Wren can ask for: a fresh inventory (§8).
     Json(json!({
         "server": { "id": id, "name": name },

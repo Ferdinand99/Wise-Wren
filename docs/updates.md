@@ -77,7 +77,9 @@ logged with who made it.
 8. The window closes and you get the result.
 
 Each step's log is on the run page, live. Runs whose agent goes silent for 10 minutes end as rollback failed and
-are never retried.
+are never retried. When the agent restarts during a run (say, after an edit of `agent.toml`), its next heartbeat
+ends the run as rollback failed at once, with a note to check the target, and the next approved update goes. An
+approved version that is already running ends as succeeded ("already up to date") without stopping anything.
 
 ## Notifications
 

@@ -33,7 +33,7 @@ const ERROR_EXAMPLE: &str = r#"{"error": {"code": "not_found", "message": "Not f
 
 const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "agent_version": "0.1.0", "unraid": true}]}"#;
 
-const HEARTBEAT_EXAMPLE: &str = r#"{"agent_version": "0.1.0", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "unraid": true}"#;
+const HEARTBEAT_EXAMPLE: &str = r#"{"agent_version": "0.1.0", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "unraid": true, "boot_id": "18f3a2c4e5d6b7a8-1-9c0d", "uptime_seconds": 3600}"#;
 
 const TARGETS_EXAMPLE: &str = r#"{"targets": [{"id": 7, "server": {"id": 1, "name": "LANBox"}, "kind": "compose", "name": "postiz", "image": "ghcr.io/gitroomhq/postiz-app:latest", "images": 6, "status": "update", "status_detail": "", "available": "2/6", "version_key": "postiz=sha256:5c0d…,postiz-postgres=sha256:a1b2…", "installed_version": "", "latest_version": "", "version_source": null, "version_error": "", "working_dir": "/boot/config/plugins/compose.manager/projects/postiz", "files_reachable": true, "source_url": "https://github.com/gitroomhq/postiz-app", "release_notes": {"url": "https://github.com/gitroomhq/postiz-app/releases/tag/v2.1.0", "title": "v2.1.0"}, "check_interval_hours": 6, "last_checked_at": "2026-10-23 10:00:00"}]}"#;
 
@@ -165,7 +165,7 @@ pub static DOCS: DocsSpec = DocsSpec {
             .res(r#"{"sent": true}"#),
         r("DELETE", "/api/v1/notification-channels/{id}", "editor", "Notifications", "Delete a channel.")
             .res(r#"{"deleted": true}"#),
-        r("GET", "/api/agent/v1/jobs", "agent token", "Agents", "The agent waits here (up to 25 s) for its next job: an approved update or rollback of one of its targets, as data (target kind and name, version keys, per image the container, the reference it runs and the two digests), never a command. `204` when there is none. One run at a time per server.")
+        r("GET", "/api/agent/v1/jobs", "agent token", "Agents", "The agent waits here (up to 25 s) for its next job: an approved update or rollback of one of its targets, as data (target kind and name, version keys, per image the container, the reference it runs and the two digests), never a command. `204` when there is none. One run at a time per server. `?boot=` names the agent process (0.2.1+): a run handed to an earlier process is closed as `rollback_failed`.")
             .res(JOB_EXAMPLE),
         r("POST", "/api/agent/v1/runs/{id}/steps", "agent token", "Agents", "The agent reports a step of its running run. The answer to the `preflight` result is the last moment a run can be cancelled: nothing has stopped yet.")
             .req(r#"{"step": "preflight", "status": "ok", "log": "pulled localhost:5056/ww-test/app:4f90…", "duration_ms": 812}"#)
@@ -175,7 +175,7 @@ pub static DOCS: DocsSpec = DocsSpec {
         r("POST", "/api/agent/v1/runs/{id}/finish", "agent token", "Agents", "The agent reports how its run ended: `succeeded`, `rolled_back`, `failed`, `rollback_failed`, `refused` or `cancelled`.")
             .req(r#"{"outcome": "rolled_back", "detail": "ww-test-container is unhealthy"}"#)
             .res(r#"{}"#),
-        r("POST", "/api/agent/v1/heartbeat", "agent token", "Agents", "An agent reports that it runs, every 30 seconds. Wren counts a server as online while heartbeats arrive (at most 90 seconds apart). `scan: true` in the answer asks the agent for a fresh inventory (\"Check now\"); it is the only thing Wren can ask. 429 with `Retry-After` above 20 a minute.")
+        r("POST", "/api/agent/v1/heartbeat", "agent token", "Agents", "An agent reports that it runs, every 30 seconds. Wren counts a server as online while heartbeats arrive (at most 90 seconds apart). `scan: true` in the answer asks the agent for a fresh inventory (\"Check now\"); it is the only thing Wren can ask. Agents from 0.2.1 also send `boot_id` and `uptime_seconds`: a running run handed to another agent process (the agent restarted) is closed as `rollback_failed`. 429 with `Retry-After` above 20 a minute.")
             .req(HEARTBEAT_EXAMPLE)
             .res(r#"{"server": {"id": 1, "name": "Tower"}, "interval_seconds": 30, "scan": false}"#),
         r("POST", "/api/agent/v1/inventory", "agent token", "Agents", "An agent reports its server's containers (with `.Config.Image`, `RepoDigests` and labels), the Unraid template names, the Compose projects and its script stacks with what their version commands printed. Wren replaces the server's targets with it. 429 with `Retry-After` above 6 a minute.")
