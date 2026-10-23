@@ -174,6 +174,13 @@ impl GitHub {
             return Err("GitHub's answer wasn't understood".into());
         }
         let title = text("name");
+        // Only GitHub's own pages become links on Wren's pages.
+        let url = text("html_url");
+        let url = if url.starts_with("https://github.com/") {
+            url
+        } else {
+            String::new()
+        };
         Ok(Latest {
             title: if title.trim().is_empty() {
                 version.clone()
@@ -181,7 +188,7 @@ impl GitHub {
                 clip_version(&title)
             },
             version,
-            url: text("html_url"),
+            url,
         })
     }
 }
@@ -224,35 +231,25 @@ fn clip_version(s: &str) -> String {
 }
 
 /// The newest version from a URL: the JSON value at `json_pointer`, or
-/// `regex`'s first group (or whole match).
-pub async fn from_url(http: &reqwest::Client, source: &Source) -> Result<Latest, String> {
-    let url =
-        reqwest::Url::parse(&source.url).map_err(|_| "the version URL is not a URL".to_string())?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("the version URL must use http or https".into());
-    }
+/// `regex`'s first group (or whole match). The URL comes from an agent's
+/// inventory, so it goes through [`crate::fetch`] (public addresses only,
+/// every redirect checked, at most [`MAX_BODY`] read in [`TIMEOUT`]); only
+/// the version is kept, never the body.
+pub async fn from_url(source: &Source, allow: crate::fetch::Allow) -> Result<Latest, String> {
     let pattern = if source.json_pointer.is_empty() {
         Some(
-            regex::Regex::new(&source.regex)
+            regex::RegexBuilder::new(&source.regex)
+                .size_limit(1 << 20)
+                .build()
                 .map_err(|_| "the version regex is not valid".to_string())?,
         )
     } else {
         None
     };
-    let res = http
-        .get(url.clone())
-        .timeout(TIMEOUT)
-        .send()
+    let bytes = crate::fetch::get_limited(&source.url, allow, MAX_BODY, TIMEOUT)
         .await
-        .map_err(|_| "the version URL can't be reached".to_string())?;
-    if !res.status().is_success() {
-        return Err(format!("the version URL answered {}", res.status()));
-    }
-    let bytes = res
-        .bytes()
-        .await
-        .map_err(|_| "the version URL sent nothing readable".to_string())?;
-    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_BODY)]).into_owned();
+        .map_err(|e| format!("version URL: {e}"))?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     let version = match pattern {
         None => {
             let json: Value = serde_json::from_str(&text)

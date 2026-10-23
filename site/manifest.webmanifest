@@ -1,7 +1,7 @@
 {
   "name": "Wise Wren",
   "short_name": "Wren",
-  "description": "Keeps your Docker containers up to date, without surprises. In design.",
+  "description": "Keeps your Docker containers up to date, without surprises. Early release.",
   "start_url": "./",
   "scope": "./",
   "display": "browser",

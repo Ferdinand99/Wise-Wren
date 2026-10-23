@@ -10,7 +10,7 @@
     <title>Wise Wren — Docker container updates without surprises</title>
     <meta
       name="description"
-      content="Wise Wren keeps your Docker containers up to date without surprises: it checks on your schedule, updates only what you approve, takes a snapshot first, checks health after and rolls back if it fails. In design: nothing to install yet."
+      content="Wise Wren keeps your Docker containers up to date without surprises: it checks on your schedule, updates only what you approve, takes a snapshot first, checks health after and rolls back if it fails. Early release: Docker images for the server and its agent."
     />
     <script>document.documentElement.classList.add("js");</script>
     <link rel="canonical" href="https://hedgerow.tools/Wise-Wren/" />
@@ -27,7 +27,7 @@
     <meta property="og:title" content="Wise Wren — Docker container updates without surprises" />
     <meta
       property="og:description"
-      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, in design."
+      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, early release."
     />
     <meta property="og:image" content="https://hedgerow.tools/Wise-Wren/og-image.png" />
     <meta property="og:image:type" content="image/png" />
@@ -38,7 +38,7 @@
     <meta name="twitter:title" content="Wise Wren — Docker container updates without surprises" />
     <meta
       name="twitter:description"
-      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, in design."
+      content="Checks for new versions on your schedule, updates only what you approve, and rolls back if an update fails. Self-hosted, early release."
     />
     <meta name="twitter:image" content="https://hedgerow.tools/Wise-Wren/og-image.png" />
     <link rel="preload" href="fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
@@ -48,7 +48,7 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "Wise Wren",
-        "description": "Self-hosted updates for Docker containers, Compose stacks and script-updated stacks: notify, approve or automatic, with a snapshot before, a health check after and automatic rollback. In design.",
+        "description": "Self-hosted updates for Docker containers, Compose stacks and script-updated stacks: notify, approve or automatic, with a snapshot before, a health check after and automatic rollback. Early release.",
         "url": "https://hedgerow.tools/Wise-Wren/",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "Linux (Docker), Unraid",
@@ -104,27 +104,27 @@
             <div class="hero-icon">
               <img src="favicon.svg" width="96" height="96" alt="" />
             </div>
-            <a class="live-pill" href="#roadmap">
+            <a class="live-pill" href="#install">
               <span class="dot is-live" aria-hidden="true"></span>
-              <span>In design · nothing to install yet</span>
+              <span>v0.1 · early release</span>
               <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-right"></use></svg>
             </a>
             <h1 class="display" id="hero-title">Up to date.<br class="br-wide" /> Without surprises.</h1>
             <p class="lead">
-              Wise Wren will keep the Docker containers on your servers up to date. It checks for new
+              Wise Wren keeps the Docker containers on your servers up to date. It checks for new
               versions on a schedule you choose, tells you about them, and updates only what you
               approve. Every update gets a snapshot first, a health check after, and a rollback if
               it fails.
             </p>
             <p class="hero-fine">Wren never changes anything you haven’t allowed.</p>
             <div class="hero-actions">
-              <a class="btn btn-primary btn-lg" href="https://github.com/Ferdinand99/Wise-Wren">
-                <svg class="gh-mark" aria-hidden="true"><use href="#gh"></use></svg>
-                <span>Follow on GitHub</span>
+              <a class="btn btn-primary btn-lg" href="#install">
+                <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#terminal"></use></svg>
+                <span>Install</span>
               </a>
-              <a class="btn btn-ghost btn-lg" href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">
-                <svg class="icon" aria-hidden="true"><use href="assets/icons.svg#file"></use></svg>
-                <span>Read the design</span>
+              <a class="btn btn-ghost btn-lg" href="https://github.com/Ferdinand99/Wise-Wren">
+                <svg class="gh-mark" aria-hidden="true"><use href="#gh"></use></svg>
+                <span>GitHub</span>
               </a>
             </div>
             <p class="hero-meta"><span>MIT licensed</span><span>Built in Rust</span><span>Sibling of Vigilant Vole</span></p>
@@ -555,85 +555,139 @@
         </div>
       </section>
 
+      <!-- Install ========================================================= -->
+      <section class="section" id="install" aria-labelledby="install-title">
+        <div class="wrap">
+          <div class="split">
+            <header class="split-copy reveal">
+              <h2 class="headline" id="install-title">Try it on your own servers.</h2>
+              <p class="sub">
+                v0.1 is an early release: two Docker images for amd64 and arm64, the server
+                (<code class="nw">ghcr.io/ferdinand99/wise-wren</code>) and the agent for each Docker host
+                (<code class="nw">ghcr.io/ferdinand99/wise-wren-agent</code>). It is tested on Unraid; other Linux
+                hosts with Docker are best-effort for now.
+              </p>
+              <ol class="steps-plain">
+                <li>Start the server and open <code class="nw">http://&lt;host&gt;:3003/setup</code> to create the first admin.</li>
+                <li><strong>Servers → Add server</strong> shows the agent’s token once, with the <code class="nw">docker run</code> line for that host.</li>
+                <li>Start the agent. On Unraid, use the <strong>Wise Wren</strong> and <strong>Wise Wren Agent</strong> templates from Community Applications.</li>
+                <li>Limit what the agent may update with <code class="nw">[updates]</code> in its <code class="nw">agent.toml</code>, then approve your first update.</li>
+              </ol>
+              <p class="split-note">
+                The agent uses the Docker socket, which is root on its host. Wren’s snapshots are
+                rollback points, not backups.
+                Read the guides: <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/install.md">install</a>,
+                <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/agent.md">agents</a>,
+                <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/updates.md">updates</a>,
+                <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/snapshots.md">snapshots</a>,
+                <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/vigilant-vole.md">Vigilant Vole</a> and
+                <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/security.md">security</a>.
+              </p>
+            </header>
+
+            <div class="split-art reveal">
+              <div class="code-card">
+                <div class="code-head">
+                  <span>The server, with Docker Compose</span>
+                  <span class="pill status-up"><span class="dot"></span>v0.1</span>
+                </div>
+                <pre tabindex="0" role="region" translate="no" aria-label="Commands: download Wise Wren's docker-compose.yml and start it"><code>mkdir wise-wren &amp;&amp; cd wise-wren
+curl -fsSLO https://raw.githubusercontent.com/\
+Ferdinand99/Wise-Wren/main/docker-compose.yml
+docker compose up -d</code></pre>
+              </div>
+              <div class="code-card">
+                <div class="code-head">
+                  <span>An agent’s agent.toml</span>
+                </div>
+                <pre tabindex="0" role="region" translate="no" aria-label="Example agent.toml: the folders Wren may touch and which targets it may update"><code><span class="c"># Folders Wren may touch, mounted at the same path</span>
+roots = [<span class="s">"/mnt/user/appdata"</span>, <span class="s">"/mnt/cache/appdata"</span>]
+
+<span class="c"># Only these may ever be updated, whatever Wren asks</span>
+<span class="k">[updates]</span>
+allow = [<span class="s">"nextcloud"</span>, <span class="s">"immich"</span>]
+deny = [<span class="s">"*-db"</span>]</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Roadmap ========================================================= -->
       <section class="section section-alt" id="roadmap" aria-labelledby="roadmap-title">
         <div class="wrap">
           <header class="section-head reveal">
             <h2 class="headline" id="roadmap-title">Where it stands.</h2>
             <p class="sub">
-              Wren is in design, and nothing is built yet. It will be built in phases, riskiest part
-              first. There are no dates: each step is done when it works, and the
+              Wren is built in phases, riskiest part first, and v0.1 is the first release. There
+              are no dates: each step is done when it works, and the
               <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md#12-phases-risk-first">phase table in the design</a>
               says what “works” means.
             </p>
           </header>
 
           <ol class="roadmap">
-            <li class="milestone is-now reveal">
-              <span class="ms-marker" aria-hidden="true"><span class="dot is-live"></span></span>
+            <li class="milestone is-done reveal">
+              <span class="ms-marker" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#check"></use></svg></span>
               <div class="ms-body">
-                <p class="ms-status"><span class="pill status-accent"><span class="dot"></span>Now</span></p>
-                <h3>Design</h3>
-                <p>What Wren is for, its goals and anti-goals, and the safe update flow, written down and being finalised.</p>
+                <p class="ms-status"><span class="pill status-up"><span class="dot"></span>Done</span></p>
+                <h3>Design and spike</h3>
+                <p>Goals, anti-goals and the safe update flow, then a throwaway test of the risky parts on a real Unraid server: template containers, a vendor’s update script, snapshots and registry checks.</p>
               </div>
             </li>
-            <li class="milestone reveal">
-              <span class="ms-marker" aria-hidden="true"></span>
+            <li class="milestone is-done reveal">
+              <span class="ms-marker" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#check"></use></svg></span>
               <div class="ms-body">
-                <p class="ms-status"><span class="pill status-accent">Next</span></p>
-                <h3>Spike: the risky parts first</h3>
-                <p>
-                  A throwaway test on a real Unraid server: recreate a template container the way
-                  Unraid does, run a vendor’s update script from an agent, compare snapshots with
-                  copies, and check registries without hitting their rate limits.
-                </p>
-              </div>
-            </li>
-            <li class="milestone reveal">
-              <span class="ms-marker" aria-hidden="true"></span>
-              <div class="ms-body">
-                <p class="ms-status"><span class="pill">Then</span></p>
+                <p class="ms-status"><span class="pill status-up"><span class="dot"></span>Done</span></p>
                 <h3>Skeleton on vole-kit</h3>
-                <p>Sign-in, users, settings and translations from the family’s shared foundation, and servers with agents that show as online.</p>
+                <p>Sign-in, users, settings and 26 languages from the family’s shared foundation, and servers with agents that show as online.</p>
               </div>
             </li>
-            <li class="milestone reveal">
-              <span class="ms-marker" aria-hidden="true"></span>
+            <li class="milestone is-done reveal">
+              <span class="ms-marker" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#check"></use></svg></span>
               <div class="ms-body">
-                <p class="ms-status"><span class="pill">Then</span></p>
+                <p class="ms-status"><span class="pill status-up"><span class="dot"></span>Done</span></p>
                 <h3>Finding versions</h3>
                 <p>Containers, Unraid templates, Compose stacks and script stacks, with release notes and one notification per new version.</p>
               </div>
             </li>
-            <li class="milestone reveal">
-              <span class="ms-marker" aria-hidden="true"></span>
+            <li class="milestone is-done reveal">
+              <span class="ms-marker" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#check"></use></svg></span>
               <div class="ms-body">
-                <p class="ms-status"><span class="pill">Then</span></p>
+                <p class="ms-status"><span class="pill status-up"><span class="dot"></span>Done</span></p>
                 <h3>Safe update runs</h3>
-                <p>Approvals, snapshots, health checks, rollback and history. Done when a deliberately broken update rolls back on its own.</p>
+                <p>Approvals, snapshots, health checks, rollback and history: a deliberately broken update rolls back on its own.</p>
               </div>
             </li>
-            <li class="milestone reveal">
-              <span class="ms-marker" aria-hidden="true"></span>
+            <li class="milestone is-done reveal">
+              <span class="ms-marker" aria-hidden="true"><svg class="icon"><use href="assets/icons.svg#check"></use></svg></span>
               <div class="ms-body">
-                <p class="ms-status"><span class="pill">Then</span></p>
+                <p class="ms-status"><span class="pill status-up"><span class="dot"></span>Done</span></p>
                 <h3>Vigilant Vole and schedules</h3>
                 <p>Maintenance windows, planned maintenance, health checks from your monitors, and automatic mode with windows and exclusions.</p>
               </div>
             </li>
+            <li class="milestone is-now reveal">
+              <span class="ms-marker" aria-hidden="true"><span class="dot is-live"></span></span>
+              <div class="ms-body">
+                <p class="ms-status"><span class="pill status-accent"><span class="dot"></span>Early release</span></p>
+                <h3>v0.1</h3>
+                <p>The REST API and MCP tools for everything the web UI does, hardening, user guides and Unraid templates for the server and the agent. Docker images only.</p>
+              </div>
+            </li>
             <li class="milestone reveal">
               <span class="ms-marker" aria-hidden="true"></span>
               <div class="ms-body">
                 <p class="ms-status"><span class="pill">Then</span></p>
-                <h3>v0.1</h3>
-                <p>The REST API and MCP tools, hardening, docs and Unraid templates: the first release.</p>
+                <h3>v1.0</h3>
+                <p>Static binaries and a Linux installer, more testing on other Linux hosts and filesystems (btrfs subvolumes, ZFS), and reviewed translations.</p>
               </div>
             </li>
           </ol>
 
           <p class="later reveal">
             <strong>Later:</strong> an iOS app to see available updates and approve them, with push
-            notifications. Wren’s API is being designed to cover everything the app will need.
+            notifications, built on the REST API that already covers everything the web UI does.
           </p>
         </div>
       </section>
@@ -650,10 +704,11 @@
                 <summary>When can I use it?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
                 <div class="faq-body">
                   <p>
-                    Not yet. Wren is in design, and there is nothing to install. The
-                    <a href="#roadmap">roadmap</a> shows what comes first. Watch or star the
-                    <a href="https://github.com/Ferdinand99/Wise-Wren">repository</a> to hear about the
-                    first release.
+                    Now, as an early release. v0.1 is a Docker image for the server and one for the
+                    agent; <a href="#install">Install</a> shows how to start, and Unraid templates for both
+                    are in <a href="https://github.com/Ferdinand99/unraid-templates">unraid-templates</a>.
+                    Static binaries and an installer come by v1.0. Watch or star the
+                    <a href="https://github.com/Ferdinand99/Wise-Wren">repository</a> to hear about new releases.
                   </p>
                 </div>
               </details>
@@ -674,9 +729,10 @@
                 <summary>Does it work outside Unraid?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
                 <div class="faq-body">
                   <p>
-                    Unraid first, any Docker host planned. Wren starts where its maker runs his own
+                    Yes, best-effort for now. Wren is tested on Unraid, where its maker runs his own
                     containers, including the ones Unraid creates from its templates. Plain containers
-                    and Compose stacks on any Linux server with Docker are part of the plan.
+                    and Compose stacks on other Linux servers with Docker work too, with plain-copy
+                    snapshots on filesystems without reflinks; they get more testing before v1.0.
                   </p>
                 </div>
               </details>
@@ -725,10 +781,9 @@
                 <summary>How can I help?<svg class="icon" aria-hidden="true"><use href="assets/icons.svg#chevron-down"></use></svg></summary>
                 <div class="faq-body">
                   <p>
-                    Read the <a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">design</a>
-                    and <a href="https://github.com/Ferdinand99/Wise-Wren/issues">open an issue</a> with
-                    questions or objections. Stories about how you update Compose stacks or
-                    script-updated apps today are especially welcome.
+                    Try the early release and <a href="https://github.com/Ferdinand99/Wise-Wren/issues">open an issue</a>
+                    with what breaks or surprises you. Reports from Linux hosts other than Unraid, and
+                    from btrfs subvolumes or ZFS, are especially welcome.
                   </p>
                 </div>
               </details>
@@ -750,6 +805,7 @@
         <nav aria-label="Project links">
           <ul class="footer-links">
             <li><a href="https://github.com/Ferdinand99/Wise-Wren">GitHub</a></li>
+            <li><a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/install.md">Docs</a></li>
             <li><a href="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/design.md">Design</a></li>
             <li><a href="https://github.com/Ferdinand99/Wise-Wren#readme">README</a></li>
             <li><a href="https://github.com/Ferdinand99/Wise-Wren/issues">Issues</a></li>

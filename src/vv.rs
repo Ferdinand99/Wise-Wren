@@ -109,10 +109,15 @@ pub async fn remove(core: &Core) -> Result<(), ApiError> {
     .await
 }
 
-/// An `http(s)://` URL, or `None`.
+/// An `http(s)://` URL, or `None`. No user name or password in it: the
+/// token goes in its own field, and the URL shows up in logs and pages.
 pub fn normal_url(raw: &str) -> Option<String> {
     let u = url::Url::parse(raw.trim()).ok()?;
-    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none() {
+    if !matches!(u.scheme(), "http" | "https")
+        || u.host_str().is_none()
+        || !u.username().is_empty()
+        || u.password().is_some()
+    {
         return None;
     }
     Some(u.as_str().trim_end_matches('/').to_string())
@@ -1192,5 +1197,6 @@ mod tests {
             Some("http://10.0.3.26:3001")
         );
         assert_eq!(normal_url("ftp://x"), None);
+        assert_eq!(normal_url("http://owner:secret@10.0.3.26:3001"), None);
     }
 }

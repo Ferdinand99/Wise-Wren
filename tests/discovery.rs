@@ -345,6 +345,22 @@ async fn script_stack_versions() {
                 "version": {"source": {"command": true}, "installed": "1.0", "latest": "1.1"}}),
         ]);
     inventory(&app, &token, inv).await;
+    // By default a version URL on a private or loopback address is refused
+    // (the fake serves on 127.0.0.1), and nothing of its answer is kept.
+    checks::run_due(&app.wren).await;
+    let first = all(&app).await;
+    let refused = by_name(&first, "by-url");
+    assert!(
+        refused.version_error.contains("private or local"),
+        "{}",
+        refused.version_error
+    );
+    assert_eq!(refused.latest_version, "");
+    app.wren
+        .allow_private_fetch
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    app.exec("UPDATE targets SET last_checked_at = NULL".into())
+        .await;
     checks::run_due(&app.wren).await;
     let rows = all(&app).await;
     let stack = by_name(&rows, "ww-test-stack");

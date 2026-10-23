@@ -1180,17 +1180,33 @@ pub async fn jobs(
     };
     let deadline =
         Instant::now() + Duration::from_secs(q.wait.unwrap_or(POLL_SECONDS).min(POLL_SECONDS));
+    // The token is checked again before every hand-out: a token replaced or
+    // revoked while this poll waits gets no job.
+    let hash = vole_kit::auth::tokens::token_from_headers(&headers)
+        .map(|t| vole_kit::auth::tokens::hash(&t))
+        .unwrap_or_default();
     loop {
         let notified = wren.jobs.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        match wren.core.with_conn(move |c| dispatch(c, server_id)).await {
-            Ok(Some(job)) => {
+        let h = hash.clone();
+        match wren
+            .core
+            .with_conn(move |c| {
+                if crate::db::by_token_hash(c, &h)?.map(|(id, _)| id) != Some(server_id) {
+                    return Ok(Err(()));
+                }
+                Ok(Ok(dispatch(c, server_id)?))
+            })
+            .await
+        {
+            Ok(Err(())) => return ApiError::Unauthorized.into_response(),
+            Ok(Ok(None)) => {}
+            Ok(Ok(Some(job))) => {
                 tracing::info!(server_id, run_id = ?job.get("run_id"), "job sent to the agent");
                 let _ = wren.changes.send(());
                 return Json(json!({ "job": job })).into_response();
             }
-            Ok(None) => {}
             Err(err) => return err.into_response(),
         }
         let now = Instant::now();

@@ -12,17 +12,17 @@
   <a href="https://hedgerow.tools/Wise-Wren/"><img src="https://img.shields.io/badge/website-hedgerow.tools%2FWise--Wren-black.svg" alt="Website"></a>
 </p>
 
-> **Status: early development, nothing to install yet.** Wren lists what runs on each server, checks for new
-> versions and runs the updates you approve, with a snapshot, a health check and an automatic rollback.
-> Scheduling, automatic mode and the Vigilant Vole integration come next; there is no release or published image
-> yet. The design is in [`docs/design.md`](docs/design.md), the spike's results in
-> [`docs/spike-findings.md`](docs/spike-findings.md). Watch or star the repository to hear about the first
-> release.
->
-> To try the skeleton from a checkout, see [`docs/development.md`](docs/development.md): `cargo run` serves Wren on
-> port 3003, and each server's page shows the `docker run` line for its agent.
+> **Status: v0.1, an early release (Docker images only).** Wren lists what runs on each server (containers, Unraid
+> template containers, Compose stacks and script-updated stacks), checks for new versions and updates what you
+> approve, now or at a time you choose, with a snapshot, a health check and an automatic rollback. Automatic
+> updates inside a window, the [Vigilant Vole](https://hedgerow.tools/Vigilant-Vole/) integration (maintenance
+> windows and monitor-based health checks), ~40 notification channels, a REST API with OpenAPI and MCP tools, in 26
+> languages. It is tested on Unraid; other Linux Docker hosts are best-effort, btrfs subvolume snapshots are untested
+> on real pools and ZFS uses plain copies. The translations are unreviewed drafts. Installers and static binaries
+> come later. The design is in [`docs/design.md`](docs/design.md); to build and run it, see
+> [`docs/development.md`](docs/development.md).
 
-Wise Wren ("Wren") will keep the Docker containers on your servers up to date. It checks for new versions on a
+Wise Wren ("Wren") keeps the Docker containers on your servers up to date. It checks for new versions on a
 schedule you choose, tells you about them, and updates only what you approve, or what you have explicitly allowed
 it to update on its own.
 
@@ -31,7 +31,7 @@ containers made from its templates, but not Compose stacks or apps that update w
 tools either only notify (Diun, What's Up Docker) or update blindly (Watchtower). None of them pause your
 monitoring, take a snapshot first, check health afterwards and roll back.
 
-## What it will do
+## What it does
 
 - **Notify, approve or automatic.** Each server has a default mode and each target can override it. Approve is
   the default: one click updates now, or at a time you choose.
@@ -65,6 +65,31 @@ Automatic updates only run inside a window you set, and any container or stack c
 for one version: if a newer one appears before it runs, Wren asks again. Scripts are defined on each server,
 and Wren can only ask for them by name, so it can never become a remote shell.
 
+## Install
+
+Wren is a server (the web UI, once) plus a small agent on every Docker host it looks after. Start the server:
+
+```bash
+mkdir wise-wren && cd wise-wren
+curl -fsSLO https://raw.githubusercontent.com/Ferdinand99/Wise-Wren/main/docker-compose.yml
+docker compose up -d
+```
+
+Open `http://<host>:3003/setup` to create the first admin, set the address agents use under **Settings → General**
+(or `WW_PUBLIC_URL`), then **Servers → Add server**: Wren shows the agent's token once, with the `docker run` line
+for that host. On **Unraid**, install **Wise Wren** and **Wise Wren Agent** from Community Applications
+([templates](https://github.com/Ferdinand99/unraid-templates)). Images are on GHCR for amd64 and arm64:
+`ghcr.io/ferdinand99/wise-wren` and `ghcr.io/ferdinand99/wise-wren-agent`, `:<version>` or `:latest`.
+
+**The agent has the Docker socket, which is root on its host.** Read the guides before the first update:
+
+- [Installing the server](docs/install.md)
+- [Adding an agent](docs/agent.md): `agent.toml`, the same-path rule, `[updates] allow/deny`, script stacks
+- [Updates, approvals and schedules](docs/updates.md): modes, approvals, scheduled updates, auto windows
+- [Snapshots and rollback](docs/snapshots.md): **snapshots are not backups**
+- [Vigilant Vole](docs/vigilant-vole.md): maintenance windows and monitor health (VV 0.9.0 or later)
+- [Security notes](docs/security.md) and [Upgrading](docs/upgrading.md)
+
 ## Planned for v1
 
 | Updates | Around them |
@@ -75,7 +100,8 @@ and Wren can only ask for them by name, so it can never become a remote shell.
 | Snapshot before, health check after, automatic rollback | Notifications to ~40 channels |
 | A history of every run, step by step | REST API and MCP tools for everything the web UI can do |
 
-Not in v1: the iOS app (planned later), updating Unraid OS, plugins, VMs, LXC or Kubernetes, building images
+Most of the table is in v0.1; static binaries, a Linux installer and wider testing on other Linux hosts come before
+v1.0. Not in v1: the iOS app (planned later), updating Unraid OS, plugins, VMs, LXC or Kubernetes, building images
 from source, and offsite backups (Wren's snapshots are short-lived rollback points, not backups). See
 [`docs/design.md`](docs/design.md) for the full scope and the phases.
 

@@ -47,7 +47,11 @@ src/
   registries.rs       # Settings → Registries: credentials sealed with AES-256-GCM
   pages.rs            # Updates page, target page, Targets card, check-now and interval actions
   channels.rs         # Settings → Notifications (from Keen Kestrel, without alert rules)
-  api.rs              # API reference (DocsSpec), GET /api/v1/{servers,targets,updates}, MCP tools
+  api.rs              # API reference (DocsSpec), targets, updates, runs, approvals, schedules, modes; MCP tools
+  api_settings.rs     # REST for servers and agent tokens, Check now, intervals, registries, VV, monitor links,
+                      # notification channels
+  fetch.rs            # guarded fetch of user-influenced URLs (public addresses only, pinned DNS, redirects
+                      # re-checked, size and time caps)
 templates/            # Wren's pages (extend kit/layout.html)
 static/               # favicon, icons, web manifest, wren.css (the wren's rose)
 migrations/           # Wren's migrations (after the kit's core set)
@@ -479,6 +483,30 @@ connection say "Vigilant Vole is too old to report results during maintenance; u
 - **Planned windows:** a scheduled run with linked monitors gets a planned window in VV ahead of time (title, start,
   twice the health period plus 15 minutes, monitors, status pages); moving the run moves it, cancelling it (or a
   lapse) deletes it, and it becomes the run's window when the run starts.
+
+## REST API and MCP
+
+REST v1 covers what the web UI does (design §9); the reference is generated from `api::DOCS` (`/api-docs`,
+`/api/v1/openapi.json`), and `tests/api.rs` fails when a served route is missing from it. Roles as on the pages:
+viewers read; editors approve, schedule, skip/snooze/resume, cancel, roll back, Check now, intervals and
+notification channels; admins add and delete servers and agent tokens, registries, the Vigilant Vole connection
+and monitor links, and turn automatic updates on. **Writes need an API token with write access**; a session cookie
+on an `/api/v1` write is refused (those paths skip the CSRF check). Secrets are write-only: an agent token appears
+only in the answer that made it, registry passwords, the VV token and channel secrets never come back (masked or
+`has_password`/`token_saved`). MCP (`/mcp`) has the same reads and the operational actions, filtered by the token
+(read: list and get tools; write: approvals, skip/snooze, Check now, intervals, runs, modes; admin: monitor
+links, Test connection); agent tokens, registries and channels stay REST only, so no secret lands in an
+assistant's context.
+
+**Server-side fetches.** A script stack's version `url` comes from an agent, so `fetch::get_limited` only connects
+to public addresses: every address of the host is checked (loopback, private, link-local, CGNAT, multicast,
+unspecified, reserved, documentation, ULA, site-local, and IPv4 inside IPv6), the connection is pinned to the
+checked address, redirects are followed by hand (at most 3, each checked), at most 256 KB are read in 20 s, and only
+the version is kept. GitHub requests go to a fixed API host with a validated `owner/repo`, and only
+`https://github.com/…` release links are kept. Registry credentials are sent to a token realm only over https or
+on the registry's own host. Tests open the guard with `Wren::allow_private_fetch`.
+
+The user guides are in `docs/` (install, agent, updates, snapshots, vigilant-vole, security, upgrading).
 
 ## Translations
 
