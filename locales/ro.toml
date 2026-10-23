@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Prezentare generală"
+sub = "Serverele tale și agenții lor dintr-o privire."
+servers = "Servere"
+online = "Online"
+not_online = "Nu sunt online"
+
+[servers]
+title = "Servere"
+sub = "Fiecare server rulează agentul Wren, care se conectează singur la Wren. Serverele tale nu deschid niciun port."
+add = "Adaugă server"
+new_sub = "Dă-i un nume serverului. Wren îți arată apoi tokenul agentului și comanda care pornește agentul."
+name = "Nume"
+name_placeholder = "Tower"
+err_name = "Introdu un nume."
+err_name_long = "Folosește cel mult {max} de caractere."
+err_name_taken = "Există deja un server cu acest nume."
+empty_title = "Încă nu există servere"
+empty_text = "Adaugă un server, apoi pornește agentul Wren pe el. Agentul se conectează singur la Wren."
+empty_viewer = "Serverele le adaugă un administrator. Roagă-l pe unul să-l adauge pe primul."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Se așteaptă agentul"
+status_no_token = "Fără token"
+last_seen = "Văzut ultima dată"
+never = "Niciodată"
+hostname = "Nume gazdă"
+os = "Sistem de operare"
+docker = "Docker"
+docker_unreachable = "Inaccesibil: {error}"
+agent_version = "Versiunea agentului"
+unraid = "Unraid"
+details = "Detalii"
+agent = "Agent"
+agent_sub = "Agentul se autentifică cu propriul token. Doar raportează către Wren; deocamdată nu rulează nimic din ce cere Wren."
+token = "Tokenul agentului"
+token_none = "Acest server nu are token, așa că agentul lui nu se poate conecta. Creează un token nou ca să-l conectezi din nou."
+token_once = "Copiază tokenul acum. Wren păstrează doar o amprentă a lui și nu îl mai poate afișa."
+run_title = "Pornește agentul"
+run_unraid = "Pe Unraid"
+run_linux = "Pe alte gazde Linux"
+run_help = "Montează fiecare dosar cu care poate lucra Wren la aceeași cale în agent și trece-l în agent.toml. Accesul la socketul Docker îi dă agentului acces root la server."
+copy_command = "Copiază comanda"
+new_token = "Token nou"
+new_token_q = "Creezi un token nou pentru „{name}”?"
+new_token_msg = "Tokenul curent încetează imediat să funcționeze. Pornește din nou agentul cu cel nou."
+revoke = "Revocă tokenul"
+revoke_q = "Revoci tokenul pentru „{name}”?"
+revoke_msg = "Agentul nu se mai poate conecta până nu creezi un token nou."
+revoked = "Tokenul pentru „{name}” a fost revocat."
+delete_q = "Ștergi „{name}”?"
+delete_msg = "Agentul lui nu se mai poate conecta. Pe serverul propriu-zis nu se schimbă nimic."
+deleted = "„{name}” a fost șters."
+added = "„{name}” a fost adăugat. Pornește-i acum agentul."
+
+[channels]
+sub = "Unde trimite Wren notificările: versiuni noi, rezultatele actualizărilor și agenții care se deconectează."
+empty_text = "Adaugă un canal, cum ar fi ntfy, Slack sau e-mail. Wren începe să trimită de îndată ce sosesc verificări de actualizări."
+foot = "Secretele salvate nu mai sunt afișate niciodată. Ca să le păstrezi când editezi un canal, lasă-le goale."
+delete_q = "Ștergi „{name}”?"
+delete_msg = "Wren nu mai trimite notificări către el."
+more_actions_for = "Mai multe acțiuni pentru {name}"
+language = "Limba mesajelor"
+language_help = "Notificările către acest canal sunt scrise în această limbă."
+language_default = "Limba instanței ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Notificare de test de la {product}"
+test_body = "Dacă poți citi asta, notificările ajung pe acest canal."
+event_test = "Mesaj de test"
+view_overview = "Deschide prezentarea generală"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Bine ai revenit. Autentifică-te pentru a-ți vedea serverele și actualizările lor."
+
+[setup]
+site_name_placeholder = "Actualizări din home lab…"
+tz_after = ". Se poate schimba din Setări."
+
+[users]
+roles_help = "Cititorii pot vedea, dar nu pot modifica nimic. Editorii gestionează canalele de notificări. Administratorii pot face orice, inclusiv servere, tokenuri de agent și utilizatori."
+
+[tokens]
+sub = "Lasă scripturile și asistenții AI să citească serverele tale și agenții lor."
+scope_read_sub = "Servere și agenți"
+
+[auth]
+all_set = "Totul este gata. Adaugă primul server pentru a începe."
+setup_token_required = "Această instanță are nevoie de un token de configurare. Deschide /setup?token=… cu valoarea WW_SETUP_TOKEN din configurația serverului."
+
+[error]
+back = "Înapoi la prezentarea generală"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Cum se numește această instanță, unde poate fi accesată și în ce fus orar afișează orele."
+base_url_help = "Adresa la care agenții și oamenii ajung la această instanță: apare în comanda de pornire a agentului și în linkurile din notificări. Dacă pe server e setat WW_PUBLIC_URL, acesta înlocuiește valoarea la fiecare pornire."

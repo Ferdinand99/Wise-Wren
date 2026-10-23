@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Overzicht"
+sub = "Je servers en hun agents in één oogopslag."
+servers = "Alle servers"
+online = "Verbonden"
+not_online = "Niet verbonden"
+
+[servers]
+title = "Servers"
+sub = "Elke server draait de agent van Wren, die zelf verbinding maakt met Wren. Je servers openen geen poorten."
+add = "Server toevoegen"
+new_sub = "Geef de server een naam. Wren toont dan het token van de agent en de opdracht die de agent start."
+name = "Naam"
+name_placeholder = "Tower"
+err_name = "Voer een naam in."
+err_name_long = "Gebruik maximaal {max} tekens."
+err_name_taken = "Er is al een server met deze naam."
+empty_title = "Nog geen servers"
+empty_text = "Voeg een server toe en start daarop de agent van Wren. De agent maakt zelf verbinding met Wren."
+empty_viewer = "Een beheerder voegt servers toe. Vraag er een om de eerste toe te voegen."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Wacht op de agent"
+status_no_token = "Geen token"
+last_seen = "Laatst gezien"
+never = "Nooit"
+hostname = "Hostnaam"
+os = "Besturingssysteem"
+docker = "Docker"
+docker_unreachable = "Niet bereikbaar: {error}"
+agent_version = "Agentversie"
+unraid = "Unraid"
+details = "Gegevens"
+agent = "Agent"
+agent_sub = "De agent meldt zich aan met een eigen token. Hij rapporteert alleen aan Wren en voert nog niets uit waar Wren om vraagt."
+token = "Agenttoken"
+token_none = "Deze server heeft geen token, dus de agent kan geen verbinding maken. Maak een nieuw token om hem weer te verbinden."
+token_once = "Kopieer het token nu. Wren bewaart er alleen een vingerafdruk van en kan het niet opnieuw tonen."
+run_title = "Start de agent"
+run_unraid = "Op Unraid"
+run_linux = "Op andere Linux-hosts"
+run_help = "Koppel elke map waar Wren aan mag komen op hetzelfde pad in de agent, en zet hem in agent.toml. Toegang tot de Docker-socket geeft de agent roottoegang tot de server."
+copy_command = "Opdracht kopiëren"
+new_token = "Nieuw token"
+new_token_q = "Een nieuw token maken voor “{name}”?"
+new_token_msg = "Het huidige token werkt direct niet meer. Start de agent opnieuw met het nieuwe."
+revoke = "Token intrekken"
+revoke_q = "Het token van “{name}” intrekken?"
+revoke_msg = "De agent kan pas weer verbinding maken als je een nieuw token maakt."
+revoked = "Het token van “{name}” is ingetrokken."
+delete_q = "“{name}” verwijderen?"
+delete_msg = "De agent kan geen verbinding meer maken. Op de server zelf verandert niets."
+deleted = "“{name}” is verwijderd."
+added = "“{name}” is toegevoegd. Start nu de agent."
+
+[channels]
+sub = "Waar Wren meldingen naartoe stuurt: nieuwe versies, updateresultaten en agents die offline gaan."
+empty_text = "Voeg een kanaal toe, zoals ntfy, Slack of e-mail. Wren begint met versturen zodra er updatecontroles binnenkomen."
+foot = "Opgeslagen geheimen worden nooit meer getoond. Laat ze leeg als je een kanaal bewerkt om ze te behouden."
+delete_q = "“{name}” verwijderen?"
+delete_msg = "Wren stuurt er geen meldingen meer naartoe."
+more_actions_for = "Meer acties voor {name}"
+language = "Taal van berichten"
+language_help = "Meldingen naar dit kanaal worden in deze taal geschreven."
+language_default = "Taal van de instantie ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Testmelding van {product}"
+test_body = "Kun je dit lezen, dan komen meldingen aan in dit kanaal."
+event_test = "Testmelding"
+view_overview = "Overzicht openen"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Welkom terug. Log in om je servers en hun updates te zien."
+
+[setup]
+site_name_placeholder = "Updates van het homelab…"
+tz_after = ". Dit is aan te passen in Instellingen."
+
+[users]
+roles_help = "Kijkers kunnen alles zien maar niets wijzigen. Bewerkers beheren meldingskanalen. Beheerders kunnen alles, inclusief servers, agenttokens en gebruikers."
+
+[tokens]
+sub = "Laat scripts en AI-assistenten je servers en hun agents lezen."
+scope_read_sub = "Servers en agents"
+
+[auth]
+all_set = "Alles is klaar. Voeg je eerste server toe om te beginnen."
+setup_token_required = "Deze instantie heeft een setuptoken nodig. Open /setup?token=… met de waarde van WW_SETUP_TOKEN uit de configuratie van de server."
+
+[error]
+back = "Terug naar overzicht"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Hoe deze instantie heet, waar ze bereikbaar is en in welke tijdzone ze tijden toont."
+base_url_help = "Het adres waarop agents en mensen deze instantie bereiken: het staat in de startopdracht van de agent en in links in meldingen. Als WW_PUBLIC_URL op de server is ingesteld, vervangt die deze waarde bij elke start."

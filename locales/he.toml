@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "סקירה כללית"
+sub = "השרתים והסוכנים שלהם במבט אחד."
+servers = "שרתים"
+online = "מחוברים"
+not_online = "לא מחוברים"
+
+[servers]
+title = "שרתים"
+sub = "בכל שרת פועל הסוכן של Wren, שמתחבר בעצמו אל Wren. השרתים לא פותחים אף פורט."
+add = "הוספת שרת"
+new_sub = "יש לתת שם לשרת. לאחר מכן Wren מציג את האסימון של הסוכן ואת הפקודה שמפעילה אותו."
+name = "שם"
+name_placeholder = "Tower"
+err_name = "יש להזין שם."
+err_name_long = "עד {max} תווים."
+err_name_taken = "כבר קיים שרת בשם הזה."
+empty_title = "אין עדיין שרתים"
+empty_text = "מוסיפים שרת ואז מפעילים עליו את הסוכן של Wren. הסוכן מתחבר אל Wren בעצמו."
+empty_viewer = "שרתים מוסיף מנהל. אפשר לבקש מאחד המנהלים להוסיף את הראשון."
+status_online = "מחובר"
+status_offline = "לא מחובר"
+status_waiting = "ממתין לסוכן"
+status_no_token = "אין אסימון"
+last_seen = "נראה לאחרונה"
+never = "אף פעם"
+hostname = "שם מארח"
+os = "מערכת הפעלה"
+docker = "Docker"
+docker_unreachable = "לא נגיש: {error}"
+agent_version = "גרסת הסוכן"
+unraid = "Unraid"
+details = "פרטים"
+agent = "סוכן"
+agent_sub = "הסוכן מזדהה עם אסימון משלו. הוא רק מדווח ל־Wren, ועדיין לא מריץ שום דבר ש־Wren מבקש."
+token = "אסימון הסוכן"
+token_none = "לשרת הזה אין אסימון, ולכן הסוכן שלו לא יכול להתחבר. כדי לחבר אותו מחדש, יש ליצור אסימון חדש."
+token_once = "יש להעתיק את האסימון עכשיו. Wren שומר רק טביעת אצבע שלו ולא יכול להציג אותו שוב."
+run_title = "הפעלת הסוכן"
+run_unraid = "ב־Unraid"
+run_linux = "במארחי Linux אחרים"
+run_help = "יש לעגן כל תיקייה ש־Wren עשוי לגעת בה באותו נתיב בתוך הסוכן, ולרשום אותה ב־agent.toml. גישה ל־socket של Docker נותנת לסוכן הרשאות root בשרת."
+copy_command = "העתקת הפקודה"
+new_token = "אסימון חדש"
+new_token_q = "ליצור אסימון חדש עבור “{name}”?"
+new_token_msg = "האסימון הנוכחי מפסיק לעבוד מיד. יש להפעיל מחדש את הסוכן עם האסימון החדש."
+revoke = "ביטול האסימון"
+revoke_q = "לבטל את האסימון של “{name}”?"
+revoke_msg = "הסוכן לא יוכל להתחבר עד שייווצר אסימון חדש."
+revoked = "האסימון של “{name}” בוטל."
+delete_q = "למחוק את “{name}”?"
+delete_msg = "הסוכן שלו לא יוכל עוד להתחבר. בשרת עצמו שום דבר לא משתנה."
+deleted = "“{name}” נמחק."
+added = "“{name}” נוסף. עכשיו אפשר להפעיל את הסוכן שלו."
+
+[channels]
+sub = "לאן Wren שולח התראות: גרסאות חדשות, תוצאות עדכונים וסוכנים שמתנתקים."
+empty_text = "מוסיפים ערוץ, כמו ntfy, Slack או דוא״ל. Wren יתחיל לשלוח כשיגיעו בדיקות עדכונים."
+foot = "סודות שנשמרו לא מוצגים שוב. כדי לשמור אותם בעריכת ערוץ, משאירים את השדות ריקים."
+delete_q = "למחוק את “{name}”?"
+delete_msg = "Wren מפסיק לשלוח אליו התראות."
+more_actions_for = "פעולות נוספות עבור {name}"
+language = "שפת ההודעות"
+language_help = "התראות לערוץ הזה נכתבות בשפה הזו."
+language_default = "שפת המופע ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "התראת בדיקה מ-{product}"
+test_body = "אם ההודעה הזו מוצגת, ההתראות מגיעות לערוץ הזה."
+event_test = "בדיקה"
+view_overview = "פתיחת הסקירה הכללית"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "ברוכים השבים. יש להתחבר כדי לראות את השרתים ואת העדכונים שלהם."
+
+[setup]
+site_name_placeholder = "עדכוני מעבדה ביתית…"
+tz_after = ". אפשר לשנות זאת בהגדרות."
+
+[users]
+roles_help = "צופים יכולים לראות אך לא לשנות דבר. עורכים מנהלים ערוצי התראות. מנהלים יכולים הכול, כולל שרתים, אסימוני סוכנים ומשתמשים."
+
+[tokens]
+sub = "מאפשרים לסקריפטים ולעוזרי AI לקרוא את השרתים והסוכנים שלהם."
+scope_read_sub = "שרתים וסוכנים"
+
+[auth]
+all_set = "הכול מוכן. כדי להתחיל, יש להוסיף את השרת הראשון."
+setup_token_required = "המופע הזה דורש אסימון הגדרה. יש לפתוח /setup?token=… עם הערך של WW_SETUP_TOKEN מתצורת השרת."
+
+[error]
+back = "חזרה לסקירה הכללית"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "איך המופע הזה נקרא, איפה אפשר להגיע אליו ולפי איזה אזור זמן הוא מציג שעות."
+base_url_help = "הכתובת שבה סוכנים ואנשים מגיעים למופע הזה: משמשת בפקודת ההפעלה של הסוכן ובקישורים בהתראות. אם WW_PUBLIC_URL מוגדר בשרת, הוא מחליף את הערך הזה בכל הפעלה."

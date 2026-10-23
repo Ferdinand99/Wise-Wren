@@ -1,0 +1,44 @@
+services:
+  wise-wren:
+    image: ghcr.io/ferdinand99/wise-wren:latest
+    # build: { context: ., target: server }  # build from this checkout instead of pulling the image
+    container_name: wise-wren
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    volumes:
+      # Database (wren.sqlite), session key and pre-migration backups. The
+      # container hands this folder to its `wren` user (uid 1000) on start;
+      # with `user:` set, it must already be writable by that user.
+      - ./data:/data # -> /mnt/user/appdata/wise-wren on Unraid
+    environment:
+      - WW_DATA_DIR=/data
+      # - WW_PUBLIC_URL=https://wren.example.com  # the address agents and people use; without it, each request's own
+      # - WW_TRUST_PROXY=1               # behind a reverse proxy (Caddy/Traefik/nginx) that sets X-Forwarded-*
+      # - WW_SETUP_TOKEN=change-me       # /setup only opens with ?token=change-me
+      # - TZ=Europe/Oslo                 # log timestamps
+      # - RUST_LOG=info,wise_wren=debug
+      # Run the app as another uid:gid, e.g. Unraid's nobody:users.
+      # - PUID=99
+      # - PGID=100
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3003/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # The agent runs on every Docker host Wren looks after (this one too).
+  # Add the server in Wren first: its page shows the token and the full
+  # `docker run` line with the mounts for Unraid. Every folder Wren may touch
+  # is mounted at the same path inside the agent.
+  # wren-agent:
+  #   image: ghcr.io/ferdinand99/wise-wren-agent:latest
+  #   container_name: wren-agent
+  #   restart: unless-stopped
+  #   environment:
+  #     - WW_SERVER_URL=http://wise-wren:3003
+  #     - WW_AGENT_TOKEN=wwa_…
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - ./agent:/config      # agent.toml (optional)

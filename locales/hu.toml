@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Áttekintés"
+sub = "A szerverek és ügynökeik egy pillantásra."
+servers = "Szerverek"
+online = "Online"
+not_online = "Nem online"
+
+[servers]
+title = "Szerverek"
+sub = "Minden szerveren a Wren ügynöke fut, amely maga kapcsolódik a Wrenhez. A szervereken nem kell portot nyitni."
+add = "Szerver hozzáadása"
+new_sub = "Adjon nevet a szervernek. A Wren ezután megmutatja az ügynök tokenjét és az ügynököt indító parancsot."
+name = "Név"
+name_placeholder = "Tower"
+err_name = "Adjon meg egy nevet."
+err_name_long = "Legfeljebb {max} karakter lehet."
+err_name_taken = "Már van ilyen nevű szerver."
+empty_title = "Még nincs szerver"
+empty_text = "Adjon hozzá egy szervert, majd indítsa el rajta a Wren ügynökét. Az ügynök magától kapcsolódik a Wrenhez."
+empty_viewer = "Szervert egy admin ad hozzá. Kérje meg valamelyiküket, hogy adja hozzá az elsőt."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Várakozás az ügynökre"
+status_no_token = "Nincs token"
+last_seen = "Utoljára látva"
+never = "Soha"
+hostname = "Gépnév"
+os = "Operációs rendszer"
+docker = "Docker"
+docker_unreachable = "Nem érhető el: {error}"
+agent_version = "Ügynök verziója"
+unraid = "Unraid"
+details = "Részletek"
+agent = "Ügynök"
+agent_sub = "Az ügynök saját tokennel hitelesít. Csak jelent a Wrennek, és egyelőre semmit sem futtat, amit a Wren kér."
+token = "Ügynöktoken"
+token_none = "Ennek a szervernek nincs tokenje, így az ügynöke nem tud kapcsolódni. Az újbóli kapcsolódáshoz hozzon létre új tokent."
+token_once = "Másolja ki most a tokent. A Wren csak az ujjlenyomatát őrzi meg, és nem tudja újra megmutatni."
+run_title = "Az ügynök indítása"
+run_unraid = "Unraidon"
+run_linux = "Más Linux-gépeken"
+run_help = "Csatoljon minden mappát, amelyhez a Wren hozzányúlhat, ugyanazon az útvonalon az ügynökbe, és sorolja fel az agent.toml fájlban. A Docker-sockethez való hozzáférés root jogot ad az ügynöknek a szerveren."
+copy_command = "Parancs másolása"
+new_token = "Új token"
+new_token_q = "Új tokent hoz létre ehhez: „{name}”?"
+new_token_msg = "A jelenlegi token azonnal megszűnik működni. Indítsa újra az ügynököt az újjal."
+revoke = "Token visszavonása"
+revoke_q = "Visszavonja ennek a tokenjét: „{name}”?"
+revoke_msg = "Az ügynök nem tud kapcsolódni, amíg nem hoz létre új tokent."
+revoked = "Token visszavonva: „{name}”."
+delete_q = "Törli: „{name}”?"
+delete_msg = "Az ügynöke többé nem tud kapcsolódni. Magán a szerveren semmi sem változik."
+deleted = "Törölve: „{name}”."
+added = "Hozzáadva: „{name}”. Most indítsa el az ügynökét."
+
+[channels]
+sub = "Ahová a Wren értesítéseket küld: új verziók, frissítések eredményei és offline állapotba került ügynökök."
+empty_text = "Adjon hozzá egy csatornát, például ntfy-t, Slacket vagy e-mailt. A Wren akkor kezd küldeni, amikor beérkeznek a frissítésellenőrzések."
+foot = "A mentett titkos adatok soha többé nem jelennek meg. Ha egy csatorna szerkesztésekor üresen hagyja őket, megmaradnak."
+delete_q = "Törli: „{name}”?"
+delete_msg = "A Wren nem küld több értesítést ide."
+more_actions_for = "További műveletek: {name}"
+language = "Üzenetek nyelve"
+language_help = "Az erre a csatornára küldött értesítések ezen a nyelven készülnek."
+language_default = "A példány nyelve ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Tesztértesítés innen: {product}"
+test_body = "Ha ezt olvassa, az értesítések eljutnak erre a csatornára."
+event_test = "Teszt"
+view_overview = "Áttekintés megnyitása"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Üdv újra. Jelentkezzen be a szerverek és frissítéseik megtekintéséhez."
+
+[setup]
+site_name_placeholder = "Otthoni labor frissítései…"
+tz_after = ". Ez a Beállításokban módosítható."
+
+[users]
+roles_help = "A megtekintők nézhetnek, de nem módosíthatnak semmit. A szerkesztők kezelik az értesítési csatornákat. Az adminok mindent tehetnek, a szervereket, az ügynöktokeneket és a felhasználókat is beleértve."
+
+[tokens]
+sub = "Szkriptek és MI-asszisztensek olvashatják a szervereket és ügynökeiket."
+scope_read_sub = "Szerverek és ügynökök"
+
+[auth]
+all_set = "Minden kész. Kezdéshez adja hozzá az első szervert."
+setup_token_required = "Ehhez a példányhoz beállítási token kell. Nyissa meg a /setup?token=… címet a kiszolgáló konfigurációjában lévő WW_SETUP_TOKEN értékével."
+
+[error]
+back = "Vissza az áttekintéshez"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "A példány neve, az elérési címe és az időzóna, amelyben az időpontokat mutatja."
+base_url_help = "Ezen a címen érik el a példányt az ügynökök és az emberek: az ügynök indítóparancsában és az értesítések hivatkozásaiban szerepel. Ha a szerveren be van állítva a WW_PUBLIC_URL, minden indításkor felülírja ezt az értéket."

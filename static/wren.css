@@ -1,0 +1,36 @@
+/* Wise Wren's own touches on the family design system (style.css is the
+   kit's). The family's purple stays the interactive colour (links, focus,
+   buttons) on every page, the kit's included; the wren's rose (#ff6482,
+   assets/brand) marks Wren's own things. Rose text on a light background
+   fails contrast, so text uses a deep rose there (same tokens as site/). */
+:root {
+  --accent: #ff6482;
+  --accent-text: light-dark(#b3123a, #ff6482);
+  --accent-fill: light-dark(rgba(255, 100, 130, 0.16), rgba(255, 100, 130, 0.14));
+}
+
+.server-tile {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  border-radius: 0.625rem;
+  background: var(--accent-fill);
+  color: var(--accent-text);
+  flex: none;
+}
+
+.server-tile svg {
+  inline-size: 1.125rem;
+  block-size: 1.125rem;
+}
+
+.badge-unraid {
+  background: var(--accent-fill);
+  color: var(--accent-text);
+}
+
+.snippet {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

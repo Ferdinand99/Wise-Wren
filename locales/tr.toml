@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Genel bakış"
+sub = "Sunucularınız ve ajanları bir bakışta."
+servers = "Sunucular"
+online = "Çevrimiçi"
+not_online = "Çevrimiçi değil"
+
+[servers]
+title = "Sunucular"
+sub = "Her sunucu, Wren’e kendisi bağlanan Wren ajanını çalıştırır. Sunucularınız hiçbir port açmaz."
+add = "Sunucu ekle"
+new_sub = "Sunucuya bir ad verin. Wren ardından ajanın belirtecini ve ajanı başlatan komutu gösterir."
+name = "Ad"
+name_placeholder = "Tower"
+err_name = "Bir ad girin."
+err_name_long = "En çok {max} karakter kullanın."
+err_name_taken = "Bu adda bir sunucu zaten var."
+empty_title = "Henüz sunucu yok"
+empty_text = "Bir sunucu ekleyin, ardından Wren ajanını üzerinde başlatın. Ajan Wren’e kendiliğinden bağlanır."
+empty_viewer = "Sunucuları bir yönetici ekler. İlkini eklemesini bir yöneticiden isteyin."
+status_online = "Çevrimiçi"
+status_offline = "Çevrimdışı"
+status_waiting = "Ajan bekleniyor"
+status_no_token = "Belirteç yok"
+last_seen = "Son görülme"
+never = "Hiçbir zaman"
+hostname = "Ana bilgisayar adı"
+os = "İşletim sistemi"
+docker = "Docker"
+docker_unreachable = "Erişilemiyor: {error}"
+agent_version = "Ajan sürümü"
+unraid = "Unraid"
+details = "Ayrıntılar"
+agent = "Ajan"
+agent_sub = "Ajan kendi belirteciyle kimlik doğrular. Yalnızca Wren’e rapor verir; Wren’in istediği hiçbir şeyi henüz çalıştırmaz."
+token = "Ajan belirteci"
+token_none = "Bu sunucunun belirteci yok, bu yüzden ajanı bağlanamaz. Yeniden bağlamak için yeni bir belirteç oluşturun."
+token_once = "Belirteci şimdi kopyalayın. Wren yalnızca parmak izini saklar ve onu bir daha gösteremez."
+run_title = "Ajanı başlatın"
+run_unraid = "Unraid’de"
+run_linux = "Diğer Linux sunucularında"
+run_help = "Wren’in dokunabileceği her klasörü ajanın içinde aynı yola bağlayın ve agent.toml dosyasında listeleyin. Docker soketine erişim, ajana sunucuda root erişimi verir."
+copy_command = "Komutu kopyala"
+new_token = "Yeni belirteç"
+new_token_q = "“{name}” için yeni belirteç oluşturulsun mu?"
+new_token_msg = "Mevcut belirteç hemen çalışmayı bırakır. Ajanı yenisiyle yeniden başlatın."
+revoke = "Belirteci iptal et"
+revoke_q = "“{name}” sunucusunun belirteci iptal edilsin mi?"
+revoke_msg = "Yeni bir belirteç oluşturana kadar ajan bağlanamaz."
+revoked = "“{name}” sunucusunun belirteci iptal edildi."
+delete_q = "“{name}” silinsin mi?"
+delete_msg = "Ajanı artık bağlanamaz. Sunucunun kendisinde hiçbir şey değişmez."
+deleted = "“{name}” silindi."
+added = "“{name}” eklendi. Şimdi ajanını başlatın."
+
+[channels]
+sub = "Wren’in bildirim gönderdiği yerler: yeni sürümler, güncelleme sonuçları ve çevrimdışı olan ajanlar."
+empty_text = "ntfy, Slack veya e-posta gibi bir kanal ekleyin. Güncelleme denetimleri gelmeye başlayınca Wren gönderime başlar."
+foot = "Kaydedilen gizli bilgiler bir daha gösterilmez. Bir kanalı düzenlerken bunları korumak için boş bırakın."
+delete_q = "“{name}” silinsin mi?"
+delete_msg = "Wren bu kanala bildirim göndermeyi bırakır."
+more_actions_for = "Diğer işlemler: {name}"
+language = "Mesaj dili"
+language_help = "Bu kanala giden bildirimler bu dilde yazılır."
+language_default = "Bu örneğin dili ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "{product}: test bildirimi"
+test_body = "Bunu okuyabiliyorsanız bildirimler bu kanala ulaşıyor."
+event_test = "Test"
+view_overview = "Genel bakışı aç"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Tekrar hoş geldiniz. Sunucularınızı ve güncellemelerini görmek için giriş yapın."
+
+[setup]
+site_name_placeholder = "Ev laboratuvarı güncellemeleri…"
+tz_after = ". Ayarlar’dan değiştirilebilir."
+
+[users]
+roles_help = "Görüntüleyiciler bakabilir ama hiçbir şeyi değiştiremez. Editörler bildirim kanallarını yönetir. Yöneticiler sunucular, ajan belirteçleri ve kullanıcılar dahil her şeyi yapabilir."
+
+[tokens]
+sub = "Betiklerin ve yapay zekâ asistanlarının sunucularınızı ve ajanlarını okumasına izin verin."
+scope_read_sub = "Sunucular ve ajanlar"
+
+[auth]
+all_set = "Hazırsınız. Başlamak için ilk sunucunuzu ekleyin."
+setup_token_required = "Bu örnek bir kurulum belirteci gerektiriyor. /setup?token=… adresini, sunucu yapılandırmasındaki WW_SETUP_TOKEN değeriyle açın."
+
+[error]
+back = "Genel bakışa dön"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Bu örneğin adı, hangi adresten erişildiği ve saatleri hangi saat diliminde gösterdiği."
+base_url_help = "Ajanların ve kişilerin bu örneğe ulaştığı adres: ajanın başlatma komutunda ve bildirimlerdeki bağlantılarda kullanılır. Sunucuda WW_PUBLIC_URL ayarlıysa her başlatmada bu değerin yerini alır."

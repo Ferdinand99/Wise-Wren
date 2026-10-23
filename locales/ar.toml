@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "نظرة عامة"
+sub = "خوادمك ووكلاؤها في لمحة."
+servers = "الخوادم"
+online = "متصلة"
+not_online = "غير متصلة"
+
+[servers]
+title = "الخوادم"
+sub = "يشغّل كل خادم وكيل Wren، الذي يتصل بـ Wren من تلقاء نفسه. لا تفتح خوادمك أي منافذ."
+add = "إضافة خادم"
+new_sub = "سمِّ الخادم. يعرض Wren بعدها رمز الوكيل والأمر الذي يشغّله."
+name = "الاسم"
+name_placeholder = "Tower"
+err_name = "أدخل اسمًا."
+err_name_long = "استخدم {max} حرفًا على الأكثر."
+err_name_taken = "يوجد خادم بهذا الاسم بالفعل."
+empty_title = "لا توجد خوادم بعد"
+empty_text = "أضف خادمًا، ثم شغّل وكيل Wren عليه. يتصل الوكيل بـ Wren من تلقاء نفسه."
+empty_viewer = "يضيف المسؤولون الخوادم. اطلب من أحدهم إضافة أول خادم."
+status_online = "متصل"
+status_offline = "غير متصل"
+status_waiting = "في انتظار الوكيل"
+status_no_token = "بلا رمز"
+last_seen = "آخر ظهور"
+never = "أبدًا"
+hostname = "اسم المضيف"
+os = "نظام التشغيل"
+docker = "Docker"
+docker_unreachable = "يتعذر الوصول: {error}"
+agent_version = "إصدار الوكيل"
+unraid = "Unraid"
+details = "التفاصيل"
+agent = "الوكيل"
+agent_sub = "يصادق الوكيل برمزه الخاص. وهو يرسل التقارير إلى Wren فقط، ولا ينفّذ بعدُ أي شيء يطلبه Wren."
+token = "رمز الوكيل"
+token_none = "لا يملك هذا الخادم رمزًا، لذا لا يستطيع وكيله الاتصال. أنشئ رمزًا جديدًا لإعادة توصيله."
+token_once = "انسخ الرمز الآن. يحتفظ Wren ببصمته فقط ولا يمكنه عرضه مرة أخرى."
+run_title = "تشغيل الوكيل"
+run_unraid = "على Unraid"
+run_linux = "على أجهزة Linux الأخرى"
+run_help = "اربط كل مجلد قد يتعامل معه Wren على المسار نفسه داخل الوكيل، وأدرجه في agent.toml. الوصول إلى مقبس Docker يمنح الوكيل صلاحيات root على الخادم."
+copy_command = "نسخ الأمر"
+new_token = "رمز جديد"
+new_token_q = "إنشاء رمز جديد لـ «{name}»؟"
+new_token_msg = "يتوقف الرمز الحالي عن العمل فورًا. أعد تشغيل الوكيل بالرمز الجديد."
+revoke = "إلغاء الرمز"
+revoke_q = "إلغاء رمز «{name}»؟"
+revoke_msg = "لن يتمكن الوكيل من الاتصال حتى تنشئ رمزًا جديدًا."
+revoked = "تم إلغاء رمز «{name}»."
+delete_q = "حذف «{name}»؟"
+delete_msg = "لن يتمكن وكيله من الاتصال بعد الآن. لا يتغير شيء على الخادم نفسه."
+deleted = "تم حذف «{name}»."
+added = "تمت إضافة «{name}». شغّل وكيله الآن."
+
+[channels]
+sub = "حيث يرسل Wren الإشعارات: الإصدارات الجديدة ونتائج التحديثات والوكلاء الذين ينقطع اتصالهم."
+empty_text = "أضف قناة، مثل ntfy أو Slack أو البريد الإلكتروني. يبدأ Wren الإرسال بمجرد وصول نتائج التحقق من التحديثات."
+foot = "لا تُعرض الأسرار المحفوظة مرة أخرى أبدًا. اتركها فارغة عند تعديل قناة للإبقاء عليها."
+delete_q = "حذف «{name}»؟"
+delete_msg = "يتوقف Wren عن إرسال الإشعارات إليها."
+more_actions_for = "إجراءات أخرى لـ {name}"
+language = "لغة الرسائل"
+language_help = "تُكتب الإشعارات المرسلة إلى هذه القناة بهذه اللغة."
+language_default = "لغة التثبيت ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "إشعار تجريبي من {product}"
+test_body = "إذا كنت تقرأ هذا، فالإشعارات تصل إلى هذه القناة."
+event_test = "اختبار"
+view_overview = "فتح النظرة العامة"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "مرحبًا بعودتك. سجّل الدخول لعرض خوادمك وتحديثاتها."
+
+[setup]
+site_name_placeholder = "تحديثات المختبر المنزلي…"
+tz_after = ". يمكن تغيير ذلك من الإعدادات."
+
+[users]
+roles_help = "المشاهدون يستطيعون الاطلاع دون تغيير أي شيء. المحررون يديرون قنوات الإشعارات. المسؤولون يستطيعون كل شيء، بما فيه الخوادم ورموز الوكلاء والمستخدمون."
+
+[tokens]
+sub = "اسمح للنصوص البرمجية ومساعدي الذكاء الاصطناعي بقراءة خوادمك ووكلائها."
+scope_read_sub = "الخوادم والوكلاء"
+
+[auth]
+all_set = "اكتمل الإعداد. أضف أول خادم للبدء."
+setup_token_required = "يحتاج هذا التثبيت إلى رمز إعداد. افتح /setup?token=… بقيمة WW_SETUP_TOKEN من إعدادات الخادم."
+
+[error]
+back = "العودة إلى النظرة العامة"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "كيف يسمّي هذا التثبيت نفسه، وأين يمكن الوصول إليه، وبأي منطقة زمنية يعرض الأوقات."
+base_url_help = "العنوان الذي يصل منه الوكلاء والأشخاص إلى هذا التثبيت: يُستخدم في أمر تشغيل الوكيل وفي روابط الإشعارات. إذا كان WW_PUBLIC_URL مضبوطًا على الخادم، فإنه يحل محل هذه القيمة عند كل تشغيل."

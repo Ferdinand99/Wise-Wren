@@ -1,0 +1,20 @@
+{% extends "kit/settings_layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block settings_content %}
+{% call m::page_header(tr("nav.notifications"), tr("channels.sub")) %}
+  <button type="button" class="btn btn-primary" data-sheet-open="#add-channel" commandfor="add-channel" command="show-modal"
+    hx-get="/settings/notifications/providers" hx-target="#channel-sheet-body" hx-swap="outerHTML">{{ m::icon("plus") }}<span>{{ tr("notif.add_channel") }}</span></button>
+{% endcall %}
+
+{% include "partials/notification_list.html" %}
+
+<dialog class="sheet sheet-lg" id="add-channel" aria-labelledby="add-channel-title">
+  <div class="sheet-grabber" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 class="sheet-title" id="add-channel-title">{{ tr("notif.add_channel") }}</h2>
+    <button type="button" class="btn btn-icon btn-plain btn-sm" data-sheet-close commandfor="add-channel" command="close" aria-label="{{ tr("common.close") }}">{{ m::icon("x") }}</button>
+  </header>
+  {% include "kit/partials/notification_picker.html" %}
+</dialog>
+{% endblock %}

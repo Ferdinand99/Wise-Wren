@@ -1,0 +1,16 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("overview.title"), tr("overview.sub")) %}
+  {{ m::live() }}
+{% endcall %}
+
+<div class="stack" id="overview-body" hx-ext="sse" sse-connect="/live" sse-swap="overview-updated" hx-swap="innerHTML">
+  {% include "partials/overview_body.html" %}
+</div>
+{% endblock %}

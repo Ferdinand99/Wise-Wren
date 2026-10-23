@@ -1,0 +1,42 @@
+{#- The server's agent: its token (shown once, right after it was made) and how to start it. Swapped whole after "New token". Needs: server, agent. -#}
+{%- import "kit/macros.html" as m -%}
+<section class="card stack-sm" id="agent-card" aria-labelledby="agent-title">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title" id="agent-title">{{ tr("servers.agent") }}</h2>
+      <p class="card-sub">{{ tr("servers.agent_sub") }}</p>
+    </div>
+    {%- if agent.is_admin %}
+    <div class="toolbar">
+      <button type="button" class="btn btn-secondary btn-sm" hx-post="/servers/{{ server.id }}/token" hx-target="#agent-card" hx-swap="outerHTML"
+        hx-confirm="{{ tr1("servers.new_token_q", "name", server.name) }}" data-confirm-message="{{ tr("servers.new_token_msg") }}">{{ m::icon("refresh") }}<span>{{ tr("servers.new_token") }}</span></button>
+      {%- if server.has_token %}
+      <button type="button" class="btn btn-danger btn-sm" hx-post="/servers/{{ server.id }}/revoke" hx-swap="none"
+        hx-confirm="{{ tr1("servers.revoke_q", "name", server.name) }}" data-confirm-message="{{ tr("servers.revoke_msg") }}">{{ m::icon("x-circle") }}<span>{{ tr("servers.revoke") }}</span></button>
+      {%- endif %}
+    </div>
+    {%- endif %}
+  </div>
+
+  {%- if let Some(token) = agent.token %}
+  {{ m::callout("warning", tr("servers.token_once")) }}
+  <p class="help">{{ tr("servers.token") }}</p>
+  {{ m::copy_field("agent-token", token) }}
+  {%- if let Some(run) = agent.snippets %}
+  <h3 class="section-title">{{ tr("servers.run_title") }}</h3>
+  <p class="help">{{ tr("servers.run_help") }}</p>
+  <p class="help">{{ tr("servers.run_unraid") }}</p>
+  <pre class="code"><code id="run-unraid">{{ run.unraid }}</code></pre>
+  <div class="toolbar"><button type="button" class="btn btn-secondary btn-sm" data-copy="#run-unraid">{{ m::icon("copy") }}<span>{{ tr("servers.copy_command") }}</span></button></div>
+  <p class="help">{{ tr("servers.run_linux") }}</p>
+  <pre class="code"><code id="run-linux">{{ run.linux }}</code></pre>
+  <div class="toolbar"><button type="button" class="btn btn-secondary btn-sm" data-copy="#run-linux">{{ m::icon("copy") }}<span>{{ tr("servers.copy_command") }}</span></button></div>
+  {%- endif %}
+  {%- else if server.has_token %}
+  <dl class="dl">
+    <div class="dl-row"><dt>{{ tr("servers.token") }}</dt><dd class="mono">{{ server.token_prefix }}…</dd></div>
+  </dl>
+  {%- else %}
+  {{ m::callout("info", tr("servers.token_none")) }}
+  {%- endif %}
+</section>

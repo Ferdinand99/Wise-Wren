@@ -1,0 +1,40 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(server.name.as_str(), "", "/servers", tr("servers.title")) %}
+  <span class="pill pill-lg status-{{ server.status_class }}" data-status="{{ server.status }}"><span class="dot" aria-hidden="true"></span>{{ server.status_label }}</span>
+  {%- if agent.is_admin %}
+  {{ m::delete_button(delete_url.as_str(), delete_question.as_str(), tr("servers.delete_msg")) }}
+  {%- endif %}
+{% endcall %}
+
+<div class="stack">
+  <section class="card" aria-labelledby="details-title">
+    <div class="card-head"><h2 class="card-title" id="details-title">{{ tr("servers.details") }}</h2></div>
+    <dl class="dl">
+      <div class="dl-row"><dt>{{ tr("servers.last_seen") }}</dt><dd>{% if let Some(seen) = server.last_seen_at %}{{ m::time_ago(seen) }}{% else %}{{ tr("servers.never") }}{% endif %}</dd></div>
+      {%- if !server.hostname.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("servers.hostname") }}</dt><dd class="break">{{ server.hostname }}</dd></div>
+      {%- endif %}
+      {%- if !server.os.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("servers.os") }}</dt><dd class="break">{{ server.os }}{% if server.unraid %} <span class="badge badge-unraid">{{ tr("servers.unraid") }}</span>{% endif %}</dd></div>
+      {%- endif %}
+      {%- if !server.docker_error.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("servers.docker") }}</dt><dd class="break">{{ tr1("servers.docker_unreachable", "error", server.docker_error) }}</dd></div>
+      {%- else if !server.docker_version.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("servers.docker") }}</dt><dd class="mono">{{ server.docker_version }}</dd></div>
+      {%- endif %}
+      {%- if !server.agent_version.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("servers.agent_version") }}</dt><dd class="mono">{{ server.agent_version }}</dd></div>
+      {%- endif %}
+    </dl>
+  </section>
+
+  {% include "partials/agent_card.html" %}
+</div>
+{% endblock %}

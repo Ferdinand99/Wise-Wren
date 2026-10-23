@@ -1,0 +1,248 @@
+//! The agent protocol, modelled on Vigilant Vole's remote agents: the agent
+//! connects **out** to Wren over plain HTTPS with its own token
+//! (`Authorization: Bearer wwa_…`), so servers open no ports and it works
+//! behind NAT and any reverse proxy.
+//!
+//! Phase 2 has one endpoint, versioned by URL:
+//!
+//! - `POST /api/agent/v1/heartbeat` with [`Heartbeat`] (JSON) every
+//!   [`INTERVAL_SECONDS`] → `200 {"server": {"id", "name"}, "interval_seconds"}`;
+//!   401 for a missing, unknown or revoked token, 429 with `Retry-After`
+//!   over [`RATE`], 400 for a body that isn't a heartbeat.
+//!
+//! There is no job or command channel: Wren can't make an agent do
+//! anything (§8). When jobs come, the agent will fetch them with a
+//! long-poll `GET` on the same footing (named jobs from its own config
+//! only), so the protocol stays request/response.
+//!
+//! [`snippets`] builds the `docker run` lines from the spike's decision
+//! (docs/spike-findings.md, "Decision: agent runtime form").
+
+use std::time::Instant;
+
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::Extension;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use serde_json::json;
+use vole_kit::auth::tokens;
+use vole_kit::http::ApiError;
+use vole_kit::http::ratelimit::{Rate, too_many_requests};
+
+use crate::Wren;
+use crate::db::{self, Facts};
+
+pub const HEARTBEAT_PATH: &str = "/api/agent/v1/heartbeat";
+/// How often agents send a heartbeat.
+pub const INTERVAL_SECONDS: u64 = 30;
+/// Heartbeats one server may send: 20 at once, 20 a minute (restarts and
+/// retries included; a healthy agent sends two).
+pub const RATE: Rate = Rate::per_minute(20);
+/// Longest value kept of each reported fact (characters).
+pub const MAX_FACT_CHARS: usize = 200;
+/// The agent's image.
+pub const AGENT_IMAGE: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+
+/// What an agent reports. Unknown fields are ignored, so newer agents can
+/// report more.
+#[derive(Debug, Default, Deserialize)]
+pub struct Heartbeat {
+    #[serde(default)]
+    pub agent_version: String,
+    /// The host's name, as Docker reports it.
+    #[serde(default)]
+    pub hostname: String,
+    /// The host's operating system, as Docker reports it.
+    #[serde(default)]
+    pub os: String,
+    #[serde(default)]
+    pub docker_version: String,
+    /// Why the agent couldn't read Docker, if it couldn't.
+    #[serde(default)]
+    pub docker_error: String,
+    /// Unraid's `/boot/config` and dockerMan paths are there.
+    #[serde(default)]
+    pub unraid: bool,
+}
+
+fn clip(s: &str) -> String {
+    s.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_FACT_CHARS)
+        .collect()
+}
+
+impl Heartbeat {
+    pub fn facts(&self) -> Facts {
+        Facts {
+            agent_version: clip(&self.agent_version),
+            hostname: clip(&self.hostname),
+            os: clip(&self.os),
+            docker_version: clip(&self.docker_version),
+            docker_error: clip(&self.docker_error),
+            unraid: self.unraid,
+        }
+    }
+}
+
+/// `POST /api/agent/v1/heartbeat`.
+pub async fn heartbeat(
+    Extension(wren): Extension<Wren>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(token) = tokens::token_from_headers(&headers).filter(|t| db::is_agent_token(t)) else {
+        return ApiError::Unauthorized.into_response();
+    };
+    let hash = tokens::hash(&token);
+    let (id, name) = match wren
+        .core
+        .with_conn(move |c| db::by_token_hash(c, &hash))
+        .await
+    {
+        Ok(Some(found)) => found,
+        Ok(None) => return ApiError::Unauthorized.into_response(),
+        Err(err) => return err.into_response(),
+    };
+    if let Err(wait) = wren.budgets.take(&id, RATE, Instant::now()) {
+        tracing::warn!(server_id = id, "agent over its heartbeat budget");
+        return too_many_requests(wait);
+    }
+    let beat: Heartbeat = match serde_json::from_slice(&body) {
+        Ok(beat) => beat,
+        Err(err) => {
+            return ApiError::bad_request(format!("not a heartbeat: {err}")).into_response();
+        }
+    };
+    let facts = beat.facts();
+    if let Err(err) = wren
+        .core
+        .with_conn(move |c| db::record_heartbeat(c, id, &facts))
+        .await
+    {
+        return err.into_response();
+    }
+    let _ = wren.changes.send(());
+    Json(json!({
+        "server": { "id": id, "name": name },
+        "interval_seconds": INTERVAL_SECONDS,
+    }))
+    .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Starting an agent
+// ---------------------------------------------------------------------------
+
+/// The commands that start a server's agent.
+pub struct Snippets {
+    pub unraid: String,
+    pub linux: String,
+}
+
+/// `value` as one shell word: as it is when it is plainly safe, else in
+/// single quotes. The URL can come from the request's `Host` header, so it
+/// must never reach a shell unquoted.
+pub fn sh_word(value: &str) -> String {
+    let safe = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+    if safe {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+}
+
+/// `docker run` for the agent. Every folder is mounted at the **same path**
+/// inside the container (the daemon resolves Compose binds on the host);
+/// no `--privileged` and no added capabilities. On Unraid also the paths
+/// that let it run Unraid's own `update_container` later (§3).
+pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
+    let mut lines = vec![
+        "docker run -d --name wren-agent --restart unless-stopped".to_string(),
+        format!("-e {}", sh_word(&format!("WW_SERVER_URL={server_url}"))),
+        format!("-e {}", sh_word(&format!("WW_AGENT_TOKEN={token}"))),
+        "-v /var/run/docker.sock:/var/run/docker.sock".to_string(),
+    ];
+    if unraid {
+        lines.extend(
+            [
+                "-v /mnt/user/appdata/wren-agent:/config",
+                "-v /mnt/user/appdata:/mnt/user/appdata",
+                "-v /usr/local/emhttp:/usr/local/emhttp:ro",
+                "-v /var/local/emhttp:/var/local/emhttp",
+                "-v /boot/config:/boot/config",
+                "-v /var/lib/docker:/var/lib/docker",
+            ]
+            .map(String::from),
+        );
+    } else {
+        lines.push("-v /etc/wren-agent:/config".to_string());
+    }
+    lines.push(AGENT_IMAGE.to_string());
+    lines.join(" \\\n  ")
+}
+
+/// Both commands for a server.
+pub fn snippets(server_url: &str, token: &str) -> Snippets {
+    Snippets {
+        unraid: docker_run(server_url, token, true),
+        linux: docker_run(server_url, token, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_run_has_the_spike_mounts() {
+        let run = docker_run("http://10.0.3.26:3003", "wwa_abc", true);
+        for part in [
+            "-e WW_SERVER_URL=http://10.0.3.26:3003",
+            "-e WW_AGENT_TOKEN=wwa_abc",
+            "-v /var/run/docker.sock:/var/run/docker.sock",
+            "-v /mnt/user/appdata:/mnt/user/appdata",
+            "-v /usr/local/emhttp:/usr/local/emhttp:ro",
+            "-v /var/local/emhttp:/var/local/emhttp",
+            "-v /boot/config:/boot/config",
+            "-v /var/lib/docker:/var/lib/docker",
+            AGENT_IMAGE,
+        ] {
+            assert!(run.contains(part), "{part} missing in\n{run}");
+        }
+        for never in ["--privileged", "--cap-add", "--pid"] {
+            assert!(!run.contains(never));
+        }
+        let linux = docker_run("https://wren.example.com", "wwa_abc", false);
+        assert!(linux.contains("-v /etc/wren-agent:/config") && !linux.contains("emhttp"));
+    }
+
+    #[test]
+    fn odd_urls_are_quoted() {
+        assert_eq!(
+            sh_word("WW_SERVER_URL=http://x:3003"),
+            "WW_SERVER_URL=http://x:3003"
+        );
+        assert_eq!(sh_word("a$(reboot)"), "'a$(reboot)'");
+        assert_eq!(sh_word("it's"), r"'it'\''s'");
+        let run = docker_run("http://evil$(id)", "wwa_x", false);
+        assert!(run.contains("-e 'WW_SERVER_URL=http://evil$(id)'"));
+    }
+
+    #[test]
+    fn facts_are_trimmed_and_clipped() {
+        let beat = Heartbeat {
+            hostname: format!("  LAN\u{7}Box{}  ", "x".repeat(300)),
+            ..Heartbeat::default()
+        };
+        let facts = beat.facts();
+        assert!(facts.hostname.starts_with("LANBox"));
+        assert_eq!(facts.hostname.chars().count(), MAX_FACT_CHARS);
+    }
+}

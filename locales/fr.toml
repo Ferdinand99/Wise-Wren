@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Vue d’ensemble"
+sub = "Les serveurs et leurs agents en un coup d’œil."
+servers = "Serveurs"
+online = "En ligne"
+not_online = "Pas en ligne"
+
+[servers]
+title = "Serveurs"
+sub = "Chaque serveur exécute l’agent de Wren, qui se connecte lui-même à Wren. Les serveurs n’ouvrent aucun port."
+add = "Ajouter un serveur"
+new_sub = "Nommer le serveur. Wren affiche ensuite le jeton de l’agent et la commande qui le démarre."
+name = "Nom"
+name_placeholder = "Tower"
+err_name = "Saisir un nom."
+err_name_long = "Utiliser {max} caractères au maximum."
+err_name_taken = "Un serveur porte déjà ce nom."
+empty_title = "Aucun serveur"
+empty_text = "Ajouter un serveur, puis y démarrer l’agent de Wren. L’agent se connecte à Wren de lui-même."
+empty_viewer = "Les serveurs sont ajoutés par un admin. Demander à l’un d’eux d’ajouter le premier."
+status_online = "En ligne"
+status_offline = "Hors ligne"
+status_waiting = "En attente de l’agent"
+status_no_token = "Aucun jeton"
+last_seen = "Dernier contact"
+never = "Jamais"
+hostname = "Nom d’hôte"
+os = "Système d’exploitation"
+docker = "Docker"
+docker_unreachable = "Injoignable : {error}"
+agent_version = "Version de l’agent"
+unraid = "Unraid"
+details = "Détails"
+agent = "Agent"
+agent_sub = "L’agent s’authentifie avec son propre jeton. Il rend seulement compte à Wren et n’exécute encore rien de ce que Wren demande."
+token = "Jeton de l’agent"
+token_none = "Ce serveur n’a pas de jeton : son agent ne peut donc pas se connecter. Créer un nouveau jeton pour le reconnecter."
+token_once = "Copier le jeton maintenant. Wren n’en garde qu’une empreinte et ne pourra plus l’afficher."
+run_title = "Démarrer l’agent"
+run_unraid = "Sur Unraid"
+run_linux = "Sur d’autres hôtes Linux"
+run_help = "Monter chaque dossier auquel Wren peut toucher au même chemin dans l’agent, et l’indiquer dans agent.toml. L’accès au socket Docker donne à l’agent un accès root au serveur."
+copy_command = "Copier la commande"
+new_token = "Nouveau jeton"
+new_token_q = "Créer un nouveau jeton pour « {name} » ?"
+new_token_msg = "Le jeton actuel cesse aussitôt de fonctionner. Redémarrer l’agent avec le nouveau."
+revoke = "Révoquer le jeton"
+revoke_q = "Révoquer le jeton de « {name} » ?"
+revoke_msg = "L’agent ne pourra plus se connecter tant qu’un nouveau jeton n’aura pas été créé."
+revoked = "Le jeton de « {name} » est révoqué."
+delete_q = "Supprimer « {name} » ?"
+delete_msg = "Son agent ne pourra plus se connecter. Rien ne change sur le serveur lui-même."
+deleted = "« {name} » est supprimé."
+added = "« {name} » est ajouté. Démarrer son agent maintenant."
+
+[channels]
+sub = "Où Wren envoie les notifications : nouvelles versions, résultats des mises à jour et agents qui passent hors ligne."
+empty_text = "Ajouter un canal, comme ntfy, Slack ou l’e-mail. Wren commence à envoyer dès que les vérifications de mises à jour arrivent."
+foot = "Les secrets enregistrés ne sont plus jamais affichés. Pour les conserver en modifiant un canal, laisser les champs vides."
+delete_q = "Supprimer « {name} » ?"
+delete_msg = "Wren cesse de lui envoyer des notifications."
+more_actions_for = "Plus d’actions pour {name}"
+language = "Langue des messages"
+language_help = "Les notifications envoyées à ce canal sont rédigées dans cette langue."
+language_default = "Langue de l’instance ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Notification de test de {product}"
+test_body = "Si ce message s’affiche, les notifications parviennent bien à ce canal."
+event_test = "Test"
+view_overview = "Ouvrir la vue d’ensemble"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Bon retour. Se connecter pour voir les serveurs et leurs mises à jour."
+
+[setup]
+site_name_placeholder = "Mises à jour du homelab…"
+tz_after = ". Modifiable dans les Réglages."
+
+[users]
+roles_help = "Les lecteurs consultent sans rien modifier. Les éditeurs gèrent les canaux de notification. Les admins peuvent tout faire, y compris gérer les serveurs, les jetons d’agent et les utilisateurs."
+
+[tokens]
+sub = "Permettre à des scripts et assistants IA de lire les serveurs et leurs agents."
+scope_read_sub = "Serveurs et agents"
+
+[auth]
+all_set = "Tout est prêt. Ajouter un premier serveur pour commencer."
+setup_token_required = "Cette instance exige un jeton de configuration. Ouvrir /setup?token=… avec la valeur de WW_SETUP_TOKEN dans la configuration du serveur."
+
+[error]
+back = "Retour à la vue d’ensemble"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Le nom de cette instance, l’adresse où la joindre et le fuseau horaire de ses heures."
+base_url_help = "L’adresse à laquelle les agents et les personnes joignent cette instance : elle sert dans la commande de démarrage de l’agent et dans les liens des notifications. Si WW_PUBLIC_URL est défini sur le serveur, il remplace cette valeur à chaque démarrage."

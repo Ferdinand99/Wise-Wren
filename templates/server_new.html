@@ -1,0 +1,20 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block content %}
+{% call m::page_header(tr("servers.add"), tr("servers.new_sub"), "/servers", tr("servers.title")) %}{% endcall %}
+
+<form class="form form-narrow" method="post" action="/servers" data-warn-unsaved>
+  <section class="form-section" aria-labelledby="sec-server">
+    <h2 class="form-section-title" id="sec-server">{{ tr("servers.details") }}</h2>
+    <div class="card">
+      {{ m::field_text("name", tr("servers.name"), value=&self.name, placeholder=tr("servers.name_placeholder"), required=true, error=&self.name_error) }}
+    </div>
+  </section>
+
+  <div class="form-actions">
+    {{ m::link_button("/servers", tr("common.cancel"), "secondary") }}
+    {{ m::button(tr("servers.add")) }}
+  </div>
+</form>
+{% endblock %}

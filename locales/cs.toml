@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Přehled"
+sub = "Vaše servery a jejich agenti na první pohled."
+servers = "Servery"
+online = "Online"
+not_online = "Nejsou online"
+
+[servers]
+title = "Servery"
+sub = "Na každém serveru běží agent Wrenu, který se sám připojuje k Wrenu. Servery neotevírají žádné porty."
+add = "Přidat server"
+new_sub = "Pojmenujte server. Wren pak zobrazí token agenta a příkaz, kterým se agent spouští."
+name = "Název"
+name_placeholder = "Tower"
+err_name = "Zadejte název."
+err_name_long = "Použijte nejvýše {max} znaků."
+err_name_taken = "Server s tímto názvem už existuje."
+empty_title = "Zatím žádné servery"
+empty_text = "Přidejte server a spusťte na něm agenta Wrenu. Agent se k Wrenu připojí sám."
+empty_viewer = "Servery přidává správce. Požádejte některého z nich, aby přidal první."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Čeká na agenta"
+status_no_token = "Bez tokenu"
+last_seen = "Naposledy viděn"
+never = "Nikdy"
+hostname = "Název hostitele"
+os = "Operační systém"
+docker = "Docker"
+docker_unreachable = "Nedostupný: {error}"
+agent_version = "Verze agenta"
+unraid = "Unraid"
+details = "Podrobnosti"
+agent = "Agent"
+agent_sub = "Agent se ověřuje vlastním tokenem. Pouze podává hlášení Wrenu a zatím nespouští nic, oč Wren požádá."
+token = "Token agenta"
+token_none = "Tento server nemá token, takže se jeho agent nemůže připojit. Vytvořte nový token a připojte ho znovu."
+token_once = "Zkopírujte si token hned. Wren si uchovává jen jeho otisk a znovu ho zobrazit nemůže."
+run_title = "Spuštění agenta"
+run_unraid = "Na Unraidu"
+run_linux = "Na jiných linuxových hostitelích"
+run_help = "Připojte každou složku, se kterou smí Wren pracovat, na stejnou cestu uvnitř agenta a uveďte ji v agent.toml. Přístup k socketu Dockeru dává agentovi přístup root k serveru."
+copy_command = "Kopírovat příkaz"
+new_token = "Nový token"
+new_token_q = "Vytvořit nový token pro „{name}“?"
+new_token_msg = "Současný token okamžitě přestane fungovat. Spusťte agenta znovu s novým."
+revoke = "Zrušit platnost tokenu"
+revoke_q = "Zrušit platnost tokenu pro „{name}“?"
+revoke_msg = "Agent se nepřipojí, dokud nevytvoříte nový token."
+revoked = "Platnost tokenu pro „{name}“ je zrušena."
+delete_q = "Smazat „{name}“?"
+delete_msg = "Jeho agent se už nebude moci připojit. Na samotném serveru se nic nezmění."
+deleted = "Server „{name}“ je smazán."
+added = "Server „{name}“ je přidán. Teď spusťte jeho agenta."
+
+[channels]
+sub = "Kam Wren posílá oznámení: nové verze, výsledky aktualizací a agenti, kteří se odpojí."
+empty_text = "Přidejte kanál, například ntfy, Slack nebo e-mail. Wren začne posílat, jakmile začnou přicházet kontroly aktualizací."
+foot = "Uložené tajné údaje se už nikdy nezobrazí. Při úpravě kanálu je nechte prázdné a zůstanou zachovány."
+delete_q = "Smazat „{name}“?"
+delete_msg = "Wren do něj přestane posílat oznámení."
+more_actions_for = "Další akce pro {name}"
+language = "Jazyk zpráv"
+language_help = "Oznámení do tohoto kanálu se píší v tomto jazyce."
+language_default = "Jazyk instance ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Testovací oznámení od {product}"
+test_body = "Pokud je tohle vidět, oznámení do tohoto kanálu dorazí."
+event_test = "Testovací zpráva"
+view_overview = "Otevřít přehled"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Vítejte zpět. Přihlaste se a podívejte se na své servery a jejich aktualizace."
+
+[setup]
+site_name_placeholder = "Aktualizace v domácím labu…"
+tz_after = ". Změnit to lze v Nastavení."
+
+[users]
+roles_help = "Čtenáři se mohou dívat, ale nic neměnit. Editoři spravují kanály oznámení. Správci mohou všechno, včetně serverů, tokenů agentů a uživatelů."
+
+[tokens]
+sub = "Umožněte skriptům a AI asistentům číst vaše servery a jejich agenty."
+scope_read_sub = "Servery a agenti"
+
+[auth]
+all_set = "Hotovo. Přidejte první server a můžete začít."
+setup_token_required = "Tato instance vyžaduje token nastavení. Otevřete /setup?token=… s hodnotou WW_SETUP_TOKEN z konfigurace serveru."
+
+[error]
+back = "Zpět na přehled"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Jak se tato instance jmenuje, kde je dostupná a v jakém časovém pásmu ukazuje čas."
+base_url_help = "Adresa, na které tuto instanci najdou agenti i lidé: používá se ve spouštěcím příkazu agenta a v odkazech v oznámeních. Je-li na serveru nastavena proměnná WW_PUBLIC_URL, při každém spuštění tuto hodnotu nahradí."

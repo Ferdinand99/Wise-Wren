@@ -1,0 +1,66 @@
+[workspace]
+# The server (this package) and the agent that runs on each Docker host.
+members = [".", "agent"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/Ferdinand99/Wise-Wren"
+
+# Versions the server and the agent share, so both use one copy of each crate.
+# They match vole-kit 0.2's.
+[workspace.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[package]
+name = "wise-wren"
+# release-please bumps this and the agent's (release-please-config.json);
+# 0.1.0 is the first release.
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Keeps the Docker containers on your servers up to date, without surprises."
+publish = false
+
+[[bin]]
+name = "wise-wren"
+path = "src/main.rs"
+
+[dependencies]
+# The shared product kit (auth, i18n, db, HTTP, API docs, MCP, notifications,
+# design system). Locally, a .cargo/config.toml [patch] can point it at a
+# checkout of the Vigilant Vole repository (docs/development.md).
+vole-kit = { git = "https://github.com/Ferdinand99/Vigilant-Vole", tag = "vole-kit-v0.2.0" }
+askama = "0.16.1"
+axum = "0.8.9"
+axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed", "form"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+futures-util = "0.3.34"
+reqwest = { workspace = true }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rust-embed = "8.12.0"
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = "2.5.8"
+
+[build-dependencies]
+# Copies the kit's templates into templates/kit/ for askama (build.rs).
+vole-kit-build = { git = "https://github.com/Ferdinand99/Vigilant-Vole", tag = "vole-kit-v0.2.0" }
+
+[dev-dependencies]
+tower = "0.5.3"
+# The real agent client against an in-process Wren (tests/agent.rs).
+wren-agent = { path = "agent" }

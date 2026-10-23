@@ -1,0 +1,34 @@
+# Build output and local state
+target/
+data/
+*.sqlite
+*.sqlite-*
+
+# VCS, editors, agent scratch
+.git
+.gitignore
+.gitattributes
+.github
+.claude
+.cargo
+.vscode
+.idea
+.env
+.env.*
+
+# The image's own Rust (rust:1.99-alpine) builds it; a toolchain file would
+# make rustup download the same release again.
+rust-toolchain.toml
+
+# Not needed to build the binaries
+docs/
+assets/
+site/
+tests/
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Copies of the kit templates made at build time (vole-kit-build)
+templates/kit/
