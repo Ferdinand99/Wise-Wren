@@ -9,7 +9,8 @@ use crate::config::Config;
 pub async fn run(config: Config) -> Result<(), crate::StartError> {
     let wren = crate::start(&config.data_dir, config.public_url.as_deref()).await?;
     if config.allow_private_version_urls {
-        wren.allow_private_fetch.store(true, std::sync::atomic::Ordering::Relaxed);
+        wren.allow_private_fetch
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         tracing::warn!(
             "WW_ALLOW_PRIVATE_VERSION_URLS is on: version URLs may reach private and local addresses"
         );
