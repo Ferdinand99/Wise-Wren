@@ -30,6 +30,18 @@ pub struct Config {
     /// request is used.
     #[arg(long, env = "WW_PUBLIC_URL", value_parser = parse_public_url)]
     pub public_url: Option<String>,
+
+    /// Let script stacks' `url` version sources reach private, loopback and
+    /// other local addresses (a version file on your LAN). Off by default:
+    /// anyone who controls an agent's agent.toml could then make this server
+    /// fetch addresses on its own network.
+    #[arg(
+        long,
+        env = "WW_ALLOW_PRIVATE_VERSION_URLS",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub allow_private_version_urls: bool,
 }
 
 impl Config {
@@ -61,16 +73,20 @@ mod tests {
         assert_eq!(c.port, 3003);
         assert_eq!(c.bind_addr().to_string(), "0.0.0.0:3003");
         assert_eq!(c.public_url, None);
+        assert!(!c.allow_private_version_urls);
         let c = Config::try_parse_from([
             "wise-wren",
             "--port",
             "8080",
             "--public-url",
             "https://wren.example.com/",
+            "--allow-private-version-urls",
+            "1",
         ])
         .unwrap();
         assert_eq!(c.port, 8080);
         assert_eq!(c.public_url.as_deref(), Some("https://wren.example.com"));
+        assert!(c.allow_private_version_urls);
     }
 
     #[test]

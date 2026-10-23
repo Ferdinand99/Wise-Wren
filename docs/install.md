@@ -46,6 +46,7 @@ docker run -d --name wise-wren --restart unless-stopped \
 | `WW_PUBLIC_URL` | (none) | The address agents and people use. Stored as Settings → General → public URL at every start; it goes into the agents' `docker run` lines and notification links. |
 | `WW_TRUST_PROXY` | off | `1` behind a reverse proxy that sets `X-Forwarded-*` (Caddy, Traefik, nginx, SWAG, Pangolin). |
 | `WW_SETUP_TOKEN` | (none) | `/setup` only opens with `?token=<value>`, so nobody else can create the first admin. |
+| `WW_ALLOW_PRIVATE_VERSION_URLS` | off | `1` lets script stacks' `url` version sources reach private and local addresses (a version file on your LAN). See [the agent guide](agent.md). |
 | `PUID` / `PGID` | 1000 / 1000 | The user the app runs as (Unraid: 99 / 100). The data folder is handed to it at start. |
 | `TZ` | UTC | Time zone of log timestamps (pages use Settings → General → time zone). |
 | `RUST_LOG` | `info` | Log filter, e.g. `info,wise_wren=debug`. |

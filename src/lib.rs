@@ -78,7 +78,8 @@ pub struct Wren {
     /// scheduled run was moved or cancelled.
     pub vv_sync: Arc<tokio::sync::Notify>,
     /// Lets user-influenced fetches (version URLs) reach private addresses.
-    /// Off in production ([`fetch`]); tests serve their fakes on loopback.
+    /// Off unless `WW_ALLOW_PRIVATE_VERSION_URLS` is set ([`fetch`]); tests
+    /// serve their fakes on loopback.
     pub allow_private_fetch: Arc<std::sync::atomic::AtomicBool>,
 }
 

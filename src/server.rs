@@ -8,6 +8,12 @@ use crate::config::Config;
 /// Starts Wren with `config` and serves until it is told to stop.
 pub async fn run(config: Config) -> Result<(), crate::StartError> {
     let wren = crate::start(&config.data_dir, config.public_url.as_deref()).await?;
+    if config.allow_private_version_urls {
+        wren.allow_private_fetch.store(true, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            "WW_ALLOW_PRIVATE_VERSION_URLS is on: version URLs may reach private and local addresses"
+        );
+    }
     // Notifications and other work outside a request use the site language.
     vole_kit::i18n::site_language(&wren.core).await;
     // Turns silent agents offline on the live pages.

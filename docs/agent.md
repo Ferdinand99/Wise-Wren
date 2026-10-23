@@ -143,7 +143,9 @@ installed_command = "cat VERSION"     # what is installed
 The Wren **server** fetches `github` and `url` sources. A `url` must be a public address: Wren refuses private,
 loopback, link-local and other local addresses (also after redirects), reads at most 256 KB within 20 seconds and
 keeps only the version. For a version file on your LAN, use `latest_command` (for example `curl -fsS
-http://nas.lan/version.txt`): the agent runs it on its own host.
+http://nas.lan/version.txt`): the agent runs it on its own host. Or set `WW_ALLOW_PRIVATE_VERSION_URLS=1` on the
+Wren server to let `url` sources reach private and local addresses. Leave it off unless you need it: anyone who can
+edit an agent's `agent.toml` could then make the server fetch addresses on its own network.
 
 ## Upgrading the agent
 
