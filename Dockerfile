@@ -38,12 +38,12 @@ COPY migrations ./migrations
 COPY locales ./locales
 COPY agent ./agent
 
-# CARGO_BUILD_JOBS (build arg): cap parallel compile jobs on a shared machine.
-ARG CARGO_BUILD_JOBS=
+# BUILD_JOBS (build arg): cap parallel compile jobs on a shared machine.
+ARG BUILD_JOBS=
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release --locked ${CARGO_BUILD_JOBS:+--jobs $CARGO_BUILD_JOBS} -p wise-wren -p wren-agent \
+    cargo build --release --locked ${BUILD_JOBS:+--jobs $BUILD_JOBS} -p wise-wren -p wren-agent \
     && cp target/release/wise-wren target/release/wren-agent /usr/local/bin/
 
 # --- Agent -------------------------------------------------------------------
