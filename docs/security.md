@@ -37,6 +37,9 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   Security Policy and the usual security headers, and limits on failed sign-ins (from the family kit, shared with
   Vigilant Vole). Only editors and admins approve or run updates; only admins add agents, change registries and the
   VV connection, and turn on automatic updates. Every action is logged with who did it.
+- Passkeys (WebAuthn) sign in without a password or code; each user adds them under **Settings → Security**.
+  They need an HTTPS public URL (`WW_PUBLIC_URL`, or `http://localhost`), which sets their relying party; the
+  password (with two-factor sign-in) remains the fallback.
 - Version URLs from `agent.toml` are fetched by the server from **public addresses only** (every address the name
   resolves to, and every redirect, is checked; at most 256 KB in 20 seconds; only the version is kept).
 - Agents are limited to 20 heartbeats, 6 inventories and 120 job requests a minute per server.

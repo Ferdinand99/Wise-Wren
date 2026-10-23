@@ -146,6 +146,7 @@ async fn healthz_and_static() {
     for path in [
         "/static/style.css",
         "/static/wren.css",
+        "/static/passkeys.js",
         "/static/favicon.svg",
         "/static/site.webmanifest",
     ] {
@@ -511,4 +512,75 @@ async fn openapi_and_mcp_say_wren() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert!(res.body.contains("\"name\":\"wren\""), "{}", res.body);
     assert!(!res.body.contains("Vole"));
+}
+
+/// Passkeys at a `http://localhost` public URL: after the password, a signed-in
+/// user gets registration options, registers a (software) passkey, signs out
+/// and signs in with it alone.
+#[tokio::test]
+async fn passkey_registers_and_signs_in_at_localhost() {
+    use vole_kit::auth::webauthn::{b64, soft::SoftAuthenticator, unb64};
+    const ORIGIN: &str = "http://localhost:3003";
+    let app = App::new().await;
+    app.wren
+        .core
+        .with_conn(|c| vole_kit::db::settings::set(c, "base_url", ORIGIN))
+        .await
+        .unwrap();
+    let mut web = Web::new(&app, "ada", "admin").await;
+    let json_post = |path: &str, body: &Value| {
+        Request::post(path)
+            .header(header::ORIGIN, format!("http://{}", common::HOST))
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let options = |res: &common::Res| {
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        let o = res.json()["publicKey"].clone();
+        let challenge = unb64(o["challenge"].as_str().unwrap(), "c").unwrap();
+        (o, challenge)
+    };
+
+    let res = web
+        .post(
+            "/settings/security/passkeys/options",
+            &[("password", "wrong")],
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    let res = web
+        .post(
+            "/settings/security/passkeys/options",
+            &[("password", common::PASSWORD)],
+        )
+        .await;
+    let (o, challenge) = options(&res);
+    assert_eq!(o["rp"]["id"], "localhost");
+    assert_eq!(o["user"]["name"], "ada");
+    let handle = unb64(o["user"]["id"].as_str().unwrap(), "h").unwrap();
+
+    let mut auth = SoftAuthenticator::es256();
+    let (client, att) = auth.register("localhost", ORIGIN, &challenge, &handle);
+    let id = b64(&auth.credential_id);
+    let body = json!({"name": "", "credential": {"id": id, "rawId": id, "type": "public-key",
+        "response": {"clientDataJSON": b64(&client), "attestationObject": b64(&att)}}});
+    let res = web
+        .send(json_post("/settings/security/passkeys", &body))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+
+    web.post("/logout", &[]).await;
+    let res = web.post("/login/passkey/options", &[]).await;
+    let (o, challenge) = options(&res);
+    assert_eq!(o["rpId"], "localhost");
+    let (client, data, sig) = auth.assert("localhost", ORIGIN, &challenge);
+    let body = json!({"next": "/servers", "credential": {"id": id, "rawId": id, "type": "public-key",
+        "response": {"clientDataJSON": b64(&client), "authenticatorData": b64(&data),
+            "signature": b64(&sig), "userHandle": b64(&auth.user_handle)}}});
+    let res = web.send(json_post("/login/passkey", &body)).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json()["redirect"], "/servers");
+    assert_eq!(web.get("/servers").await.status, StatusCode::OK);
 }
