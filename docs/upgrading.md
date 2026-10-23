@@ -1,6 +1,6 @@
 # Upgrading
 
-Wren doesn't update itself or its agents in v0.1: their targets show new versions but can't be approved.
+Wren doesn't update itself or its agents yet: their targets show new versions but can't be approved.
 
 ## The server
 
@@ -30,5 +30,5 @@ its version with every heartbeat; the server's page shows it. Keep the agents on
 
 ## Pinning
 
-`:latest` follows releases, `:0.1` and `:0` follow a line, `:0.1.0` never moves, `:edge` is the newest `main`
+`:latest` follows releases, `:0.2` and `:0` follow a minor or major line, `:0.2.1` (an exact version) never moves, `:edge` is the newest `main`
 build (for testing only).
