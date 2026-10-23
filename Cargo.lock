@@ -394,6 +394,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -557,6 +584,12 @@ checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-common"
@@ -946,6 +979,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2796,14 +2840,16 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vole-kit"
-version = "0.3.0"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.3.0#92906f0333949ec5946b1fbdf71fc70a43f37c10"
+version = "0.4.0"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.4.0#86d5709aa59cc19c49da32653ec7ddeb71f8c53d"
 dependencies = [
  "argon2",
  "askama",
+ "aws-lc-rs",
  "axum",
  "axum-extra",
  "base64 0.23.1",
+ "ciborium",
  "deadpool-sqlite",
  "futures-util",
  "hex",
@@ -2831,8 +2877,8 @@ dependencies = [
 
 [[package]]
 name = "vole-kit-build"
-version = "0.3.0"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.3.0#92906f0333949ec5946b1fbdf71fc70a43f37c10"
+version = "0.4.0"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.4.0#86d5709aa59cc19c49da32653ec7ddeb71f8c53d"
 
 [[package]]
 name = "walkdir"
