@@ -41,16 +41,22 @@ path = "src/main.rs"
 # checkout of the Vigilant Vole repository (docs/development.md).
 vole-kit = { git = "https://github.com/Ferdinand99/Vigilant-Vole", tag = "vole-kit-v0.2.0" }
 askama = "0.16.1"
+# AES-256-GCM for registry credentials (already in the tree through rustls).
+aws-lc-rs = "1.18.2"
 axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed", "form"] }
+base64 = "0.22.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = "0.3.34"
+regex = "1.13.1"
 reqwest = { workspace = true }
 rusqlite = { version = "0.40", features = ["bundled"] }
 rust-embed = "8.12.0"
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+semver = "1.0.28"
 serde = { workspace = true }
 serde_json = { workspace = true }
+time = { version = "0.3.55", default-features = false }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

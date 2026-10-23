@@ -43,6 +43,10 @@ pub async fn collect(socket: &str, root: &Path) -> Heartbeat {
 pub struct Reply {
     pub server: ServerInfo,
     pub interval_seconds: u64,
+    /// Wren asks for a fresh inventory ("Check now"): the only thing it
+    /// can ask.
+    #[serde(default)]
+    pub scan: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -68,10 +72,11 @@ impl std::fmt::Display for SendError {
     }
 }
 
-/// Posts heartbeats to one Wren.
+/// Posts heartbeats and inventories to one Wren.
 pub struct Client {
     http: reqwest::Client,
     url: String,
+    inventory_url: String,
 }
 
 impl Client {
@@ -88,17 +93,31 @@ impl Client {
             .timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| e.to_string())?;
+        let server = server.trim_end_matches('/');
         Ok(Client {
             http,
-            url: format!("{}{PATH}", server.trim_end_matches('/')),
+            url: format!("{server}{PATH}"),
+            inventory_url: format!("{server}{}", crate::discover::PATH),
         })
     }
 
     pub async fn send(&self, beat: &Heartbeat) -> Result<Reply, SendError> {
+        let res = self.post(&self.url, beat).await?;
+        res.json()
+            .await
+            .map_err(|e| SendError::Failed(format!("Wren's answer wasn't understood: {e}")))
+    }
+
+    /// Sends what runs on this server.
+    pub async fn inventory(&self, inv: &crate::discover::Inventory) -> Result<(), SendError> {
+        self.post(&self.inventory_url, inv).await.map(|_| ())
+    }
+
+    async fn post(&self, url: &str, body: &impl Serialize) -> Result<reqwest::Response, SendError> {
         let res = self
             .http
-            .post(&self.url)
-            .json(beat)
+            .post(url)
+            .json(body)
             .send()
             .await
             .map_err(|e| SendError::Failed(format!("can't reach Wren: {e}")))?;
@@ -118,8 +137,6 @@ impl Client {
                 .collect();
             return Err(SendError::Failed(format!("Wren answered {status}: {body}")));
         }
-        res.json()
-            .await
-            .map_err(|e| SendError::Failed(format!("Wren's answer wasn't understood: {e}")))
+        Ok(res)
     }
 }

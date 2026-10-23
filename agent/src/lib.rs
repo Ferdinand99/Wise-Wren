@@ -1,16 +1,19 @@
 //! `wren-agent`: runs on each Docker host and connects **out** to Wise Wren
-//! (docs/design.md §3, §8). In phase 2 it checks its `agent.toml`, reads
+//! (docs/design.md §3, §8). It checks its `agent.toml`, reads
 //! Docker's `/version` and `/info` and sends a heartbeat every 30 seconds;
 //! it changes nothing and takes no orders.
 
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod discover;
 pub mod docker;
 pub mod heartbeat;
 
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use config::Config;
 use heartbeat::{Client, SendError};
@@ -20,6 +23,42 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// The wait after Wren refused the token (it may be fixed on the server
 /// without restarting the agent: a revoked token stays refused, though).
 pub const REFUSED_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// The inventory runs beside the heartbeats (version commands may take a
+/// while), one at a time.
+#[derive(Default, Clone)]
+struct Scans {
+    running: Arc<AtomicBool>,
+    /// The last one didn't reach Wren: try again with the next heartbeat.
+    retry: Arc<AtomicBool>,
+}
+
+impl Scans {
+    fn start(&self, config: &Arc<Config>, client: &Arc<Client>) {
+        if self.running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (config, client, scans) = (config.clone(), client.clone(), self.clone());
+        tokio::spawn(async move {
+            let inv = discover::scan(&config, Path::new("/")).await;
+            if !inv.error.is_empty() {
+                tracing::warn!(error = %inv.error, "can't read Docker for the inventory");
+            }
+            match client.inventory(&inv).await {
+                Ok(()) => tracing::info!(
+                    containers = inv.containers.len(),
+                    script_stacks = inv.script_stacks.len(),
+                    "inventory sent"
+                ),
+                Err(err) => {
+                    tracing::warn!("inventory not sent: {err}");
+                    scans.retry.store(true, Ordering::Relaxed);
+                }
+            }
+            scans.running.store(false, Ordering::Release);
+        });
+    }
+}
 
 fn backoff(failures: u32) -> Duration {
     let secs = 5u64.saturating_mul(1 << failures.min(4));
@@ -31,7 +70,10 @@ pub async fn run(
     config: Config,
     stop: impl std::future::Future<Output = ()>,
 ) -> Result<(), String> {
-    let client = Client::new(&config.server, &config.token)?;
+    let client = Arc::new(Client::new(&config.server, &config.token)?);
+    let config = Arc::new(config);
+    let scans = Scans::default();
+    let mut next_scan = Instant::now();
     tracing::info!(
         version = heartbeat::VERSION,
         server = %config.server,
@@ -54,6 +96,15 @@ pub async fn run(
                     connected = true;
                 }
                 failures = 0;
+                // A scan on start, on the agent's own schedule, when Wren asks
+                // ("Check now") and again after a failed one.
+                if reply.scan
+                    || Instant::now() >= next_scan
+                    || scans.retry.swap(false, Ordering::Relaxed)
+                {
+                    next_scan = Instant::now() + config.scan_interval;
+                    scans.start(&config, &client);
+                }
                 Duration::from_secs(reply.interval_seconds.clamp(5, 300))
             }
             Err(SendError::Refused(msg)) => {

@@ -1,0 +1,52 @@
+{% extends "kit/settings_layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block settings_content %}
+{%- if editing %}
+{% call m::page_header(form.host.as_str(), tr("registries.edit_sub"), "/settings/registries", tr("registries.title")) %}
+  {{ m::delete_button(action.as_str(), delete_question.as_str(), tr("registries.delete_msg"), "", "", tr("common.delete"), "") }}
+{% endcall %}
+{%- else %}
+{% call m::page_header(tr("registries.title"), tr("registries.sub")) %}{% endcall %}
+
+{%- if !rows.is_empty() %}
+<div class="card card-flush">
+  <div class="table-wrap">
+    <table class="table table-stack" id="registries">
+      <thead><tr><th>{{ tr("registries.host") }}</th><th>{{ tr("registries.username") }}</th><th><span class="vh">{{ tr("common.actions") }}</span></th></tr></thead>
+      <tbody>
+        {%- for r in rows %}
+        <tr>
+          <td class="td-primary mono">{{ r.host }}</td>
+          <td data-label="{{ tr("registries.username") }}">{{ r.username }}</td>
+          <td class="td-actions"><a class="btn btn-secondary btn-sm" href="/settings/registries/{{ r.id }}">{{ m::icon("pencil") }}<span>{{ tr("common.edit") }}</span></a></td>
+        </tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{%- endif %}
+<h2 class="section-title">{{ tr("registries.add") }}</h2>
+{%- endif %}
+
+<form class="form form-narrow" method="post" action="{{ form.action() }}">
+  <div class="card">
+    {%- if !form.error.is_empty() %}
+    {{ m::callout("danger", form.error) }}
+    {%- endif %}
+    {%- if editing %}
+    <input type="hidden" name="host" value="{{ form.host }}">
+    {%- else %}
+    {{ m::field_text("host", tr("registries.host"), form.host, "text", "ghcr.io", tr("registries.host_help"), true) }}
+    {%- endif %}
+    {{ m::field_text("username", tr("registries.username"), form.username, "text", "", "", true, "username") }}
+    {{ m::field_text("password", tr("registries.password"), "", "password", form.placeholder(), tr("registries.password_help"), !editing, "new-password") }}
+  </div>
+  <div class="form-actions">
+    {%- if editing %}{{ m::link_button("/settings/registries", tr("common.cancel"), "secondary") }}{% endif %}
+    {{ m::button(tr("common.save")) }}
+  </div>
+</form>
+<p class="section-foot">{{ tr("registries.foot") }}</p>
+{% endblock %}

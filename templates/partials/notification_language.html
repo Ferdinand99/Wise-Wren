@@ -1,4 +1,5 @@
-{#- The language a channel's messages are written in. Needs: form (ChannelForm). -#}
+{#- The language a channel's messages are written in, and its digest switch. Needs: form (ChannelForm). -#}
+{%- import "kit/macros.html" as m -%}
 <div class="field">
   <label class="label" for="f-language">{{ tr("channels.language") }}</label>
   <select id="f-language" name="language" aria-describedby="f-language-help">
@@ -8,3 +9,4 @@
   </select>
   <p class="help" id="f-language-help">{{ tr("channels.language_help") }}</p>
 </div>
+{{ m::switch("digest", tr("channels.digest"), form.digest, tr("channels.digest_help")) }}

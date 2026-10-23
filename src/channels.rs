@@ -101,6 +101,8 @@ pub struct ChannelForm {
     pub name_error: String,
     pub active: bool,
     pub language: String,
+    /// One message per check run instead of one per update.
+    pub digest: bool,
     pub languages: Vec<OptionView>,
     pub fields: Vec<FieldView>,
 }
@@ -238,6 +240,7 @@ fn blank_form(schema: &'static ProviderSchema, language: &str) -> ChannelForm {
         active: true,
         language: language.to_string(),
         languages: language_options(language),
+        digest: false,
         fields: field_views(schema, &Value::Null, &Value::Null, &[], true),
     }
 }
@@ -378,7 +381,8 @@ async fn create(
     let config = parsed.config.to_string();
     let kind = schema.kind;
     let saved_name = name.clone();
-    core.with_conn(move |c| db::insert_channel(c, &saved_name, kind, &config, &language))
+    let digest = pair_flag(&pairs, "digest");
+    core.with_conn(move |c| db::insert_channel(c, &saved_name, kind, &config, &language, digest))
         .await?;
     tracing::info!(user = %user.username, kind, "notification channel created");
 
@@ -423,6 +427,7 @@ fn edit_form(channel: &Channel, schema: &'static ProviderSchema) -> ChannelForm 
         id: channel.id,
         name: channel.name.clone(),
         active: channel.active,
+        digest: channel.digest,
         fields: field_views(schema, &shown, &stored, &[], false),
         ..blank_form(schema, &channel.language)
     }
@@ -526,8 +531,11 @@ async fn update(
 
     let config = config.to_string();
     let saved_name = name.clone();
-    core.with_conn(move |c| db::update_channel(c, id, &saved_name, &config, active, &language))
-        .await?;
+    let digest = pair_flag(&pairs, "digest");
+    core.with_conn(move |c| {
+        db::update_channel(c, id, &saved_name, &config, active, &language, digest)
+    })
+    .await?;
     tracing::info!(user = %user.username, channel_id = id, "notification channel updated");
     let jar = flash(jar, "success", i18n::tf("notif.saved", &[("name", &name)]));
     Ok((jar, Redirect::to("/settings/notifications")).into_response())
@@ -711,9 +719,11 @@ mod db {
         pub active: bool,
         /// A language code, or "" for the instance's language.
         pub language: String,
+        /// One message per check run.
+        pub digest: bool,
     }
 
-    const COLUMNS: &str = "id, name, kind, config, active, language";
+    const COLUMNS: &str = "id, name, kind, config, active, language, digest";
 
     fn row(r: &Row<'_>) -> rusqlite::Result<Channel> {
         Ok(Channel {
@@ -723,6 +733,7 @@ mod db {
             config: r.get(3)?,
             active: r.get(4)?,
             language: r.get(5)?,
+            digest: r.get(6)?,
         })
     }
 
@@ -749,10 +760,11 @@ mod db {
         kind: &str,
         config: &str,
         language: &str,
+        digest: bool,
     ) -> rusqlite::Result<i64> {
         c.execute(
-            "INSERT INTO notification_channels (name, kind, config, language) VALUES (?1, ?2, ?3, ?4)",
-            params![name, kind, config, language],
+            "INSERT INTO notification_channels (name, kind, config, language, digest) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, kind, config, language, digest],
         )?;
         Ok(c.last_insert_rowid())
     }
@@ -764,10 +776,12 @@ mod db {
         config: &str,
         active: bool,
         language: &str,
+        digest: bool,
     ) -> rusqlite::Result<bool> {
         Ok(c.execute(
-            "UPDATE notification_channels SET name = ?2, config = ?3, active = ?4, language = ?5 WHERE id = ?1",
-            params![id, name, config, active, language],
+            "UPDATE notification_channels SET name = ?2, config = ?3, active = ?4, language = ?5,
+                 digest = ?6 WHERE id = ?1",
+            params![id, name, config, active, language, digest],
         )? > 0)
     }
 

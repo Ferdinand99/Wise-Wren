@@ -92,3 +92,25 @@ async fn agent_heartbeat_reaches_wren() {
         other => panic!("{other:?}"),
     }
 }
+
+#[tokio::test]
+async fn agent_inventory_reaches_wren() {
+    let app = App::new().await;
+    let (_id, token) = app.add_server("LANBox").await;
+    let url = serve(&app).await;
+    let text = format!(
+        "server = \"{url}\"\ntoken = \"{token}\"\ndocker_socket = \"/nonexistent/docker.sock\"\n"
+    );
+    let config = Config::from_parts(Some(&text), |_| None).unwrap();
+    let inv = wren_agent::discover::scan(&config, std::path::Path::new("/nonexistent")).await;
+    assert!(inv.error.contains("can't open"), "{inv:?}");
+    Client::new(&url, &token)
+        .unwrap()
+        .inventory(&inv)
+        .await
+        .unwrap();
+    let recorded = app
+        .count("SELECT COUNT(*) FROM servers WHERE inventory_at IS NOT NULL AND inventory_error LIKE 'can''t open%'")
+        .await;
+    assert_eq!(recorded, 1);
+}
