@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "概览"
+sub = "一览服务器及其探针。"
+servers = "服务器"
+online = "在线"
+not_online = "未在线"
+
+[servers]
+title = "服务器"
+sub = "每台服务器都运行Wren的探针，由探针主动连接Wren。服务器无需开放任何端口。"
+add = "添加服务器"
+new_sub = "为服务器命名。随后Wren会显示探针的令牌和启动探针的命令。"
+name = "名称"
+name_placeholder = "Tower"
+err_name = "请输入名称。"
+err_name_long = "最多使用{max}个字符。"
+err_name_taken = "已有同名服务器。"
+empty_title = "还没有服务器"
+empty_text = "添加一台服务器，然后在上面启动Wren的探针。探针会自行连接Wren。"
+empty_viewer = "服务器由管理员添加。请让管理员添加第一台。"
+status_online = "在线"
+status_offline = "离线"
+status_waiting = "等待探针连接"
+status_no_token = "无令牌"
+last_seen = "上次在线"
+never = "从不"
+hostname = "主机名"
+os = "操作系统"
+docker = "Docker"
+docker_unreachable = "无法访问：{error}"
+agent_version = "探针版本"
+unraid = "Unraid"
+details = "详细信息"
+agent = "探针"
+agent_sub = "探针使用自己的令牌进行身份验证。它目前只向Wren报告，还不会执行Wren的任何请求。"
+token = "探针令牌"
+token_none = "此服务器没有令牌，因此其探针无法连接。新建令牌即可重新连接。"
+token_once = "请立即复制令牌。Wren只保存其指纹，无法再次显示。"
+run_title = "启动探针"
+run_unraid = "在Unraid上"
+run_linux = "在其他Linux主机上"
+run_help = "将Wren可能操作的每个文件夹以相同路径挂载到探针中，并在agent.toml中列出。能访问Docker套接字的探针拥有服务器的root权限。"
+copy_command = "复制命令"
+new_token = "新建令牌"
+new_token_q = "为“{name}”新建令牌？"
+new_token_msg = "当前令牌会立即失效。请用新令牌重新启动探针。"
+revoke = "撤销令牌"
+revoke_q = "撤销“{name}”的令牌？"
+revoke_msg = "在新建令牌之前，探针无法连接。"
+revoked = "已撤销“{name}”的令牌。"
+delete_q = "删除“{name}”？"
+delete_msg = "其探针将无法再连接。服务器本身不会有任何变化。"
+deleted = "已删除“{name}”。"
+added = "已添加“{name}”。现在启动它的探针吧。"
+
+[channels]
+sub = "Wren发送通知的去处：新版本、更新结果以及离线的探针。"
+empty_text = "添加一个渠道，例如ntfy、Slack或电子邮件。一旦收到更新检查结果，Wren就会开始发送。"
+foot = "已保存的机密信息不会再次显示。编辑渠道时留空即可保留原值。"
+delete_q = "删除“{name}”？"
+delete_msg = "Wren将不再向其发送通知。"
+more_actions_for = "{name}的更多操作"
+language = "消息语言"
+language_help = "发往此渠道的通知使用此语言撰写。"
+language_default = "实例语言（{name}）"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "来自{product}的测试通知"
+test_body = "如果你能看到这条消息，说明通知可以送达此渠道。"
+event_test = "测试"
+view_overview = "打开概览"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "欢迎回来。登录后查看服务器及其更新。"
+
+[setup]
+site_name_placeholder = "家庭实验室更新…"
+tz_after = "显示。可以在“设置”中修改。"
+
+[users]
+roles_help = "查看者只能查看，不能更改任何内容。编辑者管理通知渠道。管理员可执行所有操作，包括管理服务器、探针令牌和用户。"
+
+[tokens]
+sub = "让脚本和AI助手读取你的服务器及其探针。"
+scope_read_sub = "服务器和探针"
+
+[auth]
+all_set = "一切就绪。添加第一台服务器开始使用吧。"
+setup_token_required = "此实例需要设置令牌。请打开/setup?token=…，其值取自服务器配置中的WW_SETUP_TOKEN。"
+
+[error]
+back = "返回概览"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "此实例的名称、访问地址，以及显示时间所用的时区。"
+base_url_help = "探针和用户访问此实例的地址，用于探针的启动命令和通知中的链接。如果服务器上设置了WW_PUBLIC_URL，每次启动时都会用它替换此值。"

@@ -1,0 +1,39 @@
+{% extends "kit/settings_layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block settings_content %}
+{% call m::page_header(form.name.as_str(), form.label, "/settings/notifications", tr("nav.notifications")) %}
+  <button type="button" class="btn btn-secondary" hx-post="/settings/notifications/{{ form.id }}/test" hx-include="#channel-form" hx-swap="none">{{ m::icon("send") }}<span>{{ tr("notif.send_test") }}</span></button>
+  {{ m::delete_button(delete_url.as_str(), delete_question.as_str(), tr("channels.delete_msg"), "", "", tr("common.delete"), "") }}
+{% endcall %}
+
+<form id="channel-form" class="form form-narrow" method="post" action="/settings/notifications/{{ form.id }}" data-warn-unsaved>
+  <input type="hidden" name="kind" value="{{ form.kind }}">
+
+  <section class="form-section" aria-labelledby="sec-channel">
+    <h2 class="form-section-title" id="sec-channel">{{ tr("notif.channel") }}</h2>
+    <div class="card">
+      {% include "kit/partials/notification_name.html" %}
+      {% include "partials/notification_language.html" %}
+      {{ m::switch("active", tr("notif.send_alerts"), form.active, tr("notif.send_alerts_help")) }}
+    </div>
+  </section>
+
+  <section class="form-section" aria-labelledby="sec-provider">
+    <h2 class="form-section-title" id="sec-provider">{{ form.label }}</h2>
+    {%- if !form.docs_url.is_empty() %}
+    <p class="form-section-sub">{{ form.description }} · <a href="{{ form.docs_url }}" target="_blank" rel="noopener noreferrer">{{ tr("notif.setup_guide") }}</a></p>
+    {%- else %}
+    <p class="form-section-sub">{{ form.description }}</p>
+    {%- endif %}
+    <div class="card">
+      {% include "kit/partials/notification_fields.html" %}
+    </div>
+  </section>
+
+  <div class="form-actions">
+    {{ m::link_button("/settings/notifications", tr("common.cancel"), "secondary") }}
+    {{ m::button(tr("notif.save")) }}
+  </div>
+</form>
+{% endblock %}

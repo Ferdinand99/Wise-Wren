@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Översikt"
+sub = "En överblick över dina servrar och deras agenter."
+servers = "Servrar"
+online = "Online"
+not_online = "Inte online"
+
+[servers]
+title = "Servrar"
+sub = "Varje server kör Wrens agent, som själv ansluter till Wren. Dina servrar öppnar inga portar."
+add = "Lägg till server"
+new_sub = "Ge servern ett namn. Wren visar sedan agentens token och kommandot som startar agenten."
+name = "Namn"
+name_placeholder = "Tower"
+err_name = "Ange ett namn."
+err_name_long = "Använd högst {max} tecken."
+err_name_taken = "Det finns redan en server med det här namnet."
+empty_title = "Inga servrar än"
+empty_text = "Lägg till en server och starta Wrens agent på den. Agenten ansluter till Wren på egen hand."
+empty_viewer = "Servrar läggs till av en administratör. Be någon av dem lägga till den första."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Väntar på agenten"
+status_no_token = "Ingen token"
+last_seen = "Senast sedd"
+never = "Aldrig"
+hostname = "Värdnamn"
+os = "Operativsystem"
+docker = "Docker"
+docker_unreachable = "Inte nåbar: {error}"
+agent_version = "Agentversion"
+unraid = "Unraid"
+details = "Detaljer"
+agent = "Agent"
+agent_sub = "Agenten autentiserar sig med en egen token. Den rapporterar bara till Wren och kör ännu inget som Wren ber om."
+token = "Agenttoken"
+token_none = "Servern har ingen token, så dess agent kan inte ansluta. Skapa en ny token för att ansluta den igen."
+token_once = "Kopiera tokenen nu. Wren sparar bara ett fingeravtryck av den och kan inte visa den igen."
+run_title = "Starta agenten"
+run_unraid = "På Unraid"
+run_linux = "På andra Linux-värdar"
+run_help = "Montera varje mapp som Wren får arbeta i på samma sökväg inuti agenten, och lista den i agent.toml. Åtkomst till Docker-socketen ger agenten root-åtkomst till servern."
+copy_command = "Kopiera kommando"
+new_token = "Ny token"
+new_token_q = "Skapa en ny token för ”{name}”?"
+new_token_msg = "Den nuvarande tokenen slutar fungera direkt. Starta agenten igen med den nya."
+revoke = "Återkalla token"
+revoke_q = "Återkalla tokenen för ”{name}”?"
+revoke_msg = "Agenten kan inte ansluta förrän du skapar en ny token."
+revoked = "Tokenen för ”{name}” är återkallad."
+delete_q = "Ta bort ”{name}”?"
+delete_msg = "Dess agent kan inte längre ansluta. Inget ändras på själva servern."
+deleted = "”{name}” är borttagen."
+added = "”{name}” är tillagd. Starta dess agent nu."
+
+[channels]
+sub = "Vart Wren skickar aviseringar: nya versioner, uppdateringsresultat och agenter som går offline."
+empty_text = "Lägg till en kanal, till exempel ntfy, Slack eller e-post. Wren börjar skicka när uppdateringskontroller kommer in."
+foot = "Sparade hemligheter visas aldrig igen. Lämna dem tomma när du redigerar en kanal för att behålla dem."
+delete_q = "Ta bort ”{name}”?"
+delete_msg = "Wren slutar skicka aviseringar till den."
+more_actions_for = "Fler åtgärder för {name}"
+language = "Meddelandespråk"
+language_help = "Aviseringar till den här kanalen skrivs på det här språket."
+language_default = "Instansens språk ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Testavisering från {product}"
+test_body = "Om du kan läsa det här når aviseringarna fram till den här kanalen."
+event_test = "Testmeddelande"
+view_overview = "Öppna översikten"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Välkommen tillbaka. Logga in för att se dina servrar och deras uppdateringar."
+
+[setup]
+site_name_placeholder = "Uppdateringar i hemlabbet…"
+tz_after = ". Det kan ändras under Inställningar."
+
+[users]
+roles_help = "Läsare kan titta men inte ändra något. Redaktörer hanterar aviseringskanaler. Administratörer kan göra allt, inklusive servrar, agenttoken och användare."
+
+[tokens]
+sub = "Låt skript och AI-assistenter läsa dina servrar och deras agenter."
+scope_read_sub = "Servrar och agenter"
+
+[auth]
+all_set = "Allt är klart. Lägg till din första server för att komma igång."
+setup_token_required = "Den här instansen kräver en installationstoken. Öppna /setup?token=… med värdet av WW_SETUP_TOKEN från serverns konfiguration."
+
+[error]
+back = "Tillbaka till översikten"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Vad instansen heter, var den nås och i vilken tidszon den visar tider."
+base_url_help = "Adressen där agenter och personer når instansen: används i agentens startkommando och i länkar i aviseringar. Om WW_PUBLIC_URL är satt på servern ersätter den värdet vid varje start."

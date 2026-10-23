@@ -1,0 +1,10 @@
+{#- The language a channel's messages are written in. Needs: form (ChannelForm). -#}
+<div class="field">
+  <label class="label" for="f-language">{{ tr("channels.language") }}</label>
+  <select id="f-language" name="language" aria-describedby="f-language-help">
+    {%- for o in form.languages %}
+    <option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>
+    {%- endfor %}
+  </select>
+  <p class="help" id="f-language-help">{{ tr("channels.language_help") }}</p>
+</div>

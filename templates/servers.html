@@ -1,0 +1,17 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("servers.title"), tr("servers.sub")) %}
+  {{ m::live() }}
+  {%- if can_add && !rows.is_empty() %}{{ m::link_button("/servers/new", tr("servers.add"), "primary", "plus") }}{% endif %}
+{% endcall %}
+
+<div id="servers-body" hx-ext="sse" sse-connect="/servers/live" sse-swap="servers-updated" hx-swap="innerHTML">
+  {% include "partials/server_list.html" %}
+</div>
+{% endblock %}

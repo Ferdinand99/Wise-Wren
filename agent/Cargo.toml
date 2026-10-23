@@ -1,0 +1,24 @@
+[package]
+name = "wren-agent"
+# Released together with the server (release-please-config.json).
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Wise Wren's agent: runs on each Docker host and connects out to Wren."
+publish = false
+
+[[bin]]
+name = "wren-agent"
+path = "src/main.rs"
+
+# Small on purpose: no vole-kit, no web framework, no Docker client crate.
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1.53.1", features = ["rt", "macros", "net", "time", "signal", "io-util"] }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

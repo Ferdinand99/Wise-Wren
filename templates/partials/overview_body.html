@@ -1,0 +1,11 @@
+{#- The Overview's body; swapped whole by its live view. Needs: rows, counts, can_add. -#}
+{%- import "kit/macros.html" as m -%}
+<div class="stats">
+  {{ m::stat(tr("overview.servers"), num(counts.total as i64)) }}
+  {{ m::stat(tr("overview.online"), num(counts.online as i64), "up") }}
+  {{ m::stat(tr("overview.not_online"), num(counts.not_online as i64), "down") }}
+</div>
+<section class="section" aria-labelledby="overview-servers">
+  {% call m::section_head(tr("overview.servers"), "", "overview-servers") %}{% endcall %}
+  {% include "partials/server_list.html" %}
+</section>

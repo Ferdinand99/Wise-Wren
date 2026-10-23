@@ -1,0 +1,32 @@
+{#- The servers with their agents' status; swapped whole by the live views. Needs: rows, can_add. -#}
+{%- import "kit/macros.html" as m -%}
+{%- if rows.is_empty() %}
+<div class="empty-card">
+  {%- if can_add %}
+  {{ m::empty_state("server", tr("servers.empty_title"), tr("servers.empty_text"), "/servers/new", tr("servers.add")) }}
+  {%- else %}
+  {{ m::empty_state("server", tr("servers.empty_title"), tr("servers.empty_viewer")) }}
+  {%- endif %}
+</div>
+{%- else %}
+<ul class="list" role="list" id="server-list">
+  {%- for s in rows %}
+  <li>
+    <a class="list-row" href="/servers/{{ s.id }}" data-status="{{ s.status }}">
+      <span class="server-tile" aria-hidden="true">{{ m::icon("server") }}</span>
+      <span class="list-main">
+        <span class="list-title list-title-wrap">{{ s.name }}</span>
+        <span class="list-sub">
+          {%- if s.summary().is_empty() %}{{ tr("servers.last_seen") }}: {{ tr("servers.never") }}{% else %}{{ s.summary() }}{% endif -%}
+        </span>
+      </span>
+      <span class="list-trail">
+        {%- if s.unraid %}<span class="badge badge-unraid hide-sm">{{ tr("servers.unraid") }}</span>{% endif %}
+        <span class="pill status-{{ s.status_class }}"><span class="dot" aria-hidden="true"></span>{{ s.status_label }}</span>
+        {{- m::icon("chevron-right", "list-chevron") }}
+      </span>
+    </a>
+  </li>
+  {%- endfor %}
+</ul>
+{%- endif %}

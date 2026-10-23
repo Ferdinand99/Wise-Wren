@@ -1,0 +1,26 @@
+{#- Step 2 of "Add channel": the service's settings (the kit's name and field partials). Re-rendered with errors on a failed save. Needs: form (ChannelForm). -#}
+{%- import "kit/macros.html" as m -%}
+<div class="sheet-body" id="channel-sheet-body">
+  <form id="channel-form" class="form" hx-post="/settings/notifications" hx-target="#channel-sheet-body" hx-swap="outerHTML">
+    <input type="hidden" name="kind" value="{{ form.kind }}">
+    <div class="cluster cluster-between">
+      <button type="button" class="btn btn-plain btn-sm" hx-get="/settings/notifications/providers" hx-target="#channel-sheet-body" hx-swap="outerHTML">{{ m::icon("chevron-left") }}<span>{{ tr("notif.all_services") }}</span></button>
+      {%- if !form.docs_url.is_empty() %}
+      <a class="btn btn-plain btn-sm" href="{{ form.docs_url }}" target="_blank" rel="noopener noreferrer">{{ m::icon("external") }}<span>{{ tr("notif.setup_guide") }}</span></a>
+      {%- endif %}
+    </div>
+    <ul class="list" role="list">
+      <li class="list-row">
+        <span class="provider-tile provider-{{ form.kind }}" aria-hidden="true">{{ m::icon(form.icon) }}</span>
+        <span class="list-main"><span class="list-title">{{ form.label }}</span><span class="list-sub">{{ form.description }}</span></span>
+      </li>
+    </ul>
+    {% include "kit/partials/notification_name.html" %}
+    {% include "kit/partials/notification_fields.html" %}
+    {% include "partials/notification_language.html" %}
+  </form>
+</div>
+<footer class="sheet-foot" id="channel-sheet-foot" hx-swap-oob="true">
+  <button type="button" class="btn btn-secondary" hx-post="/settings/notifications/test" hx-include="#channel-form" hx-swap="none">{{ m::icon("send") }}<span>{{ tr("notif.send_test") }}</span></button>
+  <button type="submit" class="btn btn-primary" form="channel-form">{{ tr("notif.add_channel") }}</button>
+</footer>

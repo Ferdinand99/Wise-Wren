@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Resumen"
+sub = "Tus servidores y sus agentes de un vistazo."
+servers = "Servidores"
+online = "En línea"
+not_online = "Sin conectar"
+
+[servers]
+title = "Servidores"
+sub = "Cada servidor ejecuta el agente de Wren, que se conecta por sí mismo a Wren. Tus servidores no abren ningún puerto."
+add = "Añadir servidor"
+new_sub = "Ponle un nombre al servidor. Después, Wren muestra el token del agente y el comando que lo inicia."
+name = "Nombre"
+name_placeholder = "Tower"
+err_name = "Introduce un nombre."
+err_name_long = "Usa {max} caracteres como máximo."
+err_name_taken = "Ya hay un servidor con este nombre."
+empty_title = "Aún no hay servidores"
+empty_text = "Añade un servidor y luego inicia en él el agente de Wren. El agente se conecta a Wren por sí solo."
+empty_viewer = "Los servidores los añade un administrador. Pide a uno que añada el primero."
+status_online = "En línea"
+status_offline = "Sin conexión"
+status_waiting = "Esperando al agente"
+status_no_token = "Sin token"
+last_seen = "Visto por última vez"
+never = "Nunca"
+hostname = "Nombre de host"
+os = "Sistema operativo"
+docker = "Docker"
+docker_unreachable = "No accesible: {error}"
+agent_version = "Versión del agente"
+unraid = "Unraid"
+details = "Detalles"
+agent = "Agente"
+agent_sub = "El agente se autentica con su propio token. Solo informa a Wren; todavía no ejecuta nada que Wren le pida."
+token = "Token del agente"
+token_none = "Este servidor no tiene token, así que su agente no puede conectarse. Crea un token nuevo para volver a conectarlo."
+token_once = "Copia el token ahora. Wren solo guarda una huella de él y no puede volver a mostrarlo."
+run_title = "Iniciar el agente"
+run_unraid = "En Unraid"
+run_linux = "En otros hosts Linux"
+run_help = "Monta cada carpeta que Wren pueda tocar en la misma ruta dentro del agente y añádela a agent.toml. El acceso al socket de Docker da al agente acceso root al servidor."
+copy_command = "Copiar comando"
+new_token = "Nuevo token"
+new_token_q = "¿Crear un token nuevo para «{name}»?"
+new_token_msg = "El token actual deja de funcionar al instante. Vuelve a iniciar el agente con el nuevo."
+revoke = "Revocar token"
+revoke_q = "¿Revocar el token de «{name}»?"
+revoke_msg = "El agente no podrá conectarse hasta que crees un token nuevo."
+revoked = "Se ha revocado el token de «{name}»."
+delete_q = "¿Eliminar «{name}»?"
+delete_msg = "Su agente ya no podrá conectarse. En el propio servidor no cambia nada."
+deleted = "Se ha eliminado «{name}»."
+added = "Se ha añadido «{name}». Inicia ahora su agente."
+
+[channels]
+sub = "Adónde envía Wren las notificaciones: versiones nuevas, resultados de actualizaciones y agentes que se desconectan."
+empty_text = "Añade un canal, como ntfy, Slack o correo electrónico. Wren empieza a enviar en cuanto llegan comprobaciones de actualizaciones."
+foot = "Los secretos guardados no se vuelven a mostrar. Déjalos vacíos al editar un canal para conservarlos."
+delete_q = "¿Eliminar «{name}»?"
+delete_msg = "Wren deja de enviarle notificaciones."
+more_actions_for = "Más acciones para {name}"
+language = "Idioma de los mensajes"
+language_help = "Las notificaciones para este canal se escriben en este idioma."
+language_default = "El idioma de la instancia ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Notificación de prueba de {product}"
+test_body = "Si puedes leer esto, las notificaciones llegan a este canal."
+event_test = "Prueba"
+view_overview = "Abrir resumen"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Te damos la bienvenida. Inicia sesión para ver tus servidores y sus actualizaciones."
+
+[setup]
+site_name_placeholder = "Actualizaciones del homelab…"
+tz_after = ". Se puede cambiar en Ajustes."
+
+[users]
+roles_help = "Los lectores pueden mirar, pero no cambiar nada. Los editores gestionan los canales de notificaciones. Los administradores pueden hacerlo todo, incluidos servidores, tokens de agente y usuarios."
+
+[tokens]
+sub = "Permite que scripts y asistentes de IA lean tus servidores y sus agentes."
+scope_read_sub = "Servidores y agentes"
+
+[auth]
+all_set = "Todo listo. Añade tu primer servidor para empezar."
+setup_token_required = "Esta instancia necesita un token de configuración. Abre /setup?token=… con el valor de WW_SETUP_TOKEN de la configuración del servidor."
+
+[error]
+back = "Volver al resumen"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Cómo se llama esta instancia, dónde se accede a ella y en qué zona horaria muestra las horas."
+base_url_help = "La dirección en la que los agentes y las personas acceden a esta instancia: se usa en el comando de inicio del agente y en los enlaces de las notificaciones. Si WW_PUBLIC_URL está definida en el servidor, sustituye este valor en cada arranque."

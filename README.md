@@ -12,9 +12,14 @@
   <a href="https://hedgerow.tools/Wise-Wren/"><img src="https://img.shields.io/badge/website-hedgerow.tools%2FWise--Wren-black.svg" alt="Website"></a>
 </p>
 
-> **Status: in design, nothing to install yet.** There is no code to run. The design is in
-> [`docs/design.md`](docs/design.md) and is still being finalised; the first step is a spike that tests the
-> risky parts on a real Unraid server. Watch or star the repository to hear about the first release.
+> **Status: early development, nothing to install yet.** The skeleton runs: sign-in, settings, servers and their
+> agents, which report in and show as online. Update checks and update runs come next; there is no release or
+> published image yet. The design is in [`docs/design.md`](docs/design.md), the spike's results in
+> [`docs/spike-findings.md`](docs/spike-findings.md). Watch or star the repository to hear about the first
+> release.
+>
+> To try the skeleton from a checkout, see [`docs/development.md`](docs/development.md): `cargo run` serves Wren on
+> port 3003, and each server's page shows the `docker run` line for its agent.
 
 Wise Wren ("Wren") will keep the Docker containers on your servers up to date. It checks for new versions on a
 schedule you choose, tells you about them, and updates only what you approve, or what you have explicitly allowed
@@ -75,8 +80,8 @@ from source, and offsite backups (Wren's snapshots are short-lived rollback poin
 
 Wren is part of [Hedgerow](https://hedgerow.tools/), a family of small self-hosted apps, with
 [Vigilant Vole](https://hedgerow.tools/Vigilant-Vole/), [Nimble Newt](https://hedgerow.tools/Nimble-Newt/) and
-[Keen Kestrel](https://hedgerow.tools/Keen-Kestrel/). Like its siblings, it will be one Rust binary with SQLite
-in the family's design.
+[Keen Kestrel](https://hedgerow.tools/Keen-Kestrel/). Like its siblings, it is one Rust binary with SQLite in
+the family's design, plus a small agent for each server.
 
 ## License
 

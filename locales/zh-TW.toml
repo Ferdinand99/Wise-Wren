@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "總覽"
+sub = "一覽你的伺服器及其代理程式。"
+servers = "伺服器"
+online = "線上"
+not_online = "未上線"
+
+[servers]
+title = "伺服器"
+sub = "每台伺服器都執行 Wren 的代理程式，由代理程式主動連線到 Wren。你的伺服器不需開放任何連接埠。"
+add = "新增伺服器"
+new_sub = "為伺服器命名。接著 Wren 會顯示代理程式的權杖，以及啟動代理程式的指令。"
+name = "名稱"
+name_placeholder = "Tower"
+err_name = "請輸入名稱。"
+err_name_long = "最多使用 {max} 個字元。"
+err_name_taken = "已有同名的伺服器。"
+empty_title = "尚無伺服器"
+empty_text = "新增伺服器，然後在上面啟動 Wren 的代理程式。代理程式會自行連線到 Wren。"
+empty_viewer = "伺服器由管理員新增。請管理員新增第一台。"
+status_online = "線上"
+status_offline = "離線"
+status_waiting = "等待代理程式"
+status_no_token = "無權杖"
+last_seen = "上次連線"
+never = "從未"
+hostname = "主機名稱"
+os = "作業系統"
+docker = "Docker"
+docker_unreachable = "無法連線：{error}"
+agent_version = "代理程式版本"
+unraid = "Unraid"
+details = "詳細資料"
+agent = "代理程式"
+agent_sub = "代理程式以自己的權杖進行驗證。目前只會向 Wren 回報，還不會執行 Wren 要求的任何操作。"
+token = "代理程式權杖"
+token_none = "此伺服器沒有權杖，因此代理程式無法連線。建立新權杖即可重新連線。"
+token_once = "請現在複製權杖。Wren 只保留其指紋，無法再次顯示。"
+run_title = "啟動代理程式"
+run_unraid = "在 Unraid 上"
+run_linux = "在其他 Linux 主機上"
+run_help = "將 Wren 可能處理的每個資料夾以相同路徑掛載到代理程式中，並列在 agent.toml 裡。能存取 Docker socket 的代理程式會擁有伺服器的 root 權限。"
+copy_command = "複製指令"
+new_token = "新權杖"
+new_token_q = "要為「{name}」建立新權杖嗎？"
+new_token_msg = "目前的權杖會立即失效。請以新權杖重新啟動代理程式。"
+revoke = "撤銷權杖"
+revoke_q = "要撤銷「{name}」的權杖嗎？"
+revoke_msg = "在建立新權杖之前，代理程式無法連線。"
+revoked = "已撤銷「{name}」的權杖。"
+delete_q = "要刪除「{name}」嗎？"
+delete_msg = "其代理程式將無法再連線。伺服器本身不會有任何變更。"
+deleted = "已刪除「{name}」。"
+added = "已新增「{name}」。現在請啟動它的代理程式。"
+
+[channels]
+sub = "Wren 傳送通知的去處：新版本、更新結果，以及離線的代理程式。"
+empty_text = "新增一個管道，例如 ntfy、Slack 或電子郵件。收到更新檢查結果後，Wren 就會開始傳送。"
+foot = "已儲存的機密資料不會再次顯示。編輯管道時留空即可保留。"
+delete_q = "刪除「{name}」？"
+delete_msg = "Wren 將不再傳送通知到此管道。"
+more_actions_for = "{name} 的更多動作"
+language = "訊息語言"
+language_help = "傳送到此管道的通知會以這個語言撰寫。"
+language_default = "站台語言（{name}）"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "來自 {product} 的測試通知"
+test_body = "如果你看得到這則訊息，代表通知能送達此管道。"
+event_test = "測試"
+view_overview = "開啟總覽"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "歡迎回來。登入後即可查看你的伺服器及其更新。"
+
+[setup]
+site_name_placeholder = "家用實驗室更新…"
+tz_after = "顯示。可以在「設定」中修改。"
+
+[users]
+roles_help = "檢視者只能查看，無法變更任何內容。編輯者可管理通知管道。管理員可執行所有操作，包括伺服器、代理程式權杖與使用者。"
+
+[tokens]
+sub = "讓指令碼與 AI 助理讀取你的伺服器及其代理程式。"
+scope_read_sub = "伺服器與代理程式"
+
+[auth]
+all_set = "一切就緒。新增第一台伺服器即可開始。"
+setup_token_required = "此站台需要設定權杖。請開啟 /setup?token=…，其值為伺服器設定中的 WW_SETUP_TOKEN。"
+
+[error]
+back = "返回總覽"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "此站台的名稱、存取位址，以及顯示時間所用的時區。"
+base_url_help = "代理程式與使用者存取此站台的位址，用於代理程式的啟動指令和通知中的連結。若伺服器設定了 WW_PUBLIC_URL，每次啟動時都會以它取代此值。"

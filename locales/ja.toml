@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "概要"
+sub = "サーバーとそのエージェントをひと目で確認できます。"
+servers = "サーバー"
+online = "オンライン"
+not_online = "未接続"
+
+[servers]
+title = "サーバー"
+sub = "各サーバーではWrenのエージェントが動作し、エージェントからWrenへ接続します。サーバー側でポートを開く必要はありません。"
+add = "サーバーを追加"
+new_sub = "サーバーに名前を付けてください。Wrenがエージェントのトークンと、エージェントを起動するコマンドを表示します。"
+name = "名前"
+name_placeholder = "Tower"
+err_name = "名前を入力してください。"
+err_name_long = "{max}文字以内にしてください。"
+err_name_taken = "この名前のサーバーはすでにあります。"
+empty_title = "サーバーはまだありません"
+empty_text = "サーバーを追加し、そこでWrenのエージェントを起動してください。エージェントは自動的にWrenに接続します。"
+empty_viewer = "サーバーは管理者が追加します。最初のサーバーの追加を管理者に依頼してください。"
+status_online = "オンライン"
+status_offline = "オフライン"
+status_waiting = "エージェントを待機中"
+status_no_token = "トークンなし"
+last_seen = "最終接続"
+never = "一度もなし"
+hostname = "ホスト名"
+os = "OS"
+docker = "Docker"
+docker_unreachable = "接続できません：{error}"
+agent_version = "エージェントのバージョン"
+unraid = "Unraid"
+details = "詳細"
+agent = "エージェント"
+agent_sub = "エージェントは専用のトークンで認証します。現在はWrenへの報告のみを行い、Wrenからの指示はまだ実行しません。"
+token = "エージェントトークン"
+token_none = "このサーバーにはトークンがないため、エージェントが接続できません。新しいトークンを作成すると再接続できます。"
+token_once = "今すぐトークンをコピーしてください。Wrenはフィンガープリントだけを保存するため、再表示はできません。"
+run_title = "エージェントを起動"
+run_unraid = "Unraidの場合"
+run_linux = "その他のLinuxホストの場合"
+run_help = "Wrenが扱うすべてのフォルダを、エージェント内の同じパスにマウントし、agent.tomlに記載してください。Dockerソケットにアクセスできると、エージェントはサーバーのroot権限を持ちます。"
+copy_command = "コマンドをコピー"
+new_token = "新しいトークン"
+new_token_q = "「{name}」の新しいトークンを作成しますか？"
+new_token_msg = "現在のトークンはすぐに使えなくなります。新しいトークンでエージェントを起動し直してください。"
+revoke = "トークンを無効化"
+revoke_q = "「{name}」のトークンを無効化しますか？"
+revoke_msg = "新しいトークンを作成するまで、エージェントは接続できません。"
+revoked = "「{name}」のトークンを無効化しました。"
+delete_q = "「{name}」を削除しますか？"
+delete_msg = "このサーバーのエージェントは接続できなくなります。サーバー自体には何も変更されません。"
+deleted = "「{name}」を削除しました。"
+added = "「{name}」を追加しました。エージェントを起動してください。"
+
+[channels]
+sub = "Wrenが通知を送る先です。新しいバージョン、アップデートの結果、オフラインになったエージェントを知らせます。"
+empty_text = "ntfy、Slack、メールなどのチャンネルを追加してください。アップデートの確認結果が届き次第、Wrenが送信を始めます。"
+foot = "保存したシークレットは二度と表示されません。チャンネルの編集時に空欄のままにすると、そのまま保持されます。"
+delete_q = "「{name}」を削除しますか？"
+delete_msg = "Wrenはこのチャンネルへの通知を停止します。"
+more_actions_for = "{name}のその他の操作"
+language = "メッセージの言語"
+language_help = "このチャンネルへの通知はこの言語で書かれます。"
+language_default = "インスタンスの言語（{name}）"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "{product}からのテスト通知"
+test_body = "このメッセージが読めれば、通知はこのチャンネルに届いています。"
+event_test = "テスト"
+view_overview = "概要を開く"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "おかえりなさい。ログインしてサーバーとアップデートを確認しましょう。"
+
+[setup]
+site_name_placeholder = "ホームラボのアップデート…"
+tz_after = "で表示されます。設定で変更できます。"
+
+[users]
+roles_help = "閲覧者は表示のみで、変更はできません。編集者は通知チャンネルを管理できます。管理者はサーバー、エージェントトークン、ユーザーを含むすべての操作ができます。"
+
+[tokens]
+sub = "スクリプトやAIアシスタントから、サーバーとエージェントを参照できるようにします。"
+scope_read_sub = "サーバーとエージェント"
+
+[auth]
+all_set = "準備が整いました。最初のサーバーを追加して始めましょう。"
+setup_token_required = "このインスタンスにはセットアップトークンが必要です。サーバー設定のWW_SETUP_TOKENの値を使って/setup?token=…を開いてください。"
+
+[error]
+back = "概要に戻る"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "このインスタンスの名前、アクセス先のアドレス、時刻を表示するタイムゾーンです。"
+base_url_help = "エージェントやユーザーがこのインスタンスにアクセスするアドレスです。エージェントの起動コマンドや通知内のリンクに使われます。サーバーでWW_PUBLIC_URLが設定されている場合は、起動のたびにこの値が置き換えられます。"

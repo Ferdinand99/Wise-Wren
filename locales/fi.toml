@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Yleiskatsaus"
+sub = "Palvelimesi ja niiden agentit yhdellä silmäyksellä."
+servers = "Palvelimet"
+online = "Verkossa"
+not_online = "Ei verkossa"
+
+[servers]
+title = "Palvelimet"
+sub = "Jokaisella palvelimella toimii Wrenin agentti, joka ottaa itse yhteyden Wreniin. Palvelimet eivät avaa portteja."
+add = "Lisää palvelin"
+new_sub = "Anna palvelimelle nimi. Wren näyttää sitten agentin tunnuksen ja komennon, joka käynnistää agentin."
+name = "Nimi"
+name_placeholder = "Tower"
+err_name = "Anna nimi."
+err_name_long = "Käytä enintään {max} merkkiä."
+err_name_taken = "Samanniminen palvelin on jo olemassa."
+empty_title = "Ei vielä palvelimia"
+empty_text = "Lisää palvelin ja käynnistä Wrenin agentti siinä. Agentti ottaa yhteyden Wreniin itse."
+empty_viewer = "Ylläpitäjä lisää palvelimet. Pyydä jotakuta heistä lisäämään ensimmäinen."
+status_online = "Verkossa"
+status_offline = "Ei yhteyttä"
+status_waiting = "Odottaa agenttia"
+status_no_token = "Ei tunnusta"
+last_seen = "Nähty viimeksi"
+never = "Ei koskaan"
+hostname = "Isäntänimi"
+os = "Käyttöjärjestelmä"
+docker = "Docker"
+docker_unreachable = "Ei tavoitettavissa: {error}"
+agent_version = "Agentin versio"
+unraid = "Unraid"
+details = "Tiedot"
+agent = "Agentti"
+agent_sub = "Agentti tunnistautuu omalla tunnuksellaan. Se vain raportoi Wrenille eikä vielä suorita mitään, mitä Wren pyytää."
+token = "Agentin tunnus"
+token_none = "Tällä palvelimella ei ole tunnusta, joten sen agentti ei voi muodostaa yhteyttä. Luo uusi tunnus, niin yhteys palaa."
+token_once = "Kopioi tunnus nyt. Wren säilyttää siitä vain sormenjäljen eikä voi näyttää sitä uudelleen."
+run_title = "Käynnistä agentti"
+run_unraid = "Unraidissa"
+run_linux = "Muissa Linux-isännissä"
+run_help = "Liitä jokainen kansio, jota Wren saa käsitellä, samaan polkuun agentin sisällä ja lisää se tiedostoon agent.toml. Pääsy Dockerin sokettiin antaa agentille pääkäyttäjän oikeudet palvelimeen."
+copy_command = "Kopioi komento"
+new_token = "Uusi tunnus"
+new_token_q = "Luodaanko palvelimelle ”{name}” uusi tunnus?"
+new_token_msg = "Nykyinen tunnus lakkaa toimimasta heti. Käynnistä agentti uudelleen uudella tunnuksella."
+revoke = "Peru tunnus"
+revoke_q = "Perutaanko palvelimen ”{name}” tunnus?"
+revoke_msg = "Agentti ei voi muodostaa yhteyttä, ennen kuin luot uuden tunnuksen."
+revoked = "Palvelimen ”{name}” tunnus on peruttu."
+delete_q = "Poistetaanko ”{name}”?"
+delete_msg = "Sen agentti ei voi enää muodostaa yhteyttä. Itse palvelimella mikään ei muutu."
+deleted = "”{name}” on poistettu."
+added = "”{name}” on lisätty. Käynnistä sen agentti nyt."
+
+[channels]
+sub = "Mihin Wren lähettää ilmoitukset: uudet versiot, päivitysten tulokset ja agentit, joiden yhteys katkeaa."
+empty_text = "Lisää kanava, esimerkiksi ntfy, Slack tai sähköposti. Wren alkaa lähettää, kun päivitystarkistuksia alkaa tulla."
+foot = "Tallennettuja salaisuuksia ei näytetä enää koskaan. Jätä ne tyhjiksi kanavaa muokatessasi, niin ne säilyvät."
+delete_q = "Poistetaanko ”{name}”?"
+delete_msg = "Wren lakkaa lähettämästä sille ilmoituksia."
+more_actions_for = "Lisää toimintoja: {name}"
+language = "Viestien kieli"
+language_help = "Tämän kanavan ilmoitukset kirjoitetaan tällä kielellä."
+language_default = "Instanssin kieli ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Testi-ilmoitus – {product}"
+test_body = "Jos voit lukea tämän, ilmoitukset tulevat perille tälle kanavalle."
+event_test = "Testi"
+view_overview = "Avaa yleiskatsaus"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Tervetuloa takaisin. Kirjaudu nähdäksesi palvelimesi ja niiden päivitykset."
+
+[setup]
+site_name_placeholder = "Kotilabran päivitykset…"
+tz_after = ". Tätä voi muuttaa asetuksissa."
+
+[users]
+roles_help = "Katselijat voivat vain katsoa, ei muuttaa mitään. Muokkaajat hallinnoivat ilmoituskanavia. Ylläpitäjät voivat tehdä kaiken, myös palvelinten, agenttien tunnusten ja käyttäjien hallinnan."
+
+[tokens]
+sub = "Anna skriptien ja tekoälyavustajien lukea palvelimiasi ja niiden agentteja."
+scope_read_sub = "Palvelimet ja agentit"
+
+[auth]
+all_set = "Kaikki valmista. Aloita lisäämällä ensimmäinen palvelin."
+setup_token_required = "Tämä instanssi vaatii käyttöönottotunnuksen. Avaa /setup?token=… käyttäen palvelimen asetusten WW_SETUP_TOKEN-arvoa."
+
+[error]
+back = "Takaisin yleiskatsaukseen"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "Instanssin nimi, osoite, josta se tavoitetaan, ja aikavyöhyke, jossa se näyttää ajat."
+base_url_help = "Osoite, josta agentit ja ihmiset tavoittavat tämän instanssin: sitä käytetään agentin käynnistyskomennossa ja ilmoitusten linkeissä. Jos palvelimelle on asetettu WW_PUBLIC_URL, se korvaa tämän arvon joka käynnistyksessä."

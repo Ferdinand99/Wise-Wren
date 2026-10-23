@@ -1,0 +1,108 @@
+# Wise Wren's own interface strings (English, the source). Core strings
+# (sign-in, setup, users, tokens, Security, General, the layout) come from
+# vole-kit; a key may live in only one of the two. Terms per language:
+# locales/glossary/.
+
+[overview]
+title = "Overview"
+sub = "Your servers and their agents at a glance."
+servers = "Servers"
+online = "Online"
+not_online = "Not online"
+
+[servers]
+title = "Servers"
+sub = "Each server runs Wren’s agent, which connects out to Wren. Your servers open no ports."
+add = "Add server"
+new_sub = "Name the server. Wren then shows the agent’s token and the command that starts the agent."
+name = "Name"
+name_placeholder = "Tower"
+err_name = "Enter a name."
+err_name_long = "Use at most {max} characters."
+err_name_taken = "There is already a server with this name."
+empty_title = "No servers yet"
+empty_text = "Add a server, then start Wren’s agent on it. The agent connects to Wren on its own."
+empty_viewer = "An admin adds servers. Ask one to add the first."
+status_online = "Online"
+status_offline = "Offline"
+status_waiting = "Waiting for the agent"
+status_no_token = "No token"
+last_seen = "Last seen"
+never = "Never"
+hostname = "Host name"
+os = "Operating system"
+docker = "Docker"
+docker_unreachable = "Not reachable: {error}"
+agent_version = "Agent version"
+unraid = "Unraid"
+details = "Details"
+agent = "Agent"
+agent_sub = "The agent authenticates with its own token. It only reports to Wren; it runs nothing Wren asks for yet."
+token = "Agent token"
+token_none = "This server has no token, so its agent can’t connect. Make a new token to connect it again."
+token_once = "Copy the token now. Wren keeps only a fingerprint of it and can’t show it again."
+run_title = "Start the agent"
+run_unraid = "On Unraid"
+run_linux = "On other Linux hosts"
+run_help = "Mount every folder Wren may touch at the same path inside the agent, and list it in agent.toml. Access to the Docker socket gives the agent root access to the server."
+copy_command = "Copy command"
+new_token = "New token"
+new_token_q = "Make a new token for “{name}”?"
+new_token_msg = "The current token stops working at once. Start the agent again with the new one."
+revoke = "Revoke token"
+revoke_q = "Revoke the token of “{name}”?"
+revoke_msg = "The agent can no longer connect until you make a new token."
+revoked = "The token of “{name}” is revoked."
+delete_q = "Delete “{name}”?"
+delete_msg = "Its agent can no longer connect. Nothing changes on the server itself."
+deleted = "“{name}” is deleted."
+added = "“{name}” is added. Start its agent now."
+
+[channels]
+sub = "Where Wren sends notifications: new versions, update results and agents that go offline."
+empty_text = "Add a channel, such as ntfy, Slack or email. Wren starts sending once update checks arrive."
+foot = "Saved secrets are never shown again. Leave them empty when you edit a channel to keep them."
+delete_q = "Delete “{name}”?"
+delete_msg = "Wren stops sending notifications to it."
+more_actions_for = "More actions for {name}"
+language = "Message language"
+language_help = "Notifications to this channel are written in this language."
+language_default = "The instance’s language ({name})"
+
+# Notification messages, written in the channel's language.
+[notify_msg]
+test_title = "Test notification from {product}"
+test_body = "If you can read this, notifications reach this channel."
+event_test = "Test"
+view_overview = "Open overview"
+
+# Texts the kit's pages take from the product
+# (vole_kit::i18n::catalog::PRODUCT_KEYS).
+
+[login]
+subtitle = "Welcome back. Log in to see your servers and their updates."
+
+[setup]
+site_name_placeholder = "Home lab updates…"
+tz_after = ". You can change this in Settings."
+
+[users]
+roles_help = "Viewers can look but not change anything. Editors manage notification channels. Admins can do everything, including servers, agent tokens and users."
+
+[tokens]
+sub = "Let scripts and AI assistants read your servers and their agents."
+scope_read_sub = "Servers and agents"
+
+[auth]
+all_set = "You’re all set. Add your first server to get started."
+setup_token_required = "This instance needs a setup token. Open /setup?token=… with the value of WW_SETUP_TOKEN from the server’s configuration."
+
+[error]
+back = "Back to overview"
+
+# Texts of the kit's General page
+# (vole_kit::i18n::catalog::GENERAL_PRODUCT_KEYS).
+
+[general]
+sub = "How this instance names itself, where it is reached and how it tells time."
+base_url_help = "Where agents and people reach this instance: used in the agent’s start command and in links in notifications. If WW_PUBLIC_URL is set on the server, it replaces this at every start."
