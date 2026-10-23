@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.2.0...v0.2.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* close runs interrupted by an agent restart and treat any repo digest as current ([#12](https://github.com/Ferdinand99/Wise-Wren/issues/12)) ([63956f2](https://github.com/Ferdinand99/Wise-Wren/commit/63956f213875b6806167ac9600f2174ba0118dd9))
+
 ## [0.2.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.1.0...v0.2.0) (2026-10-23)
 
 
