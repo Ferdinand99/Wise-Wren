@@ -81,7 +81,6 @@ mod tests {
             "--public-url",
             "https://wren.example.com/",
             "--allow-private-version-urls",
-            "1",
         ])
         .unwrap();
         assert_eq!(c.port, 8080);
