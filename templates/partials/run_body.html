@@ -30,6 +30,13 @@
       <div class="dl-row"><dt>{{ tr("targets.col_available") }}</dt><dd class="mono break">{{ run.shown }}</dd></div>
       {%- endif %}
       <div class="dl-row"><dt>{{ tr("runs.requested_by") }}</dt><dd>{{ run.requested_by }} · {{ m::time_ago(run.created_at) }}</dd></div>
+      <div class="dl-row"><dt>{{ tr("runs.trigger") }}</dt><dd data-trigger="{{ run.trigger }}">{{ run.trigger_label }}</dd></div>
+      {%- if let Some(at) = run.scheduled_for %}
+      <div class="dl-row"><dt>{{ tr("schedules.col_when") }}</dt><dd>{{ at }}{% if run.waiting() %} · {{ tr("runs.waits") }}{% endif %}</dd></div>
+      {%- endif %}
+      {%- if !run.vv_label().is_empty() %}
+      <div class="dl-row"><dt>{{ tr("vv.window") }}</dt><dd data-vv="{{ run.vv_state }}">{{ run.vv_label() }}{% if let Some(w) = run.vv_window_id %} <span class="muted">#{{ w }}</span>{% endif %}</dd></div>
+      {%- endif %}
       {%- if let Some(at) = run.started_at %}
       <div class="dl-row"><dt>{{ tr("runs.started") }}</dt><dd>{{ m::time_ago(at) }}</dd></div>
       {%- endif %}
@@ -48,7 +55,7 @@
   <section class="card card-flush" aria-labelledby="steps-title">
     <div class="card-head card-pad"><h2 class="card-title" id="steps-title">{{ tr("runs.steps") }}</h2></div>
     {%- if steps.is_empty() %}
-    <div class="card-pad"><p class="help">{% if run.status == "queued" %}{{ tr("runs.waiting_for_agent") }}{% else %}{{ tr("runs.no_steps") }}{% endif %}</p></div>
+    <div class="card-pad"><p class="help">{% if run.waiting() %}{{ tr("runs.waits") }}{% else if run.status == "queued" %}{{ tr("runs.waiting_for_agent") }}{% else %}{{ tr("runs.no_steps") }}{% endif %}</p></div>
     {%- else %}
     <div class="table-wrap">
       <table class="table table-stack" id="steps">

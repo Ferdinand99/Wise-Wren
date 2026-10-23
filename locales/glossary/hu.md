@@ -36,3 +36,6 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | host name | gépnév |  |
 | operating system | operációs rendszer | as Kestrel |
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; „Docker-socket”, „Unraidon” |
+| auto window | automatikus ablak | per-server window in which automatic updates may run |
+| scheduled update | ütemezett frissítés | an update approved to run at a chosen time |
+| monitor (Vigilant Vole) | monitor | VV: „monitor” |

@@ -2,11 +2,14 @@
 //! what they report back.
 //!
 //! **Nothing runs unless someone allowed it.** A run is created only by an
-//! editor or admin approving one exact version key of a target ([`approve`])
-//! or asking to roll back one earlier run ([`request_rollback`]). There is
-//! no automatic mode yet (phase 5); `notify` targets can't be approved. When
-//! the agent asks for work ([`jobs`]), the approval is checked again: a
-//! newer version since then makes it lapse, and nothing happens.
+//! editor or admin approving one exact version key of a target, now or for a
+//! chosen time ([`approve_at`]), asking to roll back one earlier run
+//! ([`request_rollback`]), or by the auto picker for a target an admin set
+//! to `auto`, inside its server's auto window ([`queue_auto`],
+//! [`crate::schedule`]). `notify` targets and Wren's or VV's own images
+//! can't be updated. When the agent asks for work ([`jobs`]), the run is
+//! checked again: a newer version since then makes it lapse, a scheduled run
+//! waits for its time, and an auto run whose window closed lapses.
 //!
 //! The job is data, never a command (§8): the target's kind and name, the
 //! version keys and, per image, the container, the reference it already
@@ -50,9 +53,17 @@ pub const SILENT_MINUTES: i64 = 10;
 /// The longest a run may go without a report even with its agent online.
 pub const MAX_SILENT_HOURS: i64 = 26;
 
-/// Modes.
+/// Modes. `approve` is the default; only admins set `auto`.
 pub const APPROVE: &str = "approve";
 pub const NOTIFY: &str = "notify";
+pub const AUTO: &str = "auto";
+
+/// What started a run.
+pub const BY_USER: &str = "user";
+pub const BY_SCHEDULE: &str = "schedule";
+pub const BY_AUTO: &str = "auto";
+/// The name auto runs are requested by.
+pub const AUTO_USER: &str = "auto";
 
 /// Run statuses.
 pub const QUEUED: &str = "queued";
@@ -104,6 +115,16 @@ pub enum Refusal {
     AlreadyQueued,
     TooLate,
     NotRollbackable,
+    /// Wren, its agents and Vigilant Vole: not updated by Wren in v1.
+    OwnImage,
+    /// Only admins turn automatic updates on.
+    AdminOnly,
+    /// `auto` needs the server's auto window.
+    NoWindow,
+    /// A scheduled time that isn't a time, is past or too far ahead.
+    BadTime,
+    /// Only a scheduled run that hasn't started can be moved.
+    NotScheduled,
 }
 
 impl Refusal {
@@ -117,6 +138,11 @@ impl Refusal {
             Refusal::AlreadyQueued => "runs.err_queued",
             Refusal::TooLate => "runs.err_too_late",
             Refusal::NotRollbackable => "runs.err_not_rollbackable",
+            Refusal::OwnImage => "runs.err_own",
+            Refusal::AdminOnly => "runs.err_admin_only",
+            Refusal::NoWindow => "runs.err_no_window",
+            Refusal::BadTime => "runs.err_time",
+            Refusal::NotScheduled => "runs.err_not_scheduled",
         }
     }
 
@@ -129,6 +155,7 @@ impl From<Refusal> for ApiError {
     fn from(r: Refusal) -> ApiError {
         match r {
             Refusal::NotFound => ApiError::NotFound,
+            Refusal::AdminOnly => ApiError::Forbidden,
             other => ApiError::bad_request(other.message()),
         }
     }
@@ -161,9 +188,11 @@ struct Approvable {
     available_key: String,
     mode: String,
     files_reachable: bool,
+    own: bool,
 }
 
 fn approvable(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Approvable>> {
+    let own = crate::schedule::own_target(c, target_id)?;
     c.query_row(
         "SELECT t.server_id, t.kind, t.name, t.status, t.available, t.available_key,
                 COALESCE(NULLIF(t.mode, ''), s.mode), t.files_reachable
@@ -179,6 +208,7 @@ fn approvable(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Approva
                 available_key: r.get(5)?,
                 mode: r.get(6)?,
                 files_reachable: r.get(7)?,
+                own,
             })
         },
     )
@@ -190,7 +220,10 @@ fn may_update(t: &Approvable) -> Result<(), Refusal> {
     if t.status != targets::UPDATE || t.available_key.is_empty() {
         return Err(Refusal::NoUpdate);
     }
-    if t.mode != APPROVE {
+    if t.own {
+        return Err(Refusal::OwnImage);
+    }
+    if t.mode == NOTIFY {
         return Err(Refusal::NotifyOnly);
     }
     if (t.kind == COMPOSE || t.kind == SCRIPT) && !t.files_reachable {
@@ -237,6 +270,28 @@ pub fn approve(
     key: Option<&str>,
     user: &str,
 ) -> rusqlite::Result<Result<i64, Refusal>> {
+    approve_at(c, target_id, key, user, None)
+}
+
+/// Whether `at` may be a run's scheduled time: after now, at most
+/// [`crate::schedule::MAX_DAYS_AHEAD`] days ahead.
+pub fn time_ok(at: jiff::Timestamp, now: jiff::Timestamp) -> bool {
+    at > now && at.as_second() - now.as_second() <= crate::schedule::MAX_DAYS_AHEAD * 24 * 3600
+}
+
+/// Approves the target's available version for `at` (UTC; `None`: now).
+/// The run waits until then; a scheduled run gets a planned maintenance
+/// window in Vigilant Vole ahead of time ([`crate::vv`]).
+pub fn approve_at(
+    c: &Connection,
+    target_id: i64,
+    key: Option<&str>,
+    user: &str,
+    at: Option<jiff::Timestamp>,
+) -> rusqlite::Result<Result<i64, Refusal>> {
+    if at.is_some_and(|t| !time_ok(t, jiff::Timestamp::now())) {
+        return Ok(Err(Refusal::BadTime));
+    }
     let Some(t) = approvable(c, target_id)? else {
         return Ok(Err(Refusal::NotFound));
     };
@@ -251,10 +306,40 @@ pub fn approve(
     if has_active_run(c, target_id)? {
         return Ok(Err(Refusal::AlreadyQueued));
     }
+    let at = at.map(crate::schedule::db_time);
+    let trigger = if at.is_some() { BY_SCHEDULE } else { BY_USER };
+    let id = insert_update(c, target_id, &t, user, trigger, at.as_deref())?;
+    c.execute(
+        "UPDATE targets SET snoozed_until = NULL, skipped_key = '' WHERE id = ?1",
+        [target_id],
+    )?;
+    let detail = match &at {
+        Some(at) => format!("{} at {at} UTC", t.available_key),
+        None => t.available_key.clone(),
+    };
+    log_action(
+        c,
+        user,
+        if at.is_some() { "schedule" } else { "approve" },
+        Some(target_id),
+        Some(id),
+        &detail,
+    )?;
+    Ok(Ok(id))
+}
+
+fn insert_update(
+    c: &Connection,
+    target_id: i64,
+    t: &Approvable,
+    user: &str,
+    trigger: &str,
+    at: Option<&str>,
+) -> rusqlite::Result<i64> {
     c.execute(
         "INSERT INTO runs (server_id, target_id, target_kind, target_name, kind, from_key, to_key,
-             shown, requested_by)
-         VALUES (?1, ?2, ?3, ?4, 'update', ?5, ?6, ?7, ?8)",
+             shown, requested_by, trigger, scheduled_for)
+         VALUES (?1, ?2, ?3, ?4, 'update', ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             t.server_id,
             target_id,
@@ -263,23 +348,75 @@ pub fn approve(
             from_key(c, target_id)?,
             t.available_key,
             t.available,
-            user
+            user,
+            trigger,
+            at
         ],
     )?;
-    let id = c.last_insert_rowid();
-    c.execute(
-        "UPDATE targets SET snoozed_until = NULL, skipped_key = '' WHERE id = ?1",
-        [target_id],
-    )?;
+    Ok(c.last_insert_rowid())
+}
+
+/// Queues an auto run of the target for the version key it shows now. Only
+/// the auto picker calls it, for a target whose effective mode is `auto`
+/// while its server's window is open ([`crate::schedule::pick_auto`]).
+pub fn queue_auto(c: &Connection, target_id: i64) -> rusqlite::Result<Result<i64, Refusal>> {
+    let Some(t) = approvable(c, target_id)? else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if t.mode != AUTO {
+        return Ok(Err(Refusal::NotifyOnly));
+    }
+    if let Err(r) = may_update(&t) {
+        return Ok(Err(r));
+    }
+    if has_active_run(c, target_id)? {
+        return Ok(Err(Refusal::AlreadyQueued));
+    }
+    let id = insert_update(c, target_id, &t, AUTO_USER, BY_AUTO, None)?;
     log_action(
         c,
-        user,
-        "approve",
+        AUTO_USER,
+        "auto_run",
         Some(target_id),
         Some(id),
         &t.available_key,
     )?;
     Ok(Ok(id))
+}
+
+/// Moves a scheduled run that hasn't started to `at` (UTC). Its planned
+/// window in Vigilant Vole follows ([`crate::vv`]).
+pub fn reschedule(
+    c: &Connection,
+    run_id: i64,
+    at: jiff::Timestamp,
+    user: &str,
+) -> rusqlite::Result<Result<(), Refusal>> {
+    let Some(r) = get(c, run_id)? else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if r.status != QUEUED || r.scheduled_for.is_none() {
+        return Ok(Err(Refusal::NotScheduled));
+    }
+    if !time_ok(at, jiff::Timestamp::now()) {
+        return Ok(Err(Refusal::BadTime));
+    }
+    let at = crate::schedule::db_time(at);
+    c.execute(
+        "UPDATE runs SET scheduled_for = ?2,
+             vv_state = CASE WHEN vv_state = 'planned' THEN 'replan' ELSE vv_state END
+         WHERE id = ?1",
+        params![run_id, at],
+    )?;
+    log_action(
+        c,
+        user,
+        "reschedule",
+        r.target_id,
+        Some(run_id),
+        &format!("{at} UTC"),
+    )?;
+    Ok(Ok(()))
 }
 
 /// Skips the available version (a newer one shows again).
@@ -409,7 +546,7 @@ pub fn request_rollback(
         [target_id],
         |row| row.get(0),
     ).optional()?.unwrap_or_default();
-    if mode != APPROVE {
+    if mode == NOTIFY || crate::schedule::own_target(c, target_id)? {
         return Ok(Err(Refusal::NotifyOnly));
     }
     if has_active_run(c, target_id)? {
@@ -485,8 +622,10 @@ fn job_json(c: &Connection, run: &Run) -> rusqlite::Result<Value> {
 }
 
 fn close(c: &Connection, run_id: i64, status: &str, detail: &str) -> rusqlite::Result<()> {
+    // An empty detail keeps one Wren wrote (why it cancelled the run).
     c.execute(
-        "UPDATE runs SET status = ?2, detail = ?3, finished_at = datetime('now') WHERE id = ?1",
+        "UPDATE runs SET status = ?2, detail = CASE WHEN ?3 = '' THEN detail ELSE ?3 END,
+             finished_at = datetime('now') WHERE id = ?1",
         params![run_id, status, detail],
     )?;
     Ok(())
@@ -503,8 +642,13 @@ pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value
     if busy {
         return Ok(None);
     }
+    // A scheduled run waits for its time.
     let queued: Vec<i64> = c
-        .prepare("SELECT id FROM runs WHERE server_id = ?1 AND status = 'queued' ORDER BY id")?
+        .prepare(
+            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'queued'
+                 AND (scheduled_for IS NULL OR scheduled_for <= datetime('now'))
+             ORDER BY COALESCE(scheduled_for, created_at), id",
+        )?
         .query_map([server_id], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in queued {
@@ -532,7 +676,29 @@ pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value
                 close(c, id, LAPSED, &r.message())?;
                 continue;
             }
-        } else if approvable(c, target_id)?.is_none_or(|t| t.mode != APPROVE) {
+            // An auto run only while the target is still auto and its
+            // server's window is open: never outside it.
+            if run.trigger == BY_AUTO {
+                if t.mode != AUTO {
+                    close(
+                        c,
+                        id,
+                        LAPSED,
+                        "automatic updates were turned off for this target",
+                    )?;
+                    continue;
+                }
+                if !crate::schedule::window_open(c, run.server_id, jiff::Timestamp::now())? {
+                    close(
+                        c,
+                        id,
+                        LAPSED,
+                        "the auto window closed before the run could start",
+                    )?;
+                    continue;
+                }
+            }
+        } else if approvable(c, target_id)?.is_none_or(|t| t.mode == NOTIFY || t.own) {
             // A rollback changes the target too: only while it may be changed.
             close(c, id, LAPSED, &Refusal::NotifyOnly.message())?;
             continue;
@@ -546,13 +712,6 @@ pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value
         return Ok(Some(job));
     }
     Ok(None)
-}
-
-/// Phase 5's hook: called when the agent's preflight is through and
-/// nothing has stopped yet; this is where the Vigilant Vole maintenance
-/// window will open. An error cancels the run before anything stops.
-pub fn before_stop(_c: &Connection, _run_id: i64) -> Result<(), String> {
-    Ok(())
 }
 
 /// What the agent reports about one step.
@@ -581,7 +740,7 @@ pub fn record_step(
             |r| r.get(0),
         )
         .optional()?;
-    let Some(mut cancel) = cancel else {
+    let Some(cancel) = cancel else {
         return Ok(None);
     };
     let log: String = clip_log(&b.log);
@@ -595,14 +754,6 @@ pub fn record_step(
         "UPDATE runs SET last_report_at = datetime('now') WHERE id = ?1",
         [run_id],
     )?;
-    if b.step == "preflight"
-        && b.status == "ok"
-        && !cancel
-        && let Err(why) = before_stop(c, run_id)
-    {
-        tracing::warn!(run_id, "{why}");
-        cancel = true;
-    }
     Ok(Some(cancel && b.step == "preflight"))
 }
 
@@ -696,12 +847,19 @@ pub struct Run {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub cancel_requested: bool,
+    /// `user`, `schedule` or `auto`.
+    pub trigger: String,
+    /// When a scheduled run may start (UTC).
+    pub scheduled_for: Option<String>,
+    pub vv_window_id: Option<i64>,
+    pub vv_state: String,
 }
 
 const COLUMNS: &str =
     "r.id, r.server_id, s.name, r.target_id, r.target_kind, r.target_name, r.kind,
     r.rollback_of, r.from_key, r.to_key, r.shown, r.status, r.detail, r.requested_by, r.created_at,
-    r.started_at, r.finished_at, r.cancel_requested";
+    r.started_at, r.finished_at, r.cancel_requested, r.trigger, r.scheduled_for, r.vv_window_id,
+    r.vv_state";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -723,6 +881,10 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Run> {
         started_at: r.get(15)?,
         finished_at: r.get(16)?,
         cancel_requested: r.get(17)?,
+        trigger: r.get(18)?,
+        scheduled_for: r.get(19)?,
+        vv_window_id: r.get(20)?,
+        vv_state: r.get(21)?,
     })
 }
 
@@ -759,6 +921,17 @@ pub fn list(c: &Connection, f: Filter) -> rusqlite::Result<Vec<Run>> {
         ],
         row,
     )?
+    .collect()
+}
+
+/// Runs approved for a later time that haven't started, soonest first.
+pub fn scheduled(c: &Connection) -> rusqlite::Result<Vec<Run>> {
+    c.prepare(&format!(
+        "SELECT {COLUMNS} FROM runs r JOIN servers s ON s.id = r.server_id
+         WHERE r.status = 'queued' AND r.scheduled_for IS NOT NULL
+         ORDER BY r.scheduled_for, r.id"
+    ))?
+    .query_map([], row)?
     .collect()
 }
 
@@ -808,78 +981,169 @@ pub struct Policy {
     pub health_seconds: Option<i64>,
     pub skipped: bool,
     pub snoozed_until: Option<String>,
+    /// Cancel a run when the Vigilant Vole window can't be opened.
+    pub require_vv: bool,
+    /// The server's auto window.
+    pub window: Option<(String, String)>,
+    /// One of Wren's or VV's own images: never updated by Wren.
+    pub own: bool,
+}
+
+impl Policy {
+    /// The mode that applies.
+    pub fn effective(&self) -> &str {
+        effective_mode(self.mode.as_deref(), &self.server_mode)
+    }
+
+    /// Whether the target updates on its own inside the auto window.
+    pub fn updates_itself(&self) -> bool {
+        self.effective() == AUTO && !self.own && self.window.is_some()
+    }
 }
 
 pub fn policy(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Policy>> {
-    c.query_row(
-        "SELECT t.mode, s.mode, t.health_seconds,
+    let Some(mut p) = c
+        .query_row(
+            "SELECT t.mode, s.mode, t.health_seconds,
                 t.skipped_key != '' AND t.skipped_key = t.available_key,
-                CASE WHEN t.snoozed_until > datetime('now') THEN t.snoozed_until END
+                CASE WHEN t.snoozed_until > datetime('now') THEN t.snoozed_until END,
+                t.require_vv, s.auto_start, s.auto_end
          FROM targets t JOIN servers s ON s.id = t.server_id WHERE t.id = ?1",
-        [target_id],
-        |r| {
-            Ok(Policy {
-                mode: r.get(0)?,
-                server_mode: r.get(1)?,
-                health_seconds: r.get(2)?,
-                skipped: r.get(3)?,
-                snoozed_until: r.get(4)?,
-            })
-        },
-    )
-    .optional()
+            [target_id],
+            |r| {
+                let start: Option<String> = r.get(6)?;
+                let end: Option<String> = r.get(7)?;
+                Ok(Policy {
+                    mode: r.get(0)?,
+                    server_mode: r.get(1)?,
+                    health_seconds: r.get(2)?,
+                    skipped: r.get(3)?,
+                    snoozed_until: r.get(4)?,
+                    require_vv: r.get(5)?,
+                    window: start.zip(end),
+                    own: false,
+                })
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    p.own = crate::schedule::own_target(c, target_id)?;
+    Ok(Some(p))
 }
 
-/// Sets a target's mode (`None`: the server's) and health period.
+/// A target's update settings as a form or the API sends them.
+#[derive(Debug, Clone, Default)]
+pub struct TargetSettings {
+    /// `None`: the server's mode.
+    pub mode: Option<String>,
+    pub health_seconds: Option<i64>,
+    pub require_vv: bool,
+}
+
+/// Sets a target's mode (`None`: the server's), health period and "require
+/// VV". Turning automatic updates on (directly, or by following an `auto`
+/// server) needs an admin and the server's auto window; it is logged.
 pub fn set_target_policy(
     c: &Connection,
     target_id: i64,
-    mode: Option<&str>,
-    health_seconds: Option<i64>,
+    s: &TargetSettings,
     user: &str,
-) -> rusqlite::Result<bool> {
-    let n = c.execute(
-        "UPDATE targets SET mode = ?2, health_seconds = ?3 WHERE id = ?1",
-        params![target_id, mode, health_seconds],
-    )?;
-    if n > 0 {
-        log_action(
-            c,
-            user,
-            "settings",
-            Some(target_id),
-            None,
-            &format!(
-                "mode={} health={}",
-                mode.unwrap_or("server"),
-                health_seconds.map_or("default".into(), |h| h.to_string())
-            ),
-        )?;
+    is_admin: bool,
+) -> rusqlite::Result<Result<(), Refusal>> {
+    let Some(old) = policy(c, target_id)? else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if let Some(m) = s.mode.as_deref()
+        && ![APPROVE, NOTIFY, AUTO].contains(&m)
+    {
+        return Ok(Err(Refusal::NotFound));
     }
-    Ok(n > 0)
+    let new_mode = effective_mode(s.mode.as_deref(), &old.server_mode).to_string();
+    if new_mode == AUTO && old.effective() != AUTO {
+        if !is_admin {
+            return Ok(Err(Refusal::AdminOnly));
+        }
+        if old.window.is_none() {
+            return Ok(Err(Refusal::NoWindow));
+        }
+    }
+    c.execute(
+        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4 WHERE id = ?1",
+        params![target_id, s.mode, s.health_seconds, s.require_vv],
+    )?;
+    let detail = format!(
+        "mode={} health={} require_vv={}",
+        s.mode.as_deref().unwrap_or("server"),
+        s.health_seconds.map_or("default".into(), |h| h.to_string()),
+        s.require_vv
+    );
+    log_action(c, user, "settings", Some(target_id), None, &detail)?;
+    if new_mode != old.effective() {
+        tracing::warn!(user, target_id, from = old.effective(), to = %new_mode, "update mode changed");
+    }
+    Ok(Ok(()))
 }
 
+/// Sets a server's mode and auto window (`HH:MM` each, both or neither).
+/// `auto` and any change of the window need an admin; `auto` needs a
+/// window. Every change is logged.
 pub fn set_server_mode(
     c: &Connection,
     server_id: i64,
     mode: &str,
+    window: Option<Option<(String, String)>>,
     user: &str,
-) -> rusqlite::Result<bool> {
-    let n = c.execute(
-        "UPDATE servers SET mode = ?2 WHERE id = ?1",
-        params![server_id, mode],
-    )?;
-    if n > 0 {
-        log_action(
-            c,
-            user,
-            "server_mode",
-            None,
-            None,
-            &format!("server {server_id}: {mode}"),
-        )?;
+    is_admin: bool,
+) -> rusqlite::Result<Result<(), Refusal>> {
+    let Some((old_mode, start, end)): Option<(String, Option<String>, Option<String>)> = c
+        .query_row(
+            "SELECT mode, auto_start, auto_end FROM servers WHERE id = ?1",
+            [server_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+    else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if ![APPROVE, NOTIFY, AUTO].contains(&mode) {
+        return Ok(Err(Refusal::NotFound));
     }
-    Ok(n > 0)
+    let old_window = start.zip(end);
+    let new_window = match window {
+        Some(w) => w,
+        None => old_window.clone(),
+    };
+    if !is_admin && (mode == AUTO || new_window != old_window) {
+        return Ok(Err(Refusal::AdminOnly));
+    }
+    if mode == AUTO && new_window.is_none() {
+        return Ok(Err(Refusal::NoWindow));
+    }
+    let (s, e) = match &new_window {
+        Some((s, e)) => (Some(s.as_str()), Some(e.as_str())),
+        None => (None, None),
+    };
+    c.execute(
+        "UPDATE servers SET mode = ?2, auto_start = ?3, auto_end = ?4 WHERE id = ?1",
+        params![server_id, mode, s, e],
+    )?;
+    log_action(
+        c,
+        user,
+        "server_mode",
+        None,
+        None,
+        &format!(
+            "server {server_id}: {mode}, window {}",
+            new_window.map_or("none".to_string(), |(s, e)| format!("{s}-{e}"))
+        ),
+    )?;
+    if mode != old_mode {
+        tracing::warn!(user, server_id, from = %old_mode, to = mode, "server update mode changed");
+    }
+    Ok(Ok(()))
 }
 
 // ---------------------------------------------------------------------------
@@ -892,7 +1156,7 @@ pub struct PollQuery {
     pub wait: Option<u64>,
 }
 
-async fn agent(wren: &Wren, headers: &HeaderMap) -> Result<i64, Box<Response>> {
+pub(crate) async fn agent(wren: &Wren, headers: &HeaderMap) -> Result<i64, Box<Response>> {
     let (id, _) = crate::agent_api::authenticate(wren, headers)
         .await
         .map_err(|e| Box::new(e.into_response()))?;
@@ -958,12 +1222,23 @@ pub async fn step(
     if !STEPS.contains(&b.step.as_str()) || !STEP_STATUSES.contains(&b.status.as_str()) {
         return ApiError::bad_request("unknown step or status").into_response();
     }
+    let preflight_ok = b.step == "preflight" && b.status == "ok";
     match wren
         .core
         .with_conn(move |c| record_step(c, server_id, run_id, &b))
         .await
     {
-        Ok(Some(cancel)) => {
+        Ok(Some(mut cancel)) => {
+            // Step 2: the preflight is through and nothing has stopped yet.
+            // The Vigilant Vole window opens now; when the target requires
+            // it and it can't, the run is cancelled before anything stops.
+            if preflight_ok
+                && !cancel
+                && let Err(why) = crate::vv::before_stop(&wren, run_id).await
+            {
+                tracing::warn!(run_id, "{why}");
+                cancel = true;
+            }
             let _ = wren.changes.send(());
             Json(json!({ "cancel": cancel })).into_response()
         }
@@ -1009,6 +1284,8 @@ pub async fn finish(
     tracing::info!(server_id, run_id, outcome = %run.status, "run finished");
     let _ = wren.changes.send(());
     wren.checks.notify_one();
+    // Step 8: the maintenance window closes.
+    wren.vv_sync.notify_one();
     // The next queued run of this server may go now.
     wren.jobs.notify_waiters();
     let w = wren.clone();
@@ -1024,6 +1301,9 @@ pub fn spawn_watchdog(wren: Wren) {
             tick.tick().await;
             match wren.core.with_conn(|c| close_silent(c)).await {
                 Ok(runs) => {
+                    if !runs.is_empty() {
+                        wren.vv_sync.notify_one();
+                    }
                     for run in runs {
                         tracing::error!(run_id = run.id, "run closed: the agent went silent");
                         let _ = wren.changes.send(());

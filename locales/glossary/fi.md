@@ -36,3 +36,6 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | host name | isäntänimi |  |
 | operating system | käyttöjärjestelmä | as Kestrel |
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; may take case endings (”Unraidissa”, ”Dockerin soketti”) |
+| auto window | automaattiikkuna | per-server window in which automatic updates may run |
+| scheduled update | ajastettu päivitys | an update approved to run at a chosen time |
+| monitor (Vigilant Vole) | seurain | VV: «seurain» |

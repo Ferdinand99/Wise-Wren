@@ -196,10 +196,16 @@ struct DetailPage {
     can_check: bool,
     /// The server's check interval (hours).
     interval: i64,
-    /// The server's mode (approve or notify).
+    /// The server's mode (approve, notify or auto).
     mode: String,
     inventory_at: Option<String>,
     inventory_error: String,
+    is_admin: bool,
+    /// The auto window (`HH:MM`, '' when none).
+    auto_start: String,
+    auto_end: String,
+    /// The site's time zone.
+    tz: String,
 }
 
 #[derive(Template)]
@@ -401,12 +407,14 @@ async fn render_detail(
     let delete_url = format!("/servers/{id}");
     let delete_question = i18n::tf("servers.delete_q", &[("name", &server.name)]);
     let targets = crate::pages::server_targets(core, id).await?;
-    let (interval, inventory_at, inventory_error, mode) = core
+    let (interval, inventory_at, inventory_error, mode, auto_start, auto_end, tz) = core
         .with_conn(move |c| {
+            let tz = crate::schedule::site_tz_name(c)?;
             c.query_row(
-                "SELECT check_interval_hours, inventory_at, inventory_error, mode FROM servers WHERE id = ?1",
+                "SELECT check_interval_hours, inventory_at, inventory_error, mode,
+                        COALESCE(auto_start, ''), COALESCE(auto_end, '') FROM servers WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, tz)),
             )
         })
         .await?;
@@ -422,6 +430,10 @@ async fn render_detail(
         mode,
         inventory_at,
         inventory_error,
+        is_admin: user.is_admin(),
+        auto_start,
+        auto_end,
+        tz,
     };
     Ok((jar, HtmlTemplate(page)).into_response())
 }

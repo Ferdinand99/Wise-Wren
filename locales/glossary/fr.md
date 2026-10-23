@@ -36,3 +36,6 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | host name | nom d’hôte | VV : « hôte » |
 | operating system | système d’exploitation | comme Kestrel |
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names ; « socket Docker » |
+| auto window | fenêtre automatique | per-server window in which automatic updates may run |
+| scheduled update | mise à jour planifiée | an update approved to run at a chosen time |
+| monitor (Vigilant Vole) | moniteur (m.) | VV : « moniteur » |

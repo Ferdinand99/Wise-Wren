@@ -25,8 +25,18 @@ fn beat() -> Value {
     })
 }
 
-/// Words from Vigilant Vole that must never show in Wren's pages.
+/// Words from Vigilant Vole that must never show in Wren's pages (the
+/// Settings tab for Wren's Vigilant Vole connection, and the API reference's
+/// words about that integration, aside).
 fn assert_wren_branded(path: &str, body: &str) {
+    let mut body = body.to_string();
+    if path.starts_with("/api-docs") || path == "/llms.txt" {
+        body = body.replace("Vigilant Vole", "");
+    }
+    while let Some(i) = body.find("href=\"/settings/vigilant-vole\"") {
+        let end = body[i..].find("</a>").map_or(body.len(), |e| i + e);
+        body.replace_range(i..end, "");
+    }
     for foreign in [
         "Vigilant", "Vole", "vv_", "VV_", "vva_", "Kit Demo", "Kestrel",
     ] {

@@ -36,3 +36,6 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | host name | שם מארח | VV: “מארח” |
 | operating system | מערכת הפעלה | as Kestrel |
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; with maqaf: “ב־Unraid” |
+| auto window | חלון אוטומטי | per-server window in which automatic updates may run |
+| scheduled update | עדכון מתוזמן | an update approved to run at a chosen time |
+| monitor (Vigilant Vole) | מוניטור | VV: «מוניטור» |

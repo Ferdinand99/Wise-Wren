@@ -24,11 +24,14 @@ pub mod registry;
 pub mod run_notify;
 pub mod run_pages;
 pub mod runs;
+pub mod schedule;
 pub mod server;
 pub mod servers;
 pub mod targets;
 pub mod updates_notify;
 pub mod versions;
+pub mod vv;
+pub mod vv_pages;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -69,6 +72,9 @@ pub struct Wren {
     pub jobs: Arc<tokio::sync::Notify>,
     /// Job polls and step reports per server ([`runs::RATE`]).
     pub job_budgets: Arc<TokenBuckets<i64>>,
+    /// Wakes the Vigilant Vole reconciler ([`vv::sync`]): a run ended, a
+    /// scheduled run was moved or cancelled.
+    pub vv_sync: Arc<tokio::sync::Notify>,
 }
 
 /// Installs the configuration, opens and migrates the database in
@@ -112,6 +118,7 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         github: Arc::new(versions::GitHub::new("https://api.github.com")),
         jobs: Arc::new(tokio::sync::Notify::new()),
         job_budgets: Arc::new(TokenBuckets::new()),
+        vv_sync: Arc::new(tokio::sync::Notify::new()),
     })
 }
 
@@ -125,6 +132,7 @@ pub fn router(wren: Wren) -> Router {
         .merge(pages::router())
         .merge(run_pages::router())
         .merge(registries::router())
+        .merge(vv_pages::router())
         .merge(api::router())
         .merge(kit_pages::router())
         .route_layer(from_fn_with_state(core.clone(), guard::require_auth));
@@ -135,6 +143,7 @@ pub fn router(wren: Wren) -> Router {
         .route(runs::JOBS_PATH, get(runs::jobs))
         .route("/api/agent/v1/runs/{id}/steps", post(runs::step))
         .route("/api/agent/v1/runs/{id}/finish", post(runs::finish))
+        .route("/api/agent/v1/runs/{id}/monitors", post(vv::monitors_route))
         .route("/mcp", post(api::mcp).get(vole_kit::mcp::not_offered))
         .route_layer(map_response(headers::machine));
     let public = Router::new()

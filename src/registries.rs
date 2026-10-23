@@ -59,6 +59,16 @@ fn cipher(core: &Core) -> LessSafeKey {
 
 /// `nonce ‖ ciphertext ‖ tag`.
 pub fn seal(core: &Core, secret: &str) -> Vec<u8> {
+    seal_for(core, b"registry", secret)
+}
+
+/// The secret, or `None` when it can't be opened (another instance key).
+pub fn open(core: &Core, sealed: &[u8]) -> Option<String> {
+    open_for(core, b"registry", sealed)
+}
+
+/// Seals `secret` for one use (`aad`: `registry`, `vv-token`, ...).
+pub fn seal_for(core: &Core, aad: &'static [u8], secret: &str) -> Vec<u8> {
     let mut nonce = [0u8; NONCE_LEN];
     SystemRandom::new()
         .fill(&mut nonce)
@@ -67,15 +77,15 @@ pub fn seal(core: &Core, secret: &str) -> Vec<u8> {
     cipher(core)
         .seal_in_place_append_tag(
             Nonce::assume_unique_for_key(nonce),
-            Aad::from(b"registry"),
+            Aad::from(aad),
             &mut buf,
         )
         .expect("sealing a short secret");
     [nonce.as_slice(), &buf].concat()
 }
 
-/// The secret, or `None` when it can't be opened (another instance key).
-pub fn open(core: &Core, sealed: &[u8]) -> Option<String> {
+/// Opens what [`seal_for`] sealed with the same `aad`.
+pub fn open_for(core: &Core, aad: &'static [u8], sealed: &[u8]) -> Option<String> {
     if sealed.len() < NONCE_LEN {
         return None;
     }
@@ -84,7 +94,7 @@ pub fn open(core: &Core, sealed: &[u8]) -> Option<String> {
     let plain = cipher(core)
         .open_in_place(
             Nonce::try_assume_unique_for_key(nonce).ok()?,
-            Aad::from(b"registry"),
+            Aad::from(aad),
             &mut buf,
         )
         .ok()?;

@@ -16,6 +16,10 @@ pub async fn run(config: Config) -> Result<(), crate::StartError> {
     crate::checks::spawn_scheduler(wren.clone());
     // Closes runs whose agent went silent.
     crate::runs::spawn_watchdog(wren.clone());
+    // Auto runs, only inside each server's auto window.
+    crate::schedule::spawn_picker(wren.clone());
+    // Vigilant Vole: planned windows ahead of scheduled runs, closing them.
+    crate::vv::spawn_sync(wren.clone());
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(addr)

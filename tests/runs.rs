@@ -481,11 +481,16 @@ async fn run_results_notify() {
         started_at: None,
         finished_at: None,
         cancel_requested: false,
+        trigger: "user".into(),
+        scheduled_for: None,
+        vv_window_id: None,
+        vv_state: String::new(),
     };
     for status in ["succeeded", "rolled_back", "rollback_failed", "cancelled"] {
         r.status = status.into();
         wise_wren::run_notify::send_result(&app.wren, &r).await;
     }
+    let hits = got.clone();
     let got = got.lock().unwrap().clone();
     assert_eq!(got.len(), 3, "a cancelled run says nothing");
     let text: Vec<String> = got.iter().map(Value::to_string).collect();
@@ -501,6 +506,14 @@ async fn run_results_notify() {
     );
     assert!(text[2].contains("needs you"), "{}", text[2]);
     assert_eq!(got[2]["event"], "run_rollback_failed");
+    // Run results name what started them.
+    assert!(text[0].contains("Approved now"), "{}", text[0]);
+    r.status = "succeeded".into();
+    r.trigger = "auto".into();
+    wise_wren::run_notify::send_result(&app.wren, &r).await;
+    let last = hits.lock().unwrap().last().unwrap().to_string();
+    assert!(last.contains("Automatic (auto window)"), "{last}");
+    assert!(!last.contains("Approved by"), "{last}");
 }
 
 #[tokio::test]
