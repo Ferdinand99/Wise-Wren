@@ -157,6 +157,8 @@ pub static KIT: KitConfig = KitConfig {
     token_scopes: &[],
     // Site name, public URL, time zone and language.
     general: Some(&GeneralSettings::CORE_ONLY),
+    // The signed-in footer links the running version to its release notes.
+    releases_url: Some("https://github.com/Ferdinand99/Wise-Wren/releases/tag/v{version}"),
 };
 
 /// Every exempt path is a prefix above.

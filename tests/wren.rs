@@ -73,11 +73,25 @@ async fn setup_then_sign_in() {
     assert_eq!(home.status, StatusCode::OK);
     assert!(home.body.contains("No servers yet"), "{}", home.body);
     assert!(home.body.contains("/static/wren.css"));
+    // Signed-in pages end with the product, its version and the release notes.
+    let version = env!("CARGO_PKG_VERSION");
+    let footer = format!(
+        "<footer class=\"app-foot container\">\n    Wise Wren <a href=\"https://github.com/Ferdinand99/Wise-Wren/releases/tag/v{version}\">{version}</a>\n  </footer>"
+    );
+    assert!(
+        home.body.replace("\r\n", "\n").contains(&footer),
+        "no version footer\n{}",
+        home.body
+    );
 
     // Signed out, sign-in works with the password.
     let mut other = Web::anonymous(&app);
     let login = other.get("/login").await;
     assert!(login.body.contains("Log in to see your servers"));
+    // The sign-in page doesn't tell the version.
+    for needle in ["app-foot", "/releases/tag/", version] {
+        assert!(!login.body.contains(needle), "/login shows {needle:?}");
+    }
     let res = other
         .post(
             "/login",
