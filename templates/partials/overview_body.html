@@ -10,3 +10,13 @@
   {% call m::section_head(tr("overview.servers"), "", "overview-servers") %}{% endcall %}
   {% include "partials/server_list.html" %}
 </section>
+<section class="section" aria-labelledby="overview-runs">
+  {% call m::section_head(tr("overview.recent_runs"), "", "overview-runs") %}{% endcall %}
+  {%- if runs.is_empty() %}
+  <p class="help">{{ tr("overview.no_runs") }}</p>
+  {%- else %}
+  <div class="card card-flush">
+    {% include "partials/runs_table.html" %}
+  </div>
+  {%- endif %}
+</section>

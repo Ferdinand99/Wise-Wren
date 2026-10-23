@@ -14,10 +14,11 @@
 //!   the server, sent on the agent's own schedule and when a heartbeat's
 //!   answer says `"scan": true` ("Check now").
 //!
-//! There is no job or command channel: Wren can't make an agent do
-//! anything but report (§8). When jobs come, the agent will fetch them with a
-//! long-poll `GET` on the same footing (named jobs from its own config
-//! only), so the protocol stays request/response.
+//! - `GET /api/agent/v1/jobs` and `POST /api/agent/v1/runs/{id}/steps|finish`
+//!   ([`crate::runs`]): approved updates and rollbacks as named, typed jobs
+//!   (data, never a command line), fetched with a long-poll and reported
+//!   step by step. The agent checks each one against its own `agent.toml`
+//!   (`[updates]` allow/deny) and Docker before it acts (§8).
 //!
 //! [`snippets`] builds the `docker run` lines from the spike's decision
 //! (docs/spike-findings.md, "Decision: agent runtime form").
@@ -193,6 +194,7 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
             [
                 "-v /mnt/user/appdata/wren-agent:/config",
                 "-v /mnt/user/appdata:/mnt/user/appdata",
+                "-v /mnt/cache/appdata:/mnt/cache/appdata",
                 "-v /usr/local/emhttp:/usr/local/emhttp:ro",
                 "-v /var/local/emhttp:/var/local/emhttp",
                 "-v /boot/config:/boot/config",
@@ -204,7 +206,11 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
         lines.push("-v /etc/wren-agent:/config".to_string());
     }
     lines.push(AGENT_IMAGE.to_string());
-    lines.join(" \\\n  ")
+    // The agent.toml default, said where the agent is started.
+    format!(
+        "# Without [updates] in agent.toml, every target may be updated once approved in Wren.\n{}",
+        lines.join(" \\\n  ")
+    )
 }
 
 /// Both commands for a server.

@@ -8,30 +8,87 @@
 {% block content %}
 {% call m::page_header(tr("updates.title"), tr("updates.sub")) %}{% endcall %}
 
-{%- if rows.is_empty() %}
+{%- if rows.is_empty() && held.is_empty() %}
 <div class="empty-card">
   {{ m::empty_state("check-circle", tr("updates.empty_title"), tr("updates.empty_text")) }}
 </div>
 {%- else %}
-<div class="card card-flush">
-  <div class="table-wrap">
-    <table class="table table-stack table-hover" id="updates">
-      <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("updates.col_server") }}</th><th>{{ tr("targets.col_kind") }}</th><th>{{ tr("targets.col_current") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_checked") }}</th></tr></thead>
-      <tbody>
-        {%- for t in rows %}
-        <tr data-status="{{ t.status }}">
-          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
-          <td data-label="{{ tr("updates.col_server") }}"><a href="/servers/{{ t.server_id }}">{{ t.server_name }}</a></td>
-          <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
-          <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
-          <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{% if t.notes_title.is_empty() %}{{ tr("targets.notes") }}{% else %}{{ t.notes_title }}{% endif %}</a>{% endif %}</td>
-          <td data-label="{{ tr("targets.col_checked") }}">{% if let Some(at) = t.last_checked_at %}{{ m::time_ago(at) }}{% else %}{{ tr("servers.never") }}{% endif %}</td>
-        </tr>
-        {%- endfor %}
-      </tbody>
-    </table>
+{#- One form: the row buttons post to their own action (formaction), the
+    bulk button approves every ticked row for the version shown in it. -#}
+<form method="post" action="/updates/approve" class="stack">
+  <input type="hidden" name="back" value="/updates">
+  {%- if !rows.is_empty() %}
+  <div class="card card-flush">
+    {%- if can_act %}
+    <div class="card-head card-pad">
+      <p class="card-sub">{{ tr("updates.approve_help") }}</p>
+      <div class="toolbar">
+        <button type="submit" class="btn btn-primary btn-sm">{{ m::icon("check") }}<span>{{ tr("updates.approve_selected") }}</span></button>
+      </div>
+    </div>
+    {%- endif %}
+    <div class="table-wrap">
+      <table class="table table-stack table-hover" id="updates">
+        <thead><tr>{% if can_act %}<th><span class="sr-only">{{ tr("updates.col_pick") }}</span></th>{% endif %}<th>{{ tr("targets.col_target") }}</th><th>{{ tr("updates.col_server") }}</th><th>{{ tr("targets.col_current") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th>{% if can_act %}<th>{{ tr("updates.col_actions") }}</th>{% endif %}</tr></thead>
+        <tbody>
+          {%- for r in rows %}
+          <tr data-status="{{ r.t.status }}" data-target="{{ r.t.name }}">
+            {%- if can_act %}
+            <td>{% if r.approvable() %}<input type="checkbox" name="ids" value="{{ r.t.id }}" aria-label="{{ tr1("updates.pick", "name", r.t.name) }}"><input type="hidden" name="key_{{ r.t.id }}" value="{{ r.t.available_key }}">{% endif %}</td>
+            {%- endif %}
+            <td class="td-primary"><a href="/targets/{{ r.t.id }}">{{ r.t.name }}</a> <span class="muted">{{ r.t.kind_label }}</span>{% if r.t.files_missing() %} <span class="badge">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
+            <td data-label="{{ tr("updates.col_server") }}"><a href="/servers/{{ r.t.server_id }}">{{ r.t.server_name }}</a></td>
+            <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ r.t.current }}</td>
+            <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ r.t.available }}{% if !r.t.notes_url.is_empty() %} · <a href="{{ r.t.notes_url }}" target="_blank" rel="noopener noreferrer">{% if r.t.notes_title.is_empty() %}{{ tr("targets.notes") }}{% else %}{{ r.t.notes_title }}{% endif %}</a>{% endif %}</td>
+            <td data-label="{{ tr("targets.col_status") }}">
+              {%- if let Some(run) = r.active %}<a href="/runs/{{ run.id }}" class="pill status-{{ run.status_class }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</a>
+              {%- else if r.notify_only %}<span class="badge">{{ tr("runs.mode_notify") }}</span>
+              {%- else %}<span class="pill status-{{ r.t.status_class }}"><span class="dot" aria-hidden="true"></span>{{ r.t.status_label }}</span>{% endif %}
+            </td>
+            {%- if can_act %}
+            <td data-label="{{ tr("updates.col_actions") }}">
+              {%- if r.approvable() %}
+              <div class="cluster">
+                <button type="submit" class="btn btn-primary btn-sm" formaction="/targets/{{ r.t.id }}/approve" name="key" value="{{ r.t.available_key }}">{{ tr("updates.approve") }}</button>
+                <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/skip">{{ tr("updates.skip") }}</button>
+                <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/snooze" name="hours" value="24">{{ tr("updates.snooze_day") }}</button>
+                <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/snooze" name="hours" value="168">{{ tr("updates.snooze_week") }}</button>
+              </div>
+              {%- else %}–{% endif %}
+            </td>
+            {%- endif %}
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-</div>
+  {%- endif %}
+
+  {%- if !held.is_empty() %}
+  <section class="card card-flush" aria-labelledby="held-title">
+    <div class="card-head card-pad"><h2 class="card-title" id="held-title">{{ tr("updates.held") }}</h2></div>
+    <div class="table-wrap">
+      <table class="table table-stack" id="held">
+        <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("updates.col_server") }}</th><th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th>{% if can_act %}<th>{{ tr("updates.col_actions") }}</th>{% endif %}</tr></thead>
+        <tbody>
+          {%- for r in held %}
+          <tr data-target="{{ r.t.name }}">
+            <td class="td-primary"><a href="/targets/{{ r.t.id }}">{{ r.t.name }}</a></td>
+            <td data-label="{{ tr("updates.col_server") }}">{{ r.t.server_name }}</td>
+            <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ r.t.available }}</td>
+            <td data-label="{{ tr("targets.col_status") }}">{% if r.skipped %}{{ tr("updates.skipped") }}{% else if let Some(until) = r.snoozed_until %}{{ tr1("updates.snoozed_until", "until", until) }}{% endif %}</td>
+            {%- if can_act %}
+            <td data-label="{{ tr("updates.col_actions") }}"><button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/resume">{{ tr("updates.resume") }}</button></td>
+            {%- endif %}
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {%- endif %}
+</form>
 {%- endif %}
 <p class="section-foot">{{ tr("updates.foot") }}</p>
 {% endblock %}

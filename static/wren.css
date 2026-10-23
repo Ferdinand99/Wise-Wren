@@ -34,3 +34,21 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* "Update available" must stand out from "Unknown" (grey): the design
+   system's warning amber, on pills, stat tiles and dots alike. */
+.status-update {
+  --status: var(--warn);
+  --status-text: var(--warn-text);
+  --status-fill: var(--warn-fill);
+  --status-on: #1d1d1f;
+}
+
+/* A step's log on the run page. */
+.run-log {
+  max-block-size: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8125rem;
+}

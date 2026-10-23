@@ -114,3 +114,77 @@ async fn agent_inventory_reaches_wren() {
         .await;
     assert_eq!(recorded, 1);
 }
+
+/// The real agent's job client against Wren: a job for a target its
+/// `agent.toml` leaves out is refused before Docker is even read.
+#[tokio::test]
+async fn agent_refuses_jobs_outside_its_allowlist() {
+    use wise_wren::{registry, runs, targets};
+    let app = App::new().await;
+    let (_, token) = app.add_server("LANBox").await;
+    let url = serve(&app).await;
+    let inv = serde_json::json!({"containers": [{
+        "name": "postiz", "image": "ghcr.io/gitroomhq/postiz-app:latest", "image_id": "sha256:1",
+        "repo_digests": ["ghcr.io/gitroomhq/postiz-app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "state": "running", "labels": {}}]});
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{url}/api/agent/v1/inventory"))
+        .bearer_auth(&token)
+        .json(&inv)
+        .send()
+        .await
+        .unwrap();
+    let id = app
+        .wren
+        .core
+        .with_conn(|c| {
+            targets::set_remote(
+                c,
+                "ghcr.io/gitroomhq/postiz-app:latest",
+                &Ok(registry::Remote {
+                    digest:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            .into(),
+                    media_type: String::new(),
+                }),
+            )?;
+            targets::refresh_all(c)?;
+            let t = targets::list(c, targets::Filter::default())?.remove(0);
+            Ok(runs::approve(c, t.id, Some(&t.available_key), "owner")?.unwrap())
+        })
+        .await
+        .unwrap();
+    let config = Config::from_parts(
+        Some(&format!(
+            "server = \"{url}\"\ntoken = \"{token}\"\n[updates]\nallow = [\"ww-test-*\"]\n"
+        )),
+        |_| None,
+    )
+    .unwrap();
+    let jobs = wren_agent::jobs::JobClient::new(&url, &token).unwrap();
+    let job = match jobs.poll().await.unwrap() {
+        wren_agent::jobs::Polled::Job(Ok(job)) => job,
+        _ => panic!("a job"),
+    };
+    assert_eq!(job.target.name, "postiz");
+    wren_agent::run::handle(&config, &jobs, job).await;
+    let run = app
+        .wren
+        .core
+        .with_conn(move |c| runs::get(c, id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, "refused");
+    assert!(
+        run.detail.starts_with("refused by agent config"),
+        "{}",
+        run.detail
+    );
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM run_steps").await,
+        0,
+        "not a single step ran"
+    );
+}

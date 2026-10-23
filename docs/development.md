@@ -11,8 +11,9 @@ Wise Wren is a Cargo workspace with two crates:
   page, REST and MCP.
 - **`wren-agent`** (`agent/`): the small agent that runs on each Docker host. It has no kit dependency: tokio,
   reqwest (rustls), serde and toml. It reads `agent.toml`, sends a heartbeat to Wren every 30 seconds and an
-  inventory of what runs on the host (see [Discovery](#discovery-and-version-checks)). It changes nothing and
-  takes no orders; the only processes it starts are its own `agent.toml` version commands.
+  inventory of what runs on the host (see [Discovery](#discovery-and-version-checks)). Beside them it waits for
+  jobs: updates and rollbacks someone approved in Wren, which it checks against its own `agent.toml` and Docker
+  before it runs them (see [Update runs](#update-runs)). It never takes a command line.
 
 ## Layout
 
@@ -31,6 +32,9 @@ src/
   servers.rs          # Overview and Servers pages, add/token/revoke/delete, live updates (SSE)
   agent_api.rs        # POST /api/agent/v1/heartbeat, the agent's `docker run` lines
   inventory.rs        # POST /api/agent/v1/inventory: the agent's report → targets (grouping rules)
+  runs.rs             # approvals, skip/snooze, the job channel (GET /api/agent/v1/jobs), step reports, lapses
+  run_pages.rs        # Updates actions, the run page (live), cancel, rollback, modes and health period
+  run_notify.rs       # run results, agent offline/back
   targets.rs          # targets, their images, remote digests; status derived from both
   registry.rs         # image refs, manifest HEAD with the Bearer challenge, Retry-After
   versions.rs         # version sources (GitHub releases, URL + regex/JSON pointer), release notes
@@ -44,10 +48,10 @@ templates/            # Wren's pages (extend kit/layout.html)
 static/               # favicon, icons, web manifest, wren.css (the wren's rose)
 migrations/           # Wren's migrations (after the kit's core set)
 locales/              # Wren's strings, 26 languages; glossaries in locales/glossary/
-agent/src/            # config.rs (agent.toml), docker.rs (socket), discover.rs (inventory), heartbeat.rs,
-                      # lib.rs (the loop)
+agent/src/            # config.rs (agent.toml), docker.rs (socket, CLI), discover.rs (inventory), heartbeat.rs,
+                      # jobs.rs (job channel, the re-check), run.rs (the run), snapshot.rs, lib.rs (the loops)
 tests/                # wren.rs (in-process app), discovery.rs (targets, checks, notifications against fakes),
-                      # agent.rs (the real agent against Wren), i18n.rs
+                      # agent.rs (the real agent against Wren), runs.rs (approvals, jobs, runs), i18n.rs
 Dockerfile            # targets `server` and `agent`
 docker/               # the server's entrypoint (PUID/PGID), the agent's PHP setting
 ```
@@ -123,12 +127,14 @@ Authorization: Bearer wwa_…
 The `docker run` line on the server's page, for Unraid:
 
 ```bash
+# Without [updates] in agent.toml, every target may be updated once approved in Wren.
 docker run -d --name wren-agent --restart unless-stopped \
   -e WW_SERVER_URL=http://10.0.3.26:3003 \
   -e WW_AGENT_TOKEN=wwa_… \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /mnt/user/appdata/wren-agent:/config \
   -v /mnt/user/appdata:/mnt/user/appdata \
+  -v /mnt/cache/appdata:/mnt/cache/appdata \
   -v /usr/local/emhttp:/usr/local/emhttp:ro \
   -v /var/local/emhttp:/var/local/emhttp \
   -v /boot/config:/boot/config \
@@ -139,9 +145,10 @@ docker run -d --name wren-agent --restart unless-stopped \
 It follows the spike's decision ([spike-findings.md](spike-findings.md#decision-agent-runtime-form)): a container,
 not privileged, no added capabilities, running as root. **Access to the Docker socket is root access to the
 host.** Every folder Wren may touch is mounted at the **same path** inside the agent (Compose binds are resolved
-on the host). The Unraid mounts let later phases run Unraid's own `update_container`; this phase only checks
-that `/boot/config/plugins/dockerMan` and `/usr/local/emhttp/plugins/dynamix.docker.manager` exist to report
-"Unraid". On other Linux hosts the page's second line drops them.
+on the host); an Unraid share is also mounted at its pool path (`/mnt/cache/appdata`) so snapshots can be reflink
+copies on the real filesystem. The Unraid mounts let the agent run Unraid's own `update_container` for template
+containers. On other Linux hosts the page's second line drops them. The line starts with a reminder: **without
+`[updates]` in `agent.toml`, every target may be updated once someone approves it in Wren.**
 
 ### agent.toml
 
@@ -178,8 +185,18 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
 The agent refuses to start (exit code 2) and names the field for: a missing or malformed server or token,
 relative paths or `..` in roots and `working_dir`, `/` as a root, a `working_dir` outside the roots, a script
 stack without a name (or a name used twice), without `update.command` or without a valid `timeout`, an
-environment name that isn't a variable name, and any unknown key. Update and rollback scripts are only
-checked, never run (phase 4 runs them).
+environment name that isn't a variable name, a bad `[updates]` glob, and any unknown key.
+
+```toml
+# Optional: which targets Wren may update, as globs on the target's name (* and ?).
+# Without this section every target may be updated once someone approves it in Wren.
+[updates]
+allow = ["ww-test-*", "nextcloud"]
+deny = ["ww-test-keep*"]          # wins over allow
+```
+
+A job for a target outside `allow` (or inside `deny`) is refused with "refused by agent config" before the agent
+even reads Docker; `wren-agent --check` prints what the section allows.
 
 ## Discovery and version checks
 
@@ -246,22 +263,44 @@ parse (`v1.2` counts as `1.2.0`), otherwise any difference counts as newer.
 
 ### The dev instance on LANBox
 
-`wise-wren-dev` (port 3003, data in `/mnt/user/appdata/wise-wren-dev`) and `wren-agent-dev`, started with:
+`wise-wren-dev` (port 3003, host network so it reaches the test registry on `localhost:5056` like the daemon does,
+data in `/mnt/user/appdata/wise-wren-dev`) and `wren-agent-dev`, started with:
 
 ```bash
 docker run -d --name wren-agent-dev --restart unless-stopped --label owner=wise-wren \
   -e WW_SERVER_URL=http://10.0.3.26:3003 -e WW_AGENT_TOKEN=wwa_… \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /mnt/user/appdata/wren-agent-dev:/config:ro \
-  -v /boot/config:/boot/config:ro \
+  -v /boot/config:/boot/config \
   -v /usr/local/emhttp:/usr/local/emhttp:ro \
-  -v /mnt/user/appdata/ww-test-stack:/mnt/user/appdata/ww-test-stack:ro \
+  -v /var/local/emhttp:/var/local/emhttp \
+  -v /var/lib/docker:/var/lib/docker \
+  -v /mnt/user/appdata/ww-test:/mnt/user/appdata/ww-test \
+  -v /mnt/disk1/appdata/ww-test:/mnt/disk1/appdata/ww-test \
+  -v /mnt/user/appdata/ww-test-stack:/mnt/user/appdata/ww-test-stack \
+  -v /mnt/disk1/appdata/ww-test-stack:/mnt/disk1/appdata/ww-test-stack \
   wise-wren-agent:dev
 ```
 
-Its `agent.toml` defines the throwaway script stack `ww-test-stack` (`/mnt/user/appdata/ww-test-stack`: a
-`compose.yaml` with `traefik/whoami:v1.10.3` and a `VERSION` file) with `github = "traefik/whoami"` and
-`installed_command = "cat VERSION"`. The Compose Manager stack `postiz` has its files in
+Its `agent.toml` has `roots = ["/mnt/user/appdata/ww-test", "/mnt/user/appdata/ww-test-stack"]` and
+`[updates] allow = ["ww-test-*"]`: the owner's containers (postiz, Newt, dockersocket, …) are refused even if
+someone approved them. Read-write mounts exist only for the test targets (plus Unraid's paths, as the spike
+decided). The throwaway targets, all on the test registry `ww-test-registry` (`localhost:5056/ww-test/app:<tag>`,
+busybox images with the variants `v1`, `v2`, `v3`, `broken` (damages `/data` and exits) and `unhealthy` (damages
+`/data`, healthcheck fails)):
+
+| Target | Kind | Data |
+|---|---|---|
+| `ww-test-container` | container | `/mnt/user/appdata/ww-test/container/data` |
+| `ww-test-unraid` | Unraid template (`my-ww-test-unraid.xml`) | `/mnt/user/appdata/ww-test/unraid/data` |
+| `ww-test-compose` | Compose stack (`/mnt/user/appdata/ww-test/compose`) | `…/compose/data` |
+| `ww-test-stack` | script stack (`docker compose pull && docker compose up -d`) | `/mnt/user/appdata/ww-test-stack/data` |
+| `ww-other-refused` | container outside the allowlist | none |
+
+The scripts in `/mnt/disk1/ww-test-scripts/` on LANBox: `push.sh <tag> <variant>` publishes a variant under the
+same tag (a new digest, so "Update available" after Check now), `sums.sh <dir>` checksums a data folder, `run.sh`
+pushes, waits for the check, approves through the REST API and prints the run. The health period of the test
+targets is 15 s. The Compose Manager stack `postiz` has its files in
 `/boot/config/plugins/compose.manager/projects/postiz`, which the `/boot/config` mount makes reachable.
 
 ### Tower and Fluxer
@@ -300,6 +339,90 @@ run` line needs `-v /mnt/cache/appdata/fluxer:/mnt/cache/appdata/fluxer` (or the
 The agent image carries what later phases need on the host: `docker-cli` with Compose (≥ 2.24.4), `bash`,
 `curl`, `openssl`, GNU `coreutils` (`cp --reflink`), `jq`, and PHP 8.4 with `short_open_tag=On` and no
 `gettext` (for Unraid's scripts).
+
+## Update runs
+
+**Nothing runs unless someone allowed it** (design §2). There is no automatic mode yet (phase 5): an update runs
+only because an editor or admin approved **one exact version** of a target, and the agent on that server only
+runs what its own `agent.toml` allows.
+
+- **Modes.** Each server has a mode (`approve`, the default, or `notify`) on its Targets card; a target can
+  override it on its page. `notify` targets are never updated: Wren only tells you about new versions. `auto`
+  comes with phase 5 and isn't offered.
+- **Approve, skip, snooze** (Updates page, target page, `POST /api/v1/targets/{id}/{approve,skip,snooze}`, MCP
+  `approve_update`). An approval is for the version key shown (`version_key` in the API): if a newer version
+  appears before the run starts, the approval **lapses** and nothing happens. Several updates can be approved
+  together; each runs for its own version, one at a time per server. Skip hides this version (a newer one shows
+  again), snooze hides the update for a day or a week, "Show again" undoes both. Stacks whose files the agent
+  can't reach can't be approved. Every action is stored in `actions` with who did it.
+- **Roll back** (run page, editors): the newest successful update of a target can be rolled back to the image and
+  snapshot taken before it, while the agent still keeps them (the last 2 per target). Data written since is lost;
+  the page says so.
+
+### The job channel
+
+The agent waits on `GET /api/agent/v1/jobs` (Wren holds it up to 25 s, `204` when there is nothing). A job is
+data, never a command:
+
+```json
+{"job": {"run_id": 12, "kind": "update", "target": {"kind": "container", "name": "ww-test-container"},
+ "from_key": "ww-test-container=sha256:02d8…", "to_key": "ww-test-container=sha256:4f90…",
+ "images": [{"container": "ww-test-container", "image": "localhost:5056/ww-test/app:container",
+             "from": "sha256:02d8…", "to": "sha256:4f90…"}],
+ "health_seconds": 180, "keep_snapshots": 2, "rollback_of": null}}
+```
+
+Kinds: `update` and `rollback` (of run `rollback_of`). Before acting, the agent checks the job against `[updates]`,
+then re-reads Docker: the target exists with that kind (an Unraid template container only when its template
+exists), every image is the one that container runs now at the `from` digest, the `to` digest is a digest, a
+Compose stack's folder and files are under `roots` and mounted at the same path, a script stack is in
+`agent.toml` (its scripts are the ones there, run by name). Anything else: the run ends as `refused` and nothing
+changed. It posts each step to `POST /api/agent/v1/runs/{id}/steps` (`{"step", "status", "log", "duration_ms"}`)
+and the end to `…/finish` (`succeeded`, `rolled_back`, `failed`, `rollback_failed`, `refused`, `cancelled`).
+
+### A run
+
+The agent runs every step itself, so a lost connection to Wren can't leave a target stopped half-way; each step
+has a time limit.
+
+1. **Preflight**, nothing stopped yet: free space for the snapshot (below), the old images kept as
+   `wren-rollback/<target>:<run>-<container>`, and the **approved digest pulled** (`repo@sha256:…` of the image the
+   container already runs, then tagged as its reference: never "whatever the tag is now"). Wren's answer to the
+   preflight report is the last moment to cancel (and phase 5's hook for the Vigilant Vole maintenance window,
+   `runs::before_stop`). If Wren can't be reached then, the run stops with nothing changed.
+2. **Stop** what runs of the target (`docker stop -t 60`).
+3. **Snapshot** of the target's data paths: its own bind mounts under `roots`, never a root itself and never a path
+   another container also mounts (both are listed in the log). `/mnt/user/…` is resolved to its disk or pool with
+   `getfattr -n system.LOCATIONS` when that path is mounted too. Method per path, in the spike's order: btrfs
+   subvolume snapshot (subvolume root and `CAP_SYS_ADMIN`), reflink copy (`cp --reflink=always`), plain copy
+   (`cp -a`, after checking size + 10 % fits). The run is refused when the space doesn't fit with 1 GB (or 2 %)
+   left. Snapshots live in `<root>/.wren-snapshots/<target>/<run>/` on the same filesystem; the last 2 per target
+   are kept.
+4. **Update**: a container is recreated with its own configuration through the Docker API (values that were only
+   the old image's defaults are dropped, the old container is kept renamed `<name>-wren-old-<run>` until the run
+   ends); an Unraid template container goes through Unraid's own `update_container <name>` (falling back to the API
+   recreate plus Unraid's status entry when its PHP can't run), then Wren checks it runs the approved image; a
+   Compose stack `docker compose up -d --pull never` in its folder at the same path; a script stack its
+   `[script_stack.update]` command.
+5. **Health check**: every container that ran before is running, its Docker healthcheck (if any) healthy, with no
+   restart, for the target's health period (default 180 s, per target on its page) within 5 more minutes.
+6. **On failure, rollback**: stop, restore the snapshot (the live folder is moved aside and deleted only once the
+   copy is back), put the old container or images back (a script stack runs its rollback script, or gets its
+   Compose files and images back), start, check health again. If the rollback fails, the agent stops and leaves
+   everything as it is: the run is `rollback_failed` ("needs you").
+7. **Close**: the old container is removed after success; older snapshots and kept images of the target go.
+
+Script stacks with `handles_own_backup = true` skip steps 2 and 3. One run at a time per server; a stack updates
+as one unit. A running run whose agent goes offline and stays silent for 10 minutes (or any run silent for 26
+hours) is closed as `rollback_failed`, never retried.
+
+**Notifications:** run succeeded, failed and rolled back, failed with nothing changed, rollback failed (urgent),
+and the agent offline (once per outage, after 90 s without a heartbeat) and back.
+
+**Pages and API:** the run page shows every step live (status, duration, log), the target page its run history,
+mode and health period, the Overview the recent runs. `GET /api/v1/runs[?target_id=&server_id=&limit=]`,
+`GET /api/v1/runs/{id}` (with steps), `POST /api/v1/targets/{id}/{approve,skip,snooze}` (an API token with write
+access of an editor or admin; session cookies don't work here), MCP `list_runs` and `approve_update`.
 
 ## Translations
 

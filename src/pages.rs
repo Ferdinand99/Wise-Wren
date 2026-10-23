@@ -55,6 +55,8 @@ pub struct TargetView {
     pub why: String,
     pub current: String,
     pub available: String,
+    /// The version key an approval is for.
+    pub available_key: String,
     pub last_checked_at: Option<String>,
     pub check_requested: bool,
     pub files_reachable: bool,
@@ -100,10 +102,7 @@ impl TargetView {
         let current = match t.kind.as_str() {
             CONTAINER | UNRAID => t.image.clone(),
             _ if !t.installed_version.is_empty() => t.installed_version.clone(),
-            _ => i18n::tf(
-                "targets.image_count",
-                &[("count", &t.image_count.to_string())],
-            ),
+            _ => i18n::tn("targets.image_count", t.image_count),
         };
         let source = match serde_json::from_str::<crate::versions::Source>(&t.version_source) {
             Ok(s) if !s.github.is_empty() => format!("GitHub · {}", s.github),
@@ -124,6 +123,7 @@ impl TargetView {
             status_label,
             current,
             available: t.available,
+            available_key: t.available_key,
             last_checked_at: t.last_checked_at,
             check_requested: t.check_requested,
             files_reachable: t.files_reachable,
@@ -214,7 +214,60 @@ pub async fn update_count(core: &Core) -> ApiResult<i64> {
 #[template(path = "updates.html")]
 struct UpdatesPage {
     ctx: PageCtx,
-    rows: Vec<TargetView>,
+    /// Waiting for a decision.
+    rows: Vec<UpdateRow>,
+    /// Skipped (this version) or snoozed.
+    held: Vec<UpdateRow>,
+    can_act: bool,
+}
+
+/// An update on the Updates page and what may be done with it.
+pub struct UpdateRow {
+    pub t: TargetView,
+    pub notify_only: bool,
+    pub skipped: bool,
+    pub snoozed_until: Option<String>,
+    pub active: Option<crate::run_pages::RunView>,
+}
+
+impl UpdateRow {
+    /// Approve, skip and snooze apply.
+    pub fn approvable(&self) -> bool {
+        !self.notify_only && self.active.is_none() && !self.t.files_missing()
+    }
+}
+
+/// Every target with an update, with its mode, skip, snooze and run.
+pub async fn update_rows(core: &Core) -> ApiResult<Vec<UpdateRow>> {
+    let rows = core
+        .with_conn(|c| {
+            let list = targets::list(
+                c,
+                Filter {
+                    server_id: None,
+                    updates_only: true,
+                },
+            )?;
+            let mut out = Vec::new();
+            for t in list {
+                let p = crate::runs::policy(c, t.id)?.unwrap_or_default();
+                let active = crate::runs::active_for(c, t.id)?;
+                out.push((t, p, active));
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(t, p, active)| UpdateRow {
+            notify_only: crate::runs::effective_mode(p.mode.as_deref(), &p.server_mode)
+                != crate::runs::APPROVE,
+            skipped: p.skipped,
+            snoozed_until: p.snoozed_until,
+            active: active.map(crate::run_pages::RunView::new),
+            t: TargetView::new(t),
+        })
+        .collect())
 }
 
 async fn updates(
@@ -222,17 +275,10 @@ async fn updates(
     user: CurrentUser,
     jar: SignedCookieJar,
 ) -> ApiResult<impl IntoResponse> {
-    let rows = core
-        .with_conn(|c| {
-            targets::list(
-                c,
-                Filter {
-                    server_id: None,
-                    updates_only: true,
-                },
-            )
-        })
-        .await?;
+    let (held, rows): (Vec<UpdateRow>, Vec<UpdateRow>) = update_rows(&core)
+        .await?
+        .into_iter()
+        .partition(|r| r.skipped || r.snoozed_until.is_some());
     let (ctx, jar) = PageCtx::build(
         &core,
         Some(&user),
@@ -246,7 +292,9 @@ async fn updates(
         jar,
         HtmlTemplate(UpdatesPage {
             ctx,
-            rows: rows.into_iter().map(TargetView::new).collect(),
+            rows,
+            held,
+            can_act: user.can_edit(),
         }),
     ))
 }
@@ -259,6 +307,20 @@ struct TargetPage {
     images: Vec<ImageView>,
     can_check: bool,
     back_href: String,
+    /// The update with its mode, skip, snooze and run.
+    row: UpdateRow,
+    /// The target's own mode ('' = the server's), the server's, health.
+    mode: String,
+    server_mode: String,
+    health: String,
+    runs: Vec<crate::run_pages::RunView>,
+    show_target: bool,
+}
+
+impl TargetPage {
+    pub fn mode_is(&self, m: &str) -> bool {
+        self.mode == m
+    }
 }
 
 async fn load(core: &Core, id: i64) -> ApiResult<Target> {
@@ -275,12 +337,25 @@ async fn target_page(
 ) -> ApiResult<impl IntoResponse> {
     let target = TargetView::new(load(&core, id).await?);
     let back_href = format!("/servers/{}", target.server_id);
-    let images = core
-        .with_conn(move |c| targets::images(c, id))
-        .await?
-        .into_iter()
-        .map(ImageView::new)
-        .collect();
+    let (images, policy, active) = core
+        .with_conn(move |c| {
+            Ok((
+                targets::images(c, id)?,
+                crate::runs::policy(c, id)?.unwrap_or_default(),
+                crate::runs::active_for(c, id)?,
+            ))
+        })
+        .await?;
+    let images = images.into_iter().map(ImageView::new).collect();
+    let runs = crate::run_pages::recent(&core, Some(id), 20).await?;
+    let row = UpdateRow {
+        notify_only: crate::runs::effective_mode(policy.mode.as_deref(), &policy.server_mode)
+            != crate::runs::APPROVE,
+        skipped: policy.skipped,
+        snoozed_until: policy.snoozed_until.clone(),
+        active: active.map(crate::run_pages::RunView::new),
+        t: TargetView::new(load(&core, id).await?),
+    };
     let (ctx, jar) =
         PageCtx::build(&core, Some(&user), &jar, target.name.clone(), "servers", "").await;
     Ok((
@@ -291,6 +366,15 @@ async fn target_page(
             images,
             can_check: user.can_edit(),
             back_href,
+            row,
+            mode: policy.mode.unwrap_or_default(),
+            server_mode: policy.server_mode,
+            health: policy
+                .health_seconds
+                .map(|h| h.to_string())
+                .unwrap_or_default(),
+            runs,
+            show_target: false,
         }),
     ))
 }

@@ -1,0 +1,70 @@
+{#- A run with its steps; swapped whole by the run page's live view. Needs: run, steps, can_act, can_roll_back. -#}
+{%- import "kit/macros.html" as m -%}
+<div class="stack">
+  {%- if run.needs_you() %}
+  {{ m::callout("danger", tr("runs.needs_you_help"), tr("runs.needs_you")) }}
+  {%- endif %}
+  <section class="card" aria-labelledby="run-title">
+    <div class="card-head">
+      <h2 class="card-title" id="run-title">{% if run.is_rollback %}{{ tr("runs.kind_rollback") }}{% else %}{{ tr("runs.kind_update") }}{% endif %}</h2>
+      <div class="toolbar">
+        <span class="pill pill-lg status-{{ run.status_class }}" data-status="{{ run.status }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</span>
+        {%- if can_act && run.active() && !run.cancel_requested %}
+        <form method="post" action="/runs/{{ run.id }}/cancel">
+          <button type="submit" class="btn btn-secondary btn-sm">{{ tr("runs.cancel") }}</button>
+        </form>
+        {%- endif %}
+        {%- if can_roll_back %}
+        <form method="post" action="/runs/{{ run.id }}/rollback" data-confirm="{{ tr("runs.rollback_q") }}" data-confirm-message="{{ tr("runs.rollback_msg") }}" data-confirm-label="{{ tr("runs.rollback") }}">
+          <button type="submit" class="btn btn-danger btn-sm">{{ tr("runs.rollback") }}</button>
+        </form>
+        {%- endif %}
+      </div>
+    </div>
+    <dl class="dl">
+      <div class="dl-row"><dt>{{ tr("targets.col_target") }}</dt><dd>{% if let Some(t) = run.target_id %}<a href="/targets/{{ t }}">{{ run.target_name }}</a>{% else %}{{ run.target_name }}{% endif %} <span class="muted">{{ run.kind_label }}</span></dd></div>
+      <div class="dl-row"><dt>{{ tr("updates.col_server") }}</dt><dd><a href="/servers/{{ run.server_id }}">{{ run.server_name }}</a></dd></div>
+      {%- if let Some(of) = run.rollback_of %}
+      <div class="dl-row"><dt>{{ tr("runs.rolls_back") }}</dt><dd><a href="/runs/{{ of }}">#{{ of }}</a></dd></div>
+      {%- else if !run.shown.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("targets.col_available") }}</dt><dd class="mono break">{{ run.shown }}</dd></div>
+      {%- endif %}
+      <div class="dl-row"><dt>{{ tr("runs.requested_by") }}</dt><dd>{{ run.requested_by }} · {{ m::time_ago(run.created_at) }}</dd></div>
+      {%- if let Some(at) = run.started_at %}
+      <div class="dl-row"><dt>{{ tr("runs.started") }}</dt><dd>{{ m::time_ago(at) }}</dd></div>
+      {%- endif %}
+      {%- if let Some(at) = run.finished_at %}
+      <div class="dl-row"><dt>{{ tr("runs.finished") }}</dt><dd>{{ m::time_ago(at) }}</dd></div>
+      {%- endif %}
+      {%- if run.cancel_requested && run.active() %}
+      <div class="dl-row"><dt>{{ tr("runs.cancel") }}</dt><dd>{{ tr("runs.cancel_pending") }}</dd></div>
+      {%- endif %}
+      {%- if !run.detail.is_empty() %}
+      <div class="dl-row"><dt>{{ tr("runs.detail") }}</dt><dd class="break">{{ run.detail }}</dd></div>
+      {%- endif %}
+    </dl>
+  </section>
+
+  <section class="card card-flush" aria-labelledby="steps-title">
+    <div class="card-head card-pad"><h2 class="card-title" id="steps-title">{{ tr("runs.steps") }}</h2></div>
+    {%- if steps.is_empty() %}
+    <div class="card-pad"><p class="help">{% if run.status == "queued" %}{{ tr("runs.waiting_for_agent") }}{% else %}{{ tr("runs.no_steps") }}{% endif %}</p></div>
+    {%- else %}
+    <div class="table-wrap">
+      <table class="table table-stack" id="steps">
+        <thead><tr><th>{{ tr("runs.col_step") }}</th><th>{{ tr("targets.col_status") }}</th><th>{{ tr("runs.col_duration") }}</th><th>{{ tr("runs.col_log") }}</th></tr></thead>
+        <tbody>
+          {%- for s in steps %}
+          <tr data-status="{{ s.status }}">
+            <td class="td-primary">{{ s.label }}</td>
+            <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ s.status_class }}"><span class="dot" aria-hidden="true"></span>{{ s.status_label }}</span></td>
+            <td data-label="{{ tr("runs.col_duration") }}" class="mono">{% if s.status == "running" %}…{% else %}{{ millis(s.duration_ms) }}{% endif %}</td>
+            <td data-label="{{ tr("runs.col_log") }}">{% if s.log.is_empty() %}–{% else %}<details{% if s.status == "failed" %} open{% endif %}><summary>{{ tr("runs.show_log") }}</summary><pre class="run-log">{{ s.log }}</pre></details>{% endif %}</td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+    {%- endif %}
+  </section>
+</div>

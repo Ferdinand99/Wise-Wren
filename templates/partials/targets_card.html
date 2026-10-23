@@ -1,4 +1,4 @@
-{#- A server's targets with their versions and status. Needs: server, targets, can_check, interval, inventory_at, inventory_error. -#}
+{#- A server's targets with their versions and status. Needs: server, targets, can_check, interval, mode, inventory_at, inventory_error. -#}
 {%- import "kit/macros.html" as m -%}
 <section class="card card-flush" id="targets-card" aria-labelledby="targets-title">
   <div class="card-head card-pad">
@@ -35,6 +35,19 @@
       </tbody>
     </table>
   </div>
+  {%- endif %}
+  {%- if can_check %}
+  <form method="post" action="/servers/{{ server.id }}/mode" class="card-pad cluster">
+    <div class="field">
+      <label class="label" for="f-server-mode">{{ tr("runs.server_mode") }}</label>
+      <select id="f-server-mode" name="mode">
+        <option value="approve"{% if mode == "approve" %} selected{% endif %}>{{ tr("runs.mode_approve") }}</option>
+        <option value="notify"{% if mode == "notify" %} selected{% endif %}>{{ tr("runs.mode_notify") }}</option>
+      </select>
+      <p class="help">{{ tr("runs.server_mode_help") }}</p>
+    </div>
+    <button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button>
+  </form>
   {%- endif %}
   {%- if can_check %}
   <form method="post" action="/servers/{{ server.id }}/interval" class="card-pad cluster">

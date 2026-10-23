@@ -99,8 +99,14 @@ pub fn apply(
         .map(i64::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    // A target being updated stays, even when an inventory taken mid-run
+    // missed it (its container is being recreated).
     tx.execute(
-        &format!("DELETE FROM targets WHERE server_id = ?1 AND id NOT IN ({keep})"),
+        &format!(
+            "DELETE FROM targets WHERE server_id = ?1 AND id NOT IN ({keep})
+               AND id NOT IN (SELECT target_id FROM runs
+                              WHERE status IN ('queued', 'running') AND target_id IS NOT NULL)"
+        ),
         [server_id],
     )?;
     tx.commit()
