@@ -54,9 +54,77 @@ pub async fn facts(socket: &str) -> Facts {
     facts
 }
 
+/// `POST path` with a JSON body on the socket (the agent's only API write:
+/// creating a container with the configuration of the one it replaces).
+/// Any 2xx answer is fine; its JSON (or null).
+pub async fn post_json(socket: &str, path: &str, body: &Value) -> Result<Value, String> {
+    let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+    let raw = tokio::time::timeout(
+        Duration::from_secs(60),
+        request(socket, "POST", path, Some(&bytes)),
+    )
+    .await
+    .map_err(|_| "Docker didn't answer within 60 s".to_string())??;
+    let (status, body) = split_response(&raw)?;
+    if !status
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .starts_with('2')
+    {
+        return Err(format!(
+            "Docker answered {}: {}",
+            status.trim(),
+            String::from_utf8_lossy(&body).trim()
+        ));
+    }
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Value::Null);
+    }
+    serde_json::from_slice(&body).map_err(|e| format!("Docker sent no JSON for {path}: {e}"))
+}
+
+/// Runs the `docker` CLI (argv, never a shell) against `socket`; its
+/// output on success, else the exit status and the end of what it printed.
+pub async fn cli(socket: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
+    let host = format!("unix://{socket}");
+    let mut all = vec!["-H", host.as_str()];
+    all.extend_from_slice(args);
+    let child = tokio::process::Command::new("docker")
+        .args(&all)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .output();
+    let out = tokio::time::timeout(timeout, child)
+        .await
+        .map_err(|_| {
+            format!(
+                "docker {} took longer than {} s",
+                args.first().unwrap_or(&""),
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|e| format!("can't start docker: {e}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if out.status.success() {
+        Ok(text.trim().to_string())
+    } else {
+        Err(format!(
+            "docker {} failed ({}): {}",
+            args.first().unwrap_or(&""),
+            out.status,
+            crate::snapshot::tail(text.trim(), 600)
+        ))
+    }
+}
+
 /// `GET path` on the socket, as JSON.
 pub async fn get_json(socket: &str, path: &str) -> Result<Value, String> {
-    let raw = tokio::time::timeout(TIMEOUT, request(socket, path))
+    let raw = tokio::time::timeout(TIMEOUT, request(socket, "GET", path, None))
         .await
         .map_err(|_| format!("Docker didn't answer within {} s", TIMEOUT.as_secs()))??;
     let body = parse_response(&raw)?;
@@ -64,15 +132,33 @@ pub async fn get_json(socket: &str, path: &str) -> Result<Value, String> {
 }
 
 #[cfg(unix)]
-async fn request(socket: &str, path: &str) -> Result<Vec<u8>, String> {
+async fn request(
+    socket: &str,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let mut stream = tokio::net::UnixStream::connect(socket)
         .await
         .map_err(|e| format!("can't open {socket}: {e}"))?;
-    let req = format!("GET {path} HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n");
+    let mut req = match body {
+        Some(b) => format!(
+            "{method} {path} HTTP/1.0\r\nHost: docker\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            b.len()
+        )
+        .into_bytes(),
+        None => {
+            format!("{method} {path} HTTP/1.0\r\nHost: docker\r\nConnection: close\r\n\r\n")
+                .into_bytes()
+        }
+    };
+    if let Some(b) = body {
+        req.extend_from_slice(b);
+    }
     stream
-        .write_all(req.as_bytes())
+        .write_all(&req)
         .await
         .map_err(|e| format!("can't write to {socket}: {e}"))?;
     let mut out = Vec::new();
@@ -85,12 +171,26 @@ async fn request(socket: &str, path: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(unix))]
-async fn request(socket: &str, _path: &str) -> Result<Vec<u8>, String> {
+async fn request(
+    socket: &str,
+    _method: &str,
+    _path: &str,
+    _body: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
     Err(format!("{socket}: Unix sockets need Linux"))
 }
 
 /// The body of a `200` answer (chunked or not).
 pub fn parse_response(raw: &[u8]) -> Result<Vec<u8>, String> {
+    let (status, body) = split_response(raw)?;
+    if status.split_whitespace().nth(1).unwrap_or_default() != "200" {
+        return Err(format!("Docker answered {}", status.trim()));
+    }
+    Ok(body)
+}
+
+/// The status line and the (de-chunked) body of any answer.
+fn split_response(raw: &[u8]) -> Result<(String, Vec<u8>), String> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -98,20 +198,17 @@ pub fn parse_response(raw: &[u8]) -> Result<Vec<u8>, String> {
     let head = String::from_utf8_lossy(&raw[..split]);
     let body = &raw[split + 4..];
     let mut lines = head.lines();
-    let status = lines.next().unwrap_or_default();
-    let code = status.split_whitespace().nth(1).unwrap_or_default();
-    if code != "200" {
-        return Err(format!("Docker answered {}", status.trim()));
-    }
+    let status = lines.next().unwrap_or_default().to_string();
     let chunked = lines.any(|l| {
         let l = l.to_ascii_lowercase();
         l.starts_with("transfer-encoding:") && l.contains("chunked")
     });
-    if chunked {
-        dechunk(body)
+    let body = if chunked {
+        dechunk(body)?
     } else {
-        Ok(body.to_vec())
-    }
+        body.to_vec()
+    };
+    Ok((status, body))
 }
 
 fn dechunk(mut body: &[u8]) -> Result<Vec<u8>, String> {

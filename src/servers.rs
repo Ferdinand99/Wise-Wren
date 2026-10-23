@@ -147,6 +147,8 @@ struct OverviewPage {
     rows: Vec<ServerView>,
     counts: Counts,
     can_add: bool,
+    runs: Vec<crate::run_pages::RunView>,
+    show_target: bool,
 }
 
 #[derive(Template)]
@@ -155,6 +157,8 @@ struct OverviewBody {
     rows: Vec<ServerView>,
     counts: Counts,
     can_add: bool,
+    runs: Vec<crate::run_pages::RunView>,
+    show_target: bool,
 }
 
 #[derive(Template)]
@@ -192,6 +196,8 @@ struct DetailPage {
     can_check: bool,
     /// The server's check interval (hours).
     interval: i64,
+    /// The server's mode (approve or notify).
+    mode: String,
     inventory_at: Option<String>,
     inventory_error: String,
 }
@@ -237,6 +243,8 @@ async fn overview(
             counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add: user.is_admin(),
+            runs: crate::run_pages::recent(&core, None, RECENT_RUNS).await?,
+            show_target: true,
         }),
     ))
 }
@@ -393,12 +401,12 @@ async fn render_detail(
     let delete_url = format!("/servers/{id}");
     let delete_question = i18n::tf("servers.delete_q", &[("name", &server.name)]);
     let targets = crate::pages::server_targets(core, id).await?;
-    let (interval, inventory_at, inventory_error) = core
+    let (interval, inventory_at, inventory_error, mode) = core
         .with_conn(move |c| {
             c.query_row(
-                "SELECT check_interval_hours, inventory_at, inventory_error FROM servers WHERE id = ?1",
+                "SELECT check_interval_hours, inventory_at, inventory_error, mode FROM servers WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
         })
         .await?;
@@ -411,6 +419,7 @@ async fn render_detail(
         targets,
         can_check: user.can_edit(),
         interval,
+        mode,
         inventory_at,
         inventory_error,
     };
@@ -505,6 +514,9 @@ async fn remove(
 // Live updates
 // ---------------------------------------------------------------------------
 
+/// Runs on the Overview.
+pub const RECENT_RUNS: i64 = 8;
+
 /// At most this many live views at once.
 static STREAMS: StreamLimit = StreamLimit::new(64);
 
@@ -529,6 +541,8 @@ async fn render_view(core: Core, view: View, can_add: bool) -> Result<String, Ap
             counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add,
+            runs: crate::run_pages::recent(&core, None, RECENT_RUNS).await?,
+            show_target: true,
         }
         .render(),
         View::Servers => ListPartial { rows, can_add }.render(),
@@ -585,6 +599,7 @@ pub fn spawn_watcher(wren: Wren) {
         let mut tick = tokio::time::interval(WATCH_EVERY);
         loop {
             tick.tick().await;
+            crate::run_notify::check_agents(&wren).await;
             if check_online(&wren, &mut online).await == Some(true) {
                 let _ = wren.changes.send(());
             }

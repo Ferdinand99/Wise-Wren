@@ -1,0 +1,17 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+
+{% call m::page_header(tr1("runs.title_short", "id", body.run.id), body.run.kind_label, back_href.as_str(), body.run.target_name.as_str()) %}
+  {{ m::live() }}
+{% endcall %}
+
+<div id="run-body" hx-ext="sse" sse-connect="/runs/{{ body.run.id }}/live" sse-swap="run-updated" hx-swap="innerHTML">
+  {{ body|safe }}
+</div>
+{% endblock %}

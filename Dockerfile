@@ -51,8 +51,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 # "Decision: agent runtime form"). It carries what later phases run on the
 # host's Docker: the Docker CLI with Compose (>= 2.24.4) for Compose and
 # script stacks, bash/curl/openssl/coreutils/jq for update scripts such as
-# Fluxer's installer and reflink snapshots (GNU cp), and PHP 8.4 for Unraid's
-# own update_container (no gettext extension: it clashes with Unraid's _()).
+# Fluxer's installer and reflink snapshots (GNU cp), attr (getfattr: an Unraid
+# share's real disk) and btrfs-progs (subvolume snapshots), and PHP 8.4 for
+# Unraid's own update_container (no gettext extension: it clashes with Unraid's _()).
 FROM alpine:${ALPINE_VERSION} AS agent
 
 ARG VERSION=0.0.0
@@ -71,7 +72,7 @@ LABEL org.opencontainers.image.title="Wise Wren agent" \
 
 RUN apk add --no-cache ca-certificates \
         docker-cli docker-cli-compose \
-        bash curl openssl coreutils jq \
+        bash curl openssl coreutils jq attr btrfs-progs \
         php84 php84-curl php84-dom php84-simplexml php84-xml php84-mbstring \
         php84-posix php84-session php84-ctype \
     && ln -sf /usr/bin/php84 /usr/bin/php

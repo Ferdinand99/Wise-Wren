@@ -12,9 +12,10 @@
   <a href="https://hedgerow.tools/Wise-Wren/"><img src="https://img.shields.io/badge/website-hedgerow.tools%2FWise--Wren-black.svg" alt="Website"></a>
 </p>
 
-> **Status: early development, nothing to install yet.** The skeleton runs: sign-in, settings, servers and their
-> agents, which report in and show as online. Update checks and update runs come next; there is no release or
-> published image yet. The design is in [`docs/design.md`](docs/design.md), the spike's results in
+> **Status: early development, nothing to install yet.** Wren lists what runs on each server, checks for new
+> versions and runs the updates you approve, with a snapshot, a health check and an automatic rollback.
+> Scheduling, automatic mode and the Vigilant Vole integration come next; there is no release or published image
+> yet. The design is in [`docs/design.md`](docs/design.md), the spike's results in
 > [`docs/spike-findings.md`](docs/spike-findings.md). Watch or star the repository to hear about the first
 > release.
 >

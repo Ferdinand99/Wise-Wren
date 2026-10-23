@@ -2,10 +2,11 @@
 //! without surprises (docs/design.md).
 //!
 //! Sign-in, users, API tokens, Security, General and the API reference come
-//! from vole-kit. Phase 2 adds servers with their agents (registration,
-//! agent tokens, heartbeats, online status on live pages), the notification
-//! channels and the REST/MCP stubs. Agents only report; Wren sends them no
-//! jobs yet (§8).
+//! from vole-kit. Wren adds servers with their agents (registration, agent
+//! tokens, heartbeats, online status), targets and version checks, and
+//! update runs: an editor approves one exact version, the agent fetches it
+//! as a job, checks it against its own `agent.toml` and runs it with a
+//! snapshot, a health check and an automatic rollback (§6, §8).
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +21,9 @@ pub mod pages;
 pub mod product;
 pub mod registries;
 pub mod registry;
+pub mod run_notify;
+pub mod run_pages;
+pub mod runs;
 pub mod server;
 pub mod servers;
 pub mod targets;
@@ -61,6 +65,10 @@ pub struct Wren {
     pub check_lock: Arc<tokio::sync::Mutex<()>>,
     /// GitHub releases (release notes, version sources), cached.
     pub github: Arc<versions::GitHub>,
+    /// Wakes agents waiting for a job (a run was approved or finished).
+    pub jobs: Arc<tokio::sync::Notify>,
+    /// Job polls and step reports per server ([`runs::RATE`]).
+    pub job_budgets: Arc<TokenBuckets<i64>>,
 }
 
 /// Installs the configuration, opens and migrates the database in
@@ -102,6 +110,8 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         checks: Arc::new(tokio::sync::Notify::new()),
         check_lock: Arc::new(tokio::sync::Mutex::new(())),
         github: Arc::new(versions::GitHub::new("https://api.github.com")),
+        jobs: Arc::new(tokio::sync::Notify::new()),
+        job_budgets: Arc::new(TokenBuckets::new()),
     })
 }
 
@@ -113,6 +123,7 @@ pub fn router(wren: Wren) -> Router {
         .merge(servers::router())
         .merge(channels::router())
         .merge(pages::router())
+        .merge(run_pages::router())
         .merge(registries::router())
         .merge(api::router())
         .merge(kit_pages::router())
@@ -121,6 +132,9 @@ pub fn router(wren: Wren) -> Router {
     let machines = Router::new()
         .route("/api/agent/v1/heartbeat", post(agent_api::heartbeat))
         .route(inventory::PATH, post(inventory::receive))
+        .route(runs::JOBS_PATH, get(runs::jobs))
+        .route("/api/agent/v1/runs/{id}/steps", post(runs::step))
+        .route("/api/agent/v1/runs/{id}/finish", post(runs::finish))
         .route("/mcp", post(api::mcp).get(vole_kit::mcp::not_offered))
         .route_layer(map_response(headers::machine));
     let public = Router::new()

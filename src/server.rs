@@ -14,6 +14,8 @@ pub async fn run(config: Config) -> Result<(), crate::StartError> {
     crate::servers::spawn_watcher(wren.clone());
     // Version checks on each target's interval, and on "Check now".
     crate::checks::spawn_scheduler(wren.clone());
+    // Closes runs whose agent went silent.
+    crate::runs::spawn_watchdog(wren.clone());
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(addr)

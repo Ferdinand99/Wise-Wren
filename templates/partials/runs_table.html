@@ -1,0 +1,21 @@
+{#- A list of runs. Needs: runs, show_target. -#}
+{%- import "kit/macros.html" as m -%}
+<div class="table-wrap">
+  <table class="table table-stack table-hover" id="runs">
+    <thead><tr><th>{{ tr("runs.col_run") }}</th>{% if show_target %}<th>{{ tr("targets.col_target") }}</th>{% endif %}<th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th><th>{{ tr("runs.requested_by") }}</th><th>{{ tr("runs.col_when") }}</th></tr></thead>
+    <tbody>
+      {%- for r in runs %}
+      <tr data-status="{{ r.status }}">
+        <td class="td-primary"><a href="/runs/{{ r.id }}">#{{ r.id }}</a> <span class="muted">{% if r.is_rollback %}{{ tr("runs.kind_rollback") }}{% else %}{{ tr("runs.kind_update") }}{% endif %}</span></td>
+        {%- if show_target %}
+        <td data-label="{{ tr("targets.col_target") }}">{% if let Some(t) = r.target_id %}<a href="/targets/{{ t }}">{{ r.target_name }}</a>{% else %}{{ r.target_name }}{% endif %} <span class="muted">{{ r.server_name }}</span></td>
+        {%- endif %}
+        <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if r.shown.is_empty() %}–{% else %}{{ r.shown }}{% endif %}</td>
+        <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ r.status_class }}"><span class="dot" aria-hidden="true"></span>{{ r.status_label }}</span></td>
+        <td data-label="{{ tr("runs.requested_by") }}">{{ r.requested_by }}</td>
+        <td data-label="{{ tr("runs.col_when") }}">{% if let Some(at) = r.finished_at %}{{ m::time_ago(at) }}{% else %}{{ m::time_ago(r.created_at) }}{% endif %}</td>
+      </tr>
+      {%- endfor %}
+    </tbody>
+  </table>
+</div>

@@ -1,7 +1,10 @@
 //! `wren-agent`: runs on each Docker host and connects **out** to Wise Wren
 //! (docs/design.md §3, §8). It checks its `agent.toml`, reads
-//! Docker's `/version` and `/info` and sends a heartbeat every 30 seconds;
-//! it changes nothing and takes no orders.
+//! Docker's `/version` and `/info` and sends a heartbeat every 30 seconds
+//! and an inventory now and then. Beside them it waits for jobs
+//! ([`jobs`]): updates and rollbacks someone approved in Wren, which it
+//! checks against its own `agent.toml` and Docker before it runs them
+//! ([`run`]).
 
 #![forbid(unsafe_code)]
 
@@ -9,6 +12,9 @@ pub mod config;
 pub mod discover;
 pub mod docker;
 pub mod heartbeat;
+pub mod jobs;
+pub mod run;
+pub mod snapshot;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -82,6 +88,7 @@ pub async fn run(
         "wren-agent started"
     );
     tokio::pin!(stop);
+    let job_task = tokio::spawn(jobs_loop(config.clone()));
     let mut connected = false;
     let mut failures = 0u32;
     loop {
@@ -123,8 +130,41 @@ pub async fn run(
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
             () = &mut stop => {
+                job_task.abort();
                 tracing::info!("stopped");
                 return Ok(());
+            }
+        }
+    }
+}
+
+/// Waits for jobs and runs them, one at a time.
+async fn jobs_loop(config: Arc<Config>) {
+    let client = match jobs::JobClient::new(&config.server, &config.token) {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("no job channel: {err}");
+            return;
+        }
+    };
+    let mut failures = 0u32;
+    loop {
+        match client.poll().await {
+            Ok(jobs::Polled::Nothing) => failures = 0,
+            Ok(jobs::Polled::Job(Ok(job))) => {
+                failures = 0;
+                run::handle(&config, &client, job).await;
+            }
+            Ok(jobs::Polled::Job(Err((run, why)))) => {
+                tracing::warn!(run, "{why}");
+                let _ = client.finish(run, "refused", &why).await;
+            }
+            Err(SendError::Refused(_)) => tokio::time::sleep(REFUSED_WAIT).await,
+            Err(SendError::Failed(msg)) => {
+                failures += 1;
+                let wait = backoff(failures);
+                tracing::debug!(retry_in = ?wait, "job poll: {msg}");
+                tokio::time::sleep(wait).await;
             }
         }
     }

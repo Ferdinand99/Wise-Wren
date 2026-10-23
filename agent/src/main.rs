@@ -53,11 +53,20 @@ fn main() -> ExitCode {
         }
     };
     if check {
+        let updates = match &config.updates.allow {
+            None => "every target may be updated once approved in Wren".to_string(),
+            Some(allow) => format!("updates only for {}", allow.join(", ")),
+        };
         println!(
-            "{}: OK ({} roots, {} script stacks)",
+            "{}: OK ({} roots, {} script stacks; {updates}{})",
             path.display(),
             config.roots.len(),
-            config.script_stacks.len()
+            config.script_stacks.len(),
+            if config.updates.deny.is_empty() {
+                String::new()
+            } else {
+                format!(", never for {}", config.updates.deny.join(", "))
+            }
         );
         return ExitCode::SUCCESS;
     }

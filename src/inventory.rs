@@ -137,6 +137,12 @@ pub fn clip(s: &str) -> String {
         .collect()
 }
 
+/// `<name>-wren-old-<run>`: the container an update renamed for its rollback.
+pub fn is_kept_aside(name: &str) -> bool {
+    name.rsplit_once("-wren-old-")
+        .is_some_and(|(_, run)| !run.is_empty() && run.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn image_of(c: &Container) -> PlannedImage {
     let local = ImageRef::parse(&c.image)
         .ok()
@@ -177,7 +183,8 @@ pub fn plan(inv: &Inventory) -> Vec<Planned> {
     let mut by_project: BTreeMap<&str, Vec<&Container>> = BTreeMap::new();
     let mut out = Vec::new();
     for c in &inv.containers {
-        if c.name.trim().is_empty() {
+        // The old container an update keeps aside for its rollback.
+        if c.name.trim().is_empty() || is_kept_aside(&c.name) {
             continue;
         }
         match c.labels.get(PROJECT_LABEL).filter(|p| !p.is_empty()) {

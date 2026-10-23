@@ -33,6 +33,15 @@
 //! `scan_interval` (default `"30m"`) is how often the agent sends its
 //! inventory on its own.
 //!
+//! ```toml
+//! # Optional: which targets Wren may update (globs on the target's name).
+//! # Without this section every target may be updated once someone approves
+//! # it in Wren; a name matching `deny` is refused even when `allow` matches.
+//! [updates]
+//! allow = ["ww-*"]
+//! deny = ["ww-keep-*"]
+//! ```
+//!
 //! Every problem names the field it is about; the agent refuses to start
 //! with any of them.
 
@@ -78,6 +87,60 @@ pub struct Config {
     pub docker_socket: String,
     /// How often the agent sends its inventory on its own.
     pub scan_interval: Duration,
+    /// Which targets Wren may update (`[updates]`).
+    pub updates: UpdatePolicy,
+}
+
+/// `[updates]`: globs on target names. `allow: None` (no section, or no
+/// `allow` key) allows every name; `deny` always wins.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UpdatePolicy {
+    pub allow: Option<Vec<String>>,
+    pub deny: Vec<String>,
+}
+
+impl UpdatePolicy {
+    /// Whether a target with this name may be updated.
+    pub fn allows(&self, name: &str) -> bool {
+        if self.deny.iter().any(|g| glob(g, name)) {
+            return false;
+        }
+        match &self.allow {
+            None => true,
+            Some(allow) => allow.iter().any(|g| glob(g, name)),
+        }
+    }
+}
+
+/// `*` (any run of characters) and `?` (one character); everything else
+/// literal.
+pub fn glob(pattern: &str, name: &str) -> bool {
+    let (p, n): (Vec<char>, Vec<char>) = (pattern.chars().collect(), name.chars().collect());
+    let (mut pi, mut ni) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ni));
+            pi += 1;
+        } else if let Some((sp, sn)) = star {
+            pi = sp + 1;
+            ni = sn + 1;
+            star = Some((sp, sn + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}
+
+fn valid_glob(g: &str) -> bool {
+    !g.is_empty()
+        && g.len() <= 128
+        && g.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.*?".contains(&b))
 }
 
 /// Where a script stack's versions come from: one source of the newest
@@ -121,6 +184,15 @@ struct RawConfig {
     script_stack: Vec<RawStack>,
     docker_socket: Option<String>,
     scan_interval: Option<String>,
+    updates: Option<RawUpdates>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUpdates {
+    allow: Option<Vec<String>>,
+    #[serde(default)]
+    deny: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -474,8 +546,28 @@ impl Config {
             },
         };
 
+        let raw_updates = raw.updates.unwrap_or_default();
+        let mut globs = |list: &[String], field: &str| {
+            for (i, g) in list.iter().enumerate() {
+                if !valid_glob(g) {
+                    problems.push(format!(
+                        "updates.{field}[{i}] \"{g}\": use a container or stack name, with * and ? as wildcards"
+                    ));
+                }
+            }
+        };
+        if let Some(allow) = &raw_updates.allow {
+            globs(allow, "allow");
+        }
+        globs(&raw_updates.deny, "deny");
+        let updates = UpdatePolicy {
+            allow: raw_updates.allow,
+            deny: raw_updates.deny,
+        };
+
         if problems.is_empty() {
             Ok(Config {
+                updates,
                 server,
                 token,
                 roots,
@@ -733,6 +825,44 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
         )
         .unwrap_err();
         assert!(err.to_string().contains("scan_interval \"10s\""), "{err}");
+    }
+
+    #[test]
+    fn update_allowlist_globs_and_deny_wins() {
+        let c = Config::from_parts(Some(&base()), no_env).unwrap();
+        assert!(c.updates.allows("postiz"), "no section allows all");
+        let text = format!(
+            "{}[updates]\nallow = [\"ww-test-*\", \"exact\"]\ndeny = [\"ww-test-keep?\"]\n",
+            base()
+        );
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert!(c.updates.allows("ww-test-container"));
+        assert!(c.updates.allows("exact"));
+        assert!(!c.updates.allows("exactly"));
+        assert!(!c.updates.allows("postiz"));
+        assert!(!c.updates.allows("Newt"));
+        assert!(!c.updates.allows("ww-test-keep1"), "deny wins");
+        assert!(c.updates.allows("ww-test-keep12"));
+        let text = format!("{}[updates]\ndeny = [\"*\"]\n", base());
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert!(!c.updates.allows("anything"));
+        assert!(glob("a*b*c", "aXXbYc") && !glob("a*b", "ab_") && glob("*", ""));
+    }
+
+    #[test]
+    fn bad_globs_name_the_field() {
+        let text = format!(
+            "{}[updates]\nallow = [\"ok\", \"/etc\"]\ndeny = [\"\"]\n",
+            base()
+        );
+        let err = Config::from_parts(Some(&text), no_env)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("updates.allow[1] \"/etc\""), "{err}");
+        assert!(err.contains("updates.deny[0]"), "{err}");
+        let text = format!("{}[updates]\nalow = []\n", base());
+        let err = Config::from_parts(Some(&text), no_env).unwrap_err();
+        assert!(err.to_string().contains("alow"), "{err}");
     }
 
     #[test]

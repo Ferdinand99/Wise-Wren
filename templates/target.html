@@ -72,6 +72,62 @@
   </section>
   {%- endif %}
 
+  {%- if target.is_update() || row.active.is_some() %}
+  <section class="card" aria-labelledby="update-title">
+    <div class="card-head"><h2 class="card-title" id="update-title">{{ tr("runs.update_card") }}</h2></div>
+    {%- if let Some(run) = row.active %}
+    <p><a href="/runs/{{ run.id }}" class="pill status-{{ run.status_class }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</a> <a href="/runs/{{ run.id }}">{{ tr1("runs.title_short", "id", run.id) }}</a></p>
+    {%- else if row.notify_only %}
+    <p class="help">{{ tr("runs.notify_only_help") }}</p>
+    {%- else if target.files_missing() %}
+    <p class="help">{{ tr("runs.err_files_missing") }}</p>
+    {%- else if row.skipped %}
+    <p class="help">{{ tr("updates.skipped") }}</p>
+    {%- if can_check %}<form method="post" action="/targets/{{ target.id }}/resume"><button type="submit" class="btn btn-secondary btn-sm">{{ tr("updates.resume") }}</button></form>{% endif %}
+    {%- else %}
+    {%- if let Some(until) = row.snoozed_until %}<p class="help">{{ tr1("updates.snoozed_until", "until", until) }}</p>{% endif %}
+    {%- if can_check %}
+    <form method="post" action="/targets/{{ target.id }}/approve" class="cluster">
+      <input type="hidden" name="key" value="{{ target.available_key }}">
+      <button type="submit" class="btn btn-primary btn-sm">{{ tr("updates.approve") }}</button>
+      <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/skip">{{ tr("updates.skip") }}</button>
+      <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/snooze" name="hours" value="24">{{ tr("updates.snooze_day") }}</button>
+      <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/snooze" name="hours" value="168">{{ tr("updates.snooze_week") }}</button>
+    </form>
+    <p class="help">{{ tr("runs.approve_help") }}</p>
+    {%- endif %}
+    {%- endif %}
+  </section>
+  {%- endif %}
+
+  <section class="card card-flush" aria-labelledby="history-title">
+    <div class="card-head card-pad"><h2 class="card-title" id="history-title">{{ tr("runs.history") }}</h2></div>
+    {%- if runs.is_empty() %}
+    <div class="card-pad"><p class="help">{{ tr("runs.history_empty") }}</p></div>
+    {%- else %}
+    {% include "partials/runs_table.html" %}
+    {%- endif %}
+  </section>
+
+  {%- if can_check %}
+  <section class="card" aria-labelledby="policy-title">
+    <div class="card-head"><h2 class="card-title" id="policy-title">{{ tr("runs.policy") }}</h2></div>
+    <form method="post" action="/targets/{{ target.id }}/policy" class="stack">
+      <div class="field">
+        <label class="label" for="f-mode">{{ tr("runs.mode") }}</label>
+        <select id="f-mode" name="mode">
+          <option value=""{% if mode_is("") %} selected{% endif %}>{% if server_mode == "notify" %}{{ tr("runs.mode_server_notify") }}{% else %}{{ tr("runs.mode_server_approve") }}{% endif %}</option>
+          <option value="approve"{% if mode_is("approve") %} selected{% endif %}>{{ tr("runs.mode_approve") }}</option>
+          <option value="notify"{% if mode_is("notify") %} selected{% endif %}>{{ tr("runs.mode_notify") }}</option>
+        </select>
+        <p class="help">{{ tr("runs.mode_help") }}</p>
+      </div>
+      {{ m::field_number("health_seconds", tr("runs.health"), health, tr("runs.seconds"), "5", "3600", "1", tr("runs.health_help")) }}
+      <div><button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button></div>
+    </form>
+  </section>
+  {%- endif %}
+
   {%- if can_check %}
   <section class="card" aria-labelledby="interval-title">
     <div class="card-head"><h2 class="card-title" id="interval-title">{{ tr("targets.interval") }}</h2></div>
