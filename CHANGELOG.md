@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.2.1...v0.3.0) (2026-10-23)
+
+
+### Features
+
+* sign in with passkeys (vole-kit 0.4) ([#15](https://github.com/Ferdinand99/Wise-Wren/issues/15)) ([f68fe38](https://github.com/Ferdinand99/Wise-Wren/commit/f68fe3839fda6af28bab3355eed2dfb0ba42bd1b))
+
 ## [0.2.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.2.0...v0.2.1) (2026-10-23)
 
 

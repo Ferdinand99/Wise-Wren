@@ -23,7 +23,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 name = "wise-wren"
 # release-please bumps this and the agent's (release-please-config.json);
 # 0.1.0 is the first release.
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
