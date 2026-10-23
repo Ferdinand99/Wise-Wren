@@ -6,7 +6,7 @@ Wren has two parts:
 - **an agent** (`ghcr.io/ferdinand99/wise-wren-agent`) on every Docker host Wren looks after, including the one the
   server runs on. Adding agents is in [Adding an agent](agent.md).
 
-v0.1 is an early release: both are Docker images for amd64 and arm64. Static binaries and a Linux installer come
+Wren is an early release: both are Docker images for amd64 and arm64. Static binaries and a Linux installer come
 later. Wren is tested on Unraid 7 (the owner's two servers); other Linux Docker hosts are best-effort for now.
 
 ## Docker Compose

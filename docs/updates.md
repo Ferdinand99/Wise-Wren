@@ -38,7 +38,7 @@ Updates page, target page, `POST /api/v1/targets/{id}/approve` or the MCP tool `
 - Several targets can be approved together; one run at a time per server.
 - **Skip** hides this version (a newer one shows again); **snooze** hides the update for a day or a week; **Show
   again** undoes both.
-- Wren never updates itself, its agents or Vigilant Vole in v0.1; their pages say so.
+- Wren never updates itself, its agents or Vigilant Vole yet; their pages say so.
 - Stacks whose files the agent can't reach can't be approved.
 
 ## Scheduled updates

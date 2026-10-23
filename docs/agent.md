@@ -149,5 +149,5 @@ edit an agent's `agent.toml` could then make the server fetch addresses on its o
 
 ## Upgrading the agent
 
-Wren doesn't update its own agents (or itself, or Vigilant Vole) in v0.1: their targets show the new version but
+Wren doesn't update its own agents (or itself, or Vigilant Vole) yet: their targets show the new version but
 can't be approved. Pull the new image and recreate the container (Unraid: "Check for updates" → apply).

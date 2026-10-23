@@ -12,7 +12,7 @@
   <a href="https://hedgerow.tools/Wise-Wren/"><img src="https://img.shields.io/badge/website-hedgerow.tools%2FWise--Wren-black.svg" alt="Website"></a>
 </p>
 
-> **Status: v0.1, an early release (Docker images only).** Wren lists what runs on each server (containers, Unraid
+> **Status: early release (Docker images only).** Wren lists what runs on each server (containers, Unraid
 > template containers, Compose stacks and script-updated stacks), checks for new versions and updates what you
 > approve, now or at a time you choose, with a snapshot, a health check and an automatic rollback. Automatic
 > updates inside a window, the [Vigilant Vole](https://hedgerow.tools/Vigilant-Vole/) integration (maintenance
@@ -100,7 +100,7 @@ for that host. On **Unraid**, install **Wise Wren** and **Wise Wren Agent** from
 | Snapshot before, health check after, automatic rollback | Notifications to ~40 channels |
 | A history of every run, step by step | REST API and MCP tools for everything the web UI can do |
 
-Most of the table is in v0.1; static binaries, a Linux installer and wider testing on other Linux hosts come before
+Most of the table is in the early releases; static binaries, a Linux installer and wider testing on other Linux hosts come before
 v1.0. Not in v1: the iOS app (planned later), updating Unraid OS, plugins, VMs, LXC or Kubernetes, building images
 from source, and offsite backups (Wren's snapshots are short-lived rollback points, not backups). See
 [`docs/design.md`](docs/design.md) for the full scope and the phases.
