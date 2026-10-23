@@ -98,6 +98,19 @@ him, and updates. He stops the daily manual check and stops using the Unraid but
   token per agent, long-poll or WebSocket for jobs, results posted back. It talks to the local Docker
   socket, reads/writes the data paths it's given, and runs only the scripts defined in its own local
   config (§8).
+  **Runtime form (decided by the Phase 1 spike, `docs/spike-findings.md`):** the agent runs as a
+  **container, not privileged and with no added capabilities by default**. It mounts:
+  - `/var/run/docker.sock`;
+  - every allowed data root and stack directory **at the identical host path** (e.g.
+    `/mnt/cache/appdata:/mnt/cache/appdata`), because the daemon resolves Compose bind paths on the
+    host, and a different path breaks script stacks (Fluxer's update failed with exit 6);
+  - on Unraid also `/usr/local/emhttp` (ro), `/var/local/emhttp` (rw), `/boot/config` (rw) and
+    `/var/lib/docker` (rw, for `unraid-update-status.json`), so it can run Unraid's own
+    `update_container <name>` for template containers. The image ships PHP 8.4 for that (no `gettext`
+    extension, `short_open_tag=On`).
+  The image also carries `docker-cli` + Compose ≥ 2.24.4, `sh`, `bash`, `curl`, `openssl` and GNU
+  coreutils (`cp --reflink`). `CAP_SYS_ADMIN` is an opt-in, needed only to delete btrfs subvolume
+  snapshots.
 - **Identifiers:** product "Wise Wren", short name "Wren", slug `wren`, cookies `ww_session` etc.,
   token prefix `ww_`, agent token prefix `wwa_`, env prefix `WW`, user agent `WiseWren/<version>`,
   default port 3003.
@@ -279,7 +292,19 @@ more before v1.0. *(Designer's call.)*
 ## 14. Left to the builder
 
 - The agent protocol details (long-poll vs WebSocket), reusing Vigilant Vole's agent code where it fits.
-- How Compose working directories are found for stacks started outside Wren, and what to do when the
-  files aren't reachable from the agent.
-- The exact snapshot method per filesystem, decided by the Phase 1 spike.
+- ~~How Compose working directories are found~~ *Settled by the spike:* from the container labels
+  `com.docker.compose.project.working_dir` and `…config_files`. The files count as reachable only when
+  that path exists at the same path inside the agent. Otherwise the stack is shown as "files not
+  reachable: mount <working_dir> into the agent" and is notify-only.
+- ~~The exact snapshot method per filesystem~~ *Settled by the spike:* (1) a btrfs **subvolume**
+  target with `CAP_SYS_ADMIN` → `btrfs subvolume snapshot -r`, restore by swap; (2) otherwise a
+  **reflink copy** (`FICLONE`; btrfs, xfs `reflink=1`) on the real pool/disk path, which takes
+  0.1–0.2 s for 2 GB with no capability needed; (3) otherwise a plain hard-link-preserving copy
+  after a free-space check; ZFS is treated as (3) until tested. `/mnt/user/…` (shfs) cannot reflink,
+  so the agent resolves it to `/mnt/cache|<pool>|diskN/…` first (`getfattr -n system.LOCATIONS`).
+  Tower's `appdata` is not a subvolume, so Tower uses reflink copies.
+- *Settled by the spike:* the agent's runtime form (§3), the Unraid template update method (Unraid's
+  `update_container`, verified by Wren afterwards; fallback: an API recreate that drops the old
+  image's defaults and writes Unraid's status entry), and the registry check (anonymous index-first
+  manifest `HEAD`, compared with the running image's `RepoDigests`).
 - Data model and table names.
