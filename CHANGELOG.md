@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.1.0...v0.2.0) (2026-10-23)
+
+
+### Features
+
+* move to vole-kit 0.3 with a version footer on signed-in pages ([#10](https://github.com/Ferdinand99/Wise-Wren/issues/10)) ([6a6a9a7](https://github.com/Ferdinand99/Wise-Wren/commit/6a6a9a70c33fb29bbac69dc201c28e5bf13f54d8))
+
 ## 0.1.0 (2026-10-23)
 
 
