@@ -45,7 +45,7 @@ askama = "0.16.1"
 aws-lc-rs = "1.18.2"
 axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie", "cookie-signed", "form"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 futures-util = "0.3.34"
 # Auto windows and scheduled times in the site's time zone (as vole-kit 0.3).
