@@ -446,6 +446,13 @@ async fn the_agent_toml_helper_builds_a_config_the_agent_takes() {
     assert!(!config.updates.allows("immich"));
     assert_eq!(config.script_stacks[0].name, "fluxer");
     assert!(config.script_stacks[0].handles_own_backup);
+    assert!(
+        config.script_stacks[0]
+            .check
+            .as_deref()
+            .is_some_and(|c| c.contains("rexctl")),
+        "{full}"
+    );
     assert!(config.compose_manager_hint(true).is_none());
     assert!(
         config

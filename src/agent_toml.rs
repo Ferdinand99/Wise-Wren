@@ -28,6 +28,9 @@ use crate::updates_notify::kind_label;
 pub const UNRAID_PATH: &str = "/mnt/user/appdata/wren-agent/agent.toml";
 /// The Fluxer preset (docs/agent.md).
 pub const FLUXER_DIR: &str = "/mnt/cache/appdata/fluxer";
+/// Asked before anything stops: rexctl, which the installer downloads, is
+/// released.
+pub const FLUXER_CHECK: &str = "curl -fsSL -o /dev/null https://fluxer.dev/rexctl/release.json";
 pub const FLUXER_UPDATE: &str = "curl -fsSLO https://fluxer.dev/install.sh && curl -fsSLO https://fluxer.dev/install.sh.sha256 \\\n  && sha256sum -c install.sh.sha256 \\\n  && sh install.sh --update --allow-root --non-interactive --dir \"$PWD\"";
 pub const FLUXER_ROLLBACK: &str =
     "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\"";
@@ -125,6 +128,7 @@ pub struct Stack {
     pub dir: String,
     pub own_backup: bool,
     pub timeout: String,
+    pub check: String,
     pub update: String,
     pub rollback: String,
 }
@@ -137,6 +141,7 @@ impl Stack {
             dir: dir.into(),
             own_backup: true,
             timeout: "20m".into(),
+            check: FLUXER_CHECK.into(),
             update: FLUXER_UPDATE.into(),
             rollback: FLUXER_ROLLBACK.into(),
         }
@@ -206,6 +211,11 @@ pub fn render(server: &str, choice: &Choice) -> String {
                 &s.timeout
             })
         ));
+        if !s.check.trim().is_empty() {
+            out.push(String::new());
+            out.push("[script_stack.check]".into());
+            out.push(format!("command = {}", q_multi(&s.check)));
+        }
         out.push(String::new());
         out.push("[script_stack.update]".into());
         out.push(format!("command = {}", q_multi(&s.update)));
@@ -405,6 +415,7 @@ async fn page(
             dir: pick("stack_dir", &preset.dir),
             own_backup: field("stack_own") == "true",
             timeout: pick("stack_timeout", &preset.timeout),
+            check: field("stack_check"),
             update: pick("stack_update", &preset.update),
             rollback: field("stack_rollback"),
         }

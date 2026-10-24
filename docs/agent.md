@@ -139,6 +139,9 @@ handles_own_backup = true                     # the script stops and backs up it
 env = { COMPOSE_PROJECT_NAME = "fluxer" }
 timeout = "20m"                               # 90s, 20m, 1h; at most 24h
 
+[script_stack.check]                          # optional: can the update run now?
+command = "curl -fsSL -o /dev/null https://fluxer.dev/rexctl/release.json"
+
 [script_stack.update]
 command = """
 curl -fsSLO https://fluxer.dev/install.sh && curl -fsSLO https://fluxer.dev/install.sh.sha256 \
@@ -150,8 +153,19 @@ curl -fsSLO https://fluxer.dev/install.sh && curl -fsSLO https://fluxer.dev/inst
 command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\""
 ```
 
-The commands run with `sh -c` in `working_dir`, with `env` and the timeout. The agent image has `bash`, `curl`,
-`openssl`, GNU `coreutils`, `jq` and the Docker CLI with Compose.
+The commands run with `sh -c` in `working_dir`, with `env` and the timeout (`check`: at most 5 minutes).
+
+
+- **`check`** runs in the preflight, before anything stops. When it fails the run ends there: nothing was stopped
+  and the stack keeps running. The Fluxer check asks whether rexctl, which `install.sh` downloads, is released.
+- **When the update script fails**, the agent first looks at what changed. If every container still runs as before
+  (same containers, same running state) and the Compose files and `.env` are unchanged, nothing is rolled back: the
+  run ends as failed and the stack keeps running.
+- **Otherwise the rollback runs.** With `handles_own_backup = true` the agent doesn't stop anything first; the
+  rollback script does what it needs. If the rollback fails too, the agent leaves everything as it is for a person
+  to decide, and the run's detail lists the containers that ran before and are stopped now.
+
+The agent image has `bash`, `curl`, `openssl`, GNU `coreutils`, `jq` and the Docker CLI with Compose.
 
 ### Version sources
 

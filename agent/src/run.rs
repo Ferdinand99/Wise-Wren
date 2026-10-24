@@ -25,6 +25,8 @@ pub const STOP_LIMIT: Duration = Duration::from_secs(10 * 60);
 pub const SNAPSHOT_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
 pub const UPDATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 pub const ROLLBACK_LIMIT: Duration = Duration::from_secs(2 * 60 * 60);
+/// A script stack's `check`, within the preflight.
+pub const CHECK_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// How long a container may take to become healthy, on top of the stable
 /// period.
 pub const START_GRACE: Duration = Duration::from_secs(300);
@@ -77,6 +79,12 @@ pub trait Host: Sync {
     fn update(&self, p: &Plan, s: &mut State) -> impl Future<Output = StepResult> + Send;
     fn health(&self, p: &Plan, s: &mut State) -> impl Future<Output = StepResult> + Send;
     fn rollback(&self, p: &Plan, s: &mut State) -> impl Future<Output = StepResult> + Send;
+    /// After a failed update of a script stack: every container still runs
+    /// as before the preflight and its Compose files are unchanged, so
+    /// there is nothing to roll back.
+    fn untouched(&self, p: &Plan, s: &State) -> impl Future<Output = bool> + Send;
+    /// The containers that ran before the run and don't run now.
+    fn not_running(&self, p: &Plan) -> impl Future<Output = Vec<String>> + Send;
     fn close(&self, p: &Plan, s: &mut State, how: Close) -> impl Future<Output = ()> + Send;
 }
 
@@ -196,10 +204,16 @@ async fn roll_back<H: Host, R: Report>(
         }
         Err(e) => {
             // Stop here and keep everything as it is: a person decides.
+            let down = host.not_running(plan).await;
+            let down = if down.is_empty() {
+                String::new()
+            } else {
+                format!("; not running now: {}", down.join(", "))
+            };
             report
                 .finish(
                     "rollback_failed",
-                    &Note::plain(format!("{err}; the rollback failed too: {e}")),
+                    &Note::plain(format!("{err}; the rollback failed too: {e}{down}")),
                 )
                 .await;
             "rollback_failed"
@@ -345,6 +359,19 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
         Err(e) if manual => {
             report.finish("rollback_failed", &Note::plain(e)).await;
             "rollback_failed"
+        }
+        // The script failed before it changed anything (like an installer
+        // that can't download itself): the stack keeps running as it was.
+        Err(e)
+            if plan.kind() == Kind::Script
+                && st.stopped.is_empty()
+                && host.untouched(plan, &st).await =>
+        {
+            let why = "nothing changed: every container still runs as before";
+            let _ = report.step("rollback", "skipped", why, 0, &[]).await;
+            host.close(plan, &mut st, Close::Abandoned).await;
+            report.finish("failed", &Note::plain(e)).await;
+            "failed"
         }
         Err(e) => roll_back(host, report, plan, &mut st, e).await,
     }
@@ -980,6 +1007,15 @@ impl Host for DockerHost<'_> {
             }
             return Ok(log.join("\n"));
         }
+        // Whether the script can run now, before anything happens.
+        if let Some(stack) = &p.stack
+            && let Some(check) = &stack.check
+        {
+            let out = run_script(check, &stack.working_dir, &stack.env, CHECK_LIMIT)
+                .await
+                .map_err(|e| format!("the check says the update can't run now: {e}"))?;
+            log.push(format!("check ok {}", out.trim()).trim_end().to_string());
+        }
         // Room for the snapshot, before anything happens.
         if !p.own_backup() {
             for (path, root) in &p.data {
@@ -1031,9 +1067,10 @@ impl Host for DockerHost<'_> {
             log.push(format!("pulled {pinned}"));
             st.new_ids.insert(i.container.clone(), id);
         }
-        if let Some(stack) = &p.stack
-            && stack.rollback.is_none()
-        {
+        // A script stack's Compose files: restored by a rollback without a
+        // script, and compared to tell whether a failed script changed
+        // anything.
+        if let Some(stack) = &p.stack {
             let mut files: Vec<PathBuf> = p
                 .ctrs
                 .iter()
@@ -1198,8 +1235,9 @@ impl Host for DockerHost<'_> {
 
     async fn rollback(&self, p: &Plan, st: &mut State) -> StepResult {
         let mut log = Vec::new();
-        // Stop what runs of the target now.
-        for c in &p.ctrs {
+        // Stop what runs of the target now; a stack that handles its own
+        // backup is left to its rollback script.
+        for c in p.ctrs.iter().filter(|_| !p.own_backup()) {
             let running = self
                 .inspect(&c.name)
                 .await
@@ -1269,6 +1307,37 @@ impl Host for DockerHost<'_> {
         }
         log.push(self.health(p, st).await?);
         Ok(log.join("\n"))
+    }
+
+    async fn untouched(&self, p: &Plan, st: &State) -> bool {
+        for c in &p.ctrs {
+            // By id: a container recreated under the same name is a change.
+            let running = self
+                .inspect(&c.id)
+                .await
+                .and_then(|v| v.pointer("/State/Running").and_then(Value::as_bool));
+            if running != Some(c.running) {
+                return false;
+            }
+        }
+        st.saved_files
+            .iter()
+            .all(|(f, bytes)| std::fs::read(f).is_ok_and(|now| &now == bytes))
+    }
+
+    async fn not_running(&self, p: &Plan) -> Vec<String> {
+        let mut down = Vec::new();
+        for name in Self::watched(p) {
+            let running = self
+                .inspect(&name)
+                .await
+                .and_then(|v| v.pointer("/State/Running").and_then(Value::as_bool))
+                .unwrap_or(false);
+            if !running {
+                down.push(name);
+            }
+        }
+        down
     }
 
     async fn close(&self, p: &Plan, st: &mut State, how: Close) {
@@ -1418,6 +1487,10 @@ mod tests {
     struct Fake {
         fail: Vec<&'static str>,
         calls: Mutex<Vec<String>>,
+        /// What `untouched` answers.
+        untouched: bool,
+        /// What `not_running` answers.
+        down: Vec<String>,
     }
 
     impl Fake {
@@ -1459,6 +1532,12 @@ mod tests {
         }
         async fn rollback(&self, _: &Plan, _: &mut State) -> StepResult {
             self.go("rollback")
+        }
+        async fn untouched(&self, _: &Plan, _: &State) -> bool {
+            self.untouched
+        }
+        async fn not_running(&self, _: &Plan) -> Vec<String> {
+            self.down.clone()
         }
         async fn close(&self, _: &Plan, _: &mut State, how: Close) {
             self.calls.lock().unwrap().push(format!("close:{how:?}"));
@@ -1565,6 +1644,7 @@ mod tests {
                 handles_own_backup: own_backup,
                 env: Default::default(),
                 timeout: Duration::from_secs(60),
+                check: None,
                 update: "true".into(),
                 rollback: None,
                 version: None,
@@ -1684,6 +1764,72 @@ mod tests {
             detail.contains("update broke") && detail.contains("rollback broke"),
             "{detail}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_rollback_says_what_is_down() {
+        let fake = Fake {
+            down: vec!["db".into(), "web".into()],
+            ..Fake::failing(&["update", "rollback"])
+        };
+        let log = Log::default();
+        assert_eq!(
+            run(&fake, &log, &plan(JobKind::Update, true)).await,
+            "rollback_failed"
+        );
+        let detail = log.finished.lock().unwrap().clone().unwrap().1;
+        assert!(detail.ends_with("; not running now: db, web"), "{detail}");
+    }
+
+    /// Run 48 on Tower: Fluxer's installer failed before it changed
+    /// anything, and the rollback stopped the stack.
+    #[tokio::test]
+    async fn a_script_that_changed_nothing_is_not_rolled_back() {
+        let fake = Fake {
+            untouched: true,
+            ..Fake::failing(&["update"])
+        };
+        let log = Log::default();
+        assert_eq!(
+            run(&fake, &log, &plan(JobKind::Update, true)).await,
+            "failed"
+        );
+        assert_eq!(fake.calls(), vec!["preflight", "update", "close:Abandoned"]);
+        assert!(
+            log.steps
+                .lock()
+                .unwrap()
+                .contains(&"rollback:skipped".to_string())
+        );
+        let detail = log.finished.lock().unwrap().clone().unwrap().1;
+        assert_eq!(detail, "update broke");
+    }
+
+    #[tokio::test]
+    async fn a_script_that_changed_something_is_rolled_back() {
+        let (fake, log) = (Fake::failing(&["update"]), Log::default());
+        assert_eq!(
+            run(&fake, &log, &plan(JobKind::Update, true)).await,
+            "rolled_back"
+        );
+        assert_eq!(
+            fake.calls(),
+            vec!["preflight", "update", "rollback", "close:RolledBack"]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_script_stacks_skip_the_rollback() {
+        let fake = Fake {
+            untouched: true,
+            ..Fake::failing(&["update"])
+        };
+        let log = Log::default();
+        assert_eq!(
+            run(&fake, &log, &container_plan(false, true)).await,
+            "rolled_back"
+        );
+        assert!(fake.calls().contains(&"rollback".to_string()));
     }
 
     /// A plan for a plain container whose only data path is shared (or
