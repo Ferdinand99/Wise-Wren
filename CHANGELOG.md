@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### Features
+
+* **agent:** optional [script_stack.check] runs in the preflight, before anything stops; the Fluxer preset checks that rexctl is released ([660d905](https://github.com/Ferdinand99/Wise-Wren/commit/660d9050e1d9ba793f195903d13acc39e5731513))
+
+
+### Bug Fixes
+
+* **agent:** a failed script update no longer takes the stack down ([#30](https://github.com/Ferdinand99/Wise-Wren/issues/30)) ([660d905](https://github.com/Ferdinand99/Wise-Wren/commit/660d9050e1d9ba793f195903d13acc39e5731513))
+
 ## [0.5.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.4.0...v0.5.0) (2026-10-24)
 
 
