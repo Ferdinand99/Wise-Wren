@@ -1,0 +1,7 @@
+# cargo-deny configuration, used by the Audit workflow (advisories only).
+[advisories]
+ignore = [
+    # basic-toml is unmaintained. askama's derive macro uses it at build time to
+    # read askama.toml; it never sees untrusted input. Drop when askama moves off it.
+    { id = "RUSTSEC-2026-0374", reason = "build-time only, via askama_derive; no untrusted input" },
+]
