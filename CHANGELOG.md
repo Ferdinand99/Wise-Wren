@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.4.0...v0.5.0) (2026-10-24)
+
+
+### Features
+
+* seal notification channel secrets at rest (vole-kit 0.5.0) ([#21](https://github.com/Ferdinand99/Wise-Wren/issues/21)) ([feea613](https://github.com/Ferdinand99/Wise-Wren/commit/feea61368f7424b81287605a469277da54cbbb9f))
+
 ## [0.4.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.3.1...v0.4.0) (2026-10-24)
 
 
