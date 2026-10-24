@@ -7,7 +7,7 @@
 //! The steps are behind [`Host`] so the order and the rollback rules are
 //! tested without Docker; [`DockerHost`] does them on this server.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::config::Config;
 use crate::docker::{cli, get_json, post_json};
-use crate::jobs::{self, Ctr, Job, JobClient, JobKind, Kind, Plan, StepReport, repo_of};
+use crate::jobs::{self, Ctr, Job, JobClient, JobKind, Kind, Note, Plan, StepReport, repo_of};
 use crate::snapshot::{self, DataPath, Method, exec, tail};
 
 /// Step time limits; the update of a script stack uses its own `timeout`.
@@ -82,15 +82,17 @@ pub trait Host: Sync {
 
 /// Where step results go.
 pub trait Report: Sync {
-    /// Posts a step's state; whether Wren asks to cancel.
+    /// Posts a step's state (with notes Wren shows translated); whether Wren
+    /// asks to cancel.
     fn step(
         &self,
         step: &str,
         status: &str,
         log: &str,
         ms: u64,
+        notes: &[Note],
     ) -> impl Future<Output = Result<bool, String>> + Send;
-    fn finish(&self, outcome: &str, detail: &str) -> impl Future<Output = ()> + Send;
+    fn finish(&self, outcome: &str, note: &Note) -> impl Future<Output = ()> + Send;
     /// Asks Wren whether the target's Vigilant Vole monitors are up:
     /// `(verdict, log)` with `ok`, `wait`, `failed` or `skipped`.
     fn monitors(&self) -> impl Future<Output = Result<(String, String), String>> + Send;
@@ -141,19 +143,35 @@ async fn step<R: Report>(
     limit: Duration,
     fut: impl Future<Output = StepResult>,
 ) -> (StepResult, Result<bool, String>) {
-    let _ = report.step(name, "running", "", 0).await;
+    let (res, ms) = timed(report, name, limit, fut).await;
+    let (status, log) = match &res {
+        Ok(l) => ("ok", l.as_str()),
+        Err(e) => ("failed", e.as_str()),
+    };
+    let posted = report
+        .step(name, status, &tail(log, LOG_CHARS), ms, &[])
+        .await;
+    (res, posted)
+}
+
+/// Reports a step as running and runs it with its time limit; its result
+/// and how long it took.
+async fn timed<R: Report>(
+    report: &R,
+    name: &str,
+    limit: Duration,
+    fut: impl Future<Output = StepResult>,
+) -> (StepResult, u64) {
+    let _ = report.step(name, "running", "", 0, &[]).await;
     let t = Instant::now();
     let res = match tokio::time::timeout(limit, fut).await {
         Ok(r) => r,
         Err(_) => Err(format!("{name} took longer than {} s", limit.as_secs())),
     };
-    let ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let (status, log) = match &res {
-        Ok(l) => ("ok", l.as_str()),
-        Err(e) => ("failed", e.as_str()),
-    };
-    let posted = report.step(name, status, &tail(log, LOG_CHARS), ms).await;
-    (res, posted)
+    (
+        res,
+        u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX),
+    )
 }
 
 /// Rolls back after `err`, then reports the outcome.
@@ -173,7 +191,7 @@ async fn roll_back<H: Host, R: Report>(
             } else {
                 "failed"
             };
-            report.finish(outcome, &err).await;
+            report.finish(outcome, &Note::plain(err)).await;
             outcome
         }
         Err(e) => {
@@ -181,7 +199,7 @@ async fn roll_back<H: Host, R: Report>(
             report
                 .finish(
                     "rollback_failed",
-                    &format!("{err}; the rollback failed too: {e}"),
+                    &Note::plain(format!("{err}; the rollback failed too: {e}")),
                 )
                 .await;
             "rollback_failed"
@@ -195,6 +213,18 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
     let job = plan.job();
     let manual = job.kind == JobKind::Rollback;
 
+    // "Require a snapshot": nothing to snapshot, so nothing is touched.
+    if !manual && job.require_snapshot && !plan.own_backup() && plan.data.is_empty() {
+        let note = Note::new("failed.no_snapshot", &[]);
+        let mut log = vec![note.text()];
+        log.extend(plan.notes.iter().map(Note::text));
+        let _ = report
+            .step("preflight", "failed", &log.join("\n"), 0, &plan.notes)
+            .await;
+        report.finish("failed", &note).await;
+        return "failed";
+    }
+
     let (res, posted) = step(
         report,
         "preflight",
@@ -204,7 +234,7 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
     .await;
     if let Err(e) = res {
         host.close(plan, &mut st, Close::Abandoned).await;
-        report.finish("failed", &e).await;
+        report.finish("failed", &Note::plain(e)).await;
         return "failed";
     }
     // Nothing has stopped yet: Wren must say go.
@@ -212,16 +242,13 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
         Err(e) => {
             host.close(plan, &mut st, Close::Abandoned).await;
             report
-                .finish(
-                    "failed",
-                    &format!("Wren couldn't be reached before anything stopped: {e}"),
-                )
+                .finish("failed", &Note::new("failed.unreachable", &[("error", &e)]))
                 .await;
             return "failed";
         }
         Ok(true) => {
             host.close(plan, &mut st, Close::Abandoned).await;
-            report.finish("cancelled", "").await;
+            report.finish("cancelled", &Note::default()).await;
             return "cancelled";
         }
         Ok(false) => {}
@@ -229,13 +256,13 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
 
     if plan.own_backup() {
         let why = "the script stops, backs up and verifies itself";
-        let _ = report.step("stop", "skipped", why, 0).await;
-        let _ = report.step("snapshot", "skipped", why, 0).await;
+        let _ = report.step("stop", "skipped", why, 0, &[]).await;
+        let _ = report.step("snapshot", "skipped", why, 0, &[]).await;
     } else {
         let (res, _) = step(report, "stop", STOP_LIMIT, host.stop(plan, &mut st)).await;
         if let Err(e) = res {
             if manual {
-                report.finish("rollback_failed", &e).await;
+                report.finish("rollback_failed", &Note::plain(e)).await;
                 return "rollback_failed";
             }
             return roll_back(host, report, plan, &mut st, e).await;
@@ -247,18 +274,38 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
                     "skipped",
                     "a rollback restores an earlier snapshot",
                     0,
+                    &[],
                 )
                 .await;
         } else {
-            let (res, _) = step(
+            let (res, ms) = timed(
                 report,
                 "snapshot",
                 SNAPSHOT_LIMIT,
                 host.snapshot(plan, &mut st),
             )
             .await;
-            if let Err(e) = res {
-                return roll_back(host, report, plan, &mut st, e).await;
+            match res {
+                Ok(log) => {
+                    // Why each path was left out; when none was snapshotted,
+                    // the step says so (a warning, not a plain "done").
+                    let mut notes = plan.notes.clone();
+                    let mut log = log;
+                    if st.snapshots.is_empty() {
+                        let none = Note::new("snapshot.none", &[]);
+                        log = format!("{}\n{log}", none.text());
+                        notes.insert(0, none);
+                    }
+                    let _ = report
+                        .step("snapshot", "ok", &tail(&log, LOG_CHARS), ms, &notes)
+                        .await;
+                }
+                Err(e) => {
+                    let _ = report
+                        .step("snapshot", "failed", &tail(&e, LOG_CHARS), ms, &[])
+                        .await;
+                    return roll_back(host, report, plan, &mut st, e).await;
+                }
             }
         }
     }
@@ -291,12 +338,12 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
     match res {
         Ok(_) => {
             host.close(plan, &mut st, Close::Succeeded).await;
-            report.finish("succeeded", "").await;
+            report.finish("succeeded", &Note::default()).await;
             "succeeded"
         }
         // A rollback that fails is not rolled back again: a person decides.
         Err(e) if manual => {
-            report.finish("rollback_failed", &e).await;
+            report.finish("rollback_failed", &Note::plain(e)).await;
             "rollback_failed"
         }
         Err(e) => roll_back(host, report, plan, &mut st, e).await,
@@ -528,6 +575,93 @@ pub fn rollback_tag(target: &str, run: i64, container: &str) -> String {
         "wren-rollback/{}:{tag}",
         if repo.is_empty() { "x" } else { &repo }
     )
+}
+
+/// The kept-image tags of one target (`<run>-<container>` with the image id
+/// each points at) that go: every one but the newest `keep` runs', never
+/// one whose image a container uses.
+pub fn tags_to_remove(
+    tags: &[(String, String)],
+    keep: usize,
+    in_use: &HashSet<String>,
+) -> Vec<String> {
+    let run_of = |t: &str| t.split('-').next()?.parse::<i64>().ok();
+    let mut runs: Vec<i64> = tags.iter().filter_map(|(t, _)| run_of(t)).collect();
+    runs.sort_unstable_by(|a, b| b.cmp(a));
+    runs.dedup();
+    let kept: Vec<i64> = runs.into_iter().take(keep).collect();
+    tags.iter()
+        .filter(|(t, id)| run_of(t).is_some_and(|r| !kept.contains(&r)) && !in_use.contains(id))
+        .map(|(t, _)| t.clone())
+        .collect()
+}
+
+/// Every `wren-rollback/*` tag here: `(repository, tag, image id)`.
+async fn rollback_tags(socket: &str) -> Result<Vec<(String, String, String)>, String> {
+    let out = cli(
+        socket,
+        &[
+            "image",
+            "ls",
+            "--no-trunc",
+            "--filter",
+            "reference=wren-rollback/*",
+            "--format",
+            "{{.Repository}}\t{{.Tag}}\t{{.ID}}",
+        ],
+        Duration::from_secs(60),
+    )
+    .await?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let mut p = l.split('\t');
+            let (repo, tag, id) = (p.next()?, p.next()?, p.next()?);
+            repo.starts_with("wren-rollback/")
+                .then(|| (repo.to_string(), tag.to_string(), id.to_string()))
+        })
+        .collect())
+}
+
+/// The image ids containers use (running or not).
+async fn images_in_use(socket: &str) -> Result<HashSet<String>, String> {
+    let list = get_json(socket, "/containers/json?all=1").await?;
+    Ok(list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c.get("ImageID").and_then(Value::as_str).map(str::to_string))
+        .collect())
+}
+
+/// Removes the kept images of `repo` (one target's `wren-rollback/<target>`,
+/// or every target's with `None`) but the newest `keep` runs'. Only tags
+/// under `wren-rollback/`, never an image a container uses; `docker rmi`
+/// without force. The tags removed.
+pub async fn prune_rollback_images(socket: &str, repo: Option<&str>, keep: usize) -> Vec<String> {
+    let (Ok(all), Ok(in_use)) = (rollback_tags(socket).await, images_in_use(socket).await) else {
+        return Vec::new();
+    };
+    let mut by_repo: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    for (r, tag, id) in all {
+        if repo.is_none_or(|want| want == r) {
+            by_repo.entry(r).or_default().push((tag, id));
+        }
+    }
+    let mut removed = Vec::new();
+    for (r, tags) in by_repo {
+        for tag in tags_to_remove(&tags, keep.max(1), &in_use) {
+            let name = format!("{r}:{tag}");
+            if cli(socket, &["rmi", &name], Duration::from_secs(120))
+                .await
+                .is_ok()
+            {
+                removed.push(name);
+            }
+        }
+    }
+    removed.sort();
+    removed
 }
 
 /// Sets Unraid's update status for `image` the way `setUpdateStatus` does
@@ -820,7 +954,7 @@ impl Host for DockerHost<'_> {
     async fn preflight(&self, p: &Plan, st: &mut State) -> StepResult {
         let job = p.job();
         let target = job.target.name.clone();
-        let mut log: Vec<String> = p.notes.clone();
+        let mut log: Vec<String> = Vec::new();
         if job.kind == JobKind::Rollback {
             let of = job.rollback_of.unwrap_or_default();
             for c in &p.ctrs {
@@ -953,9 +1087,8 @@ impl Host for DockerHost<'_> {
             ));
             st.snapshots.push((dp, dest));
         }
-        if log.is_empty() {
-            log.push("no data paths of its own under the agent's roots".into());
-        }
+        // What was left out, and why.
+        log.extend(p.notes.iter().map(|n| format!("not snapshotted: {n}")));
         Ok(log.join("\n"))
     }
 
@@ -1159,8 +1292,13 @@ impl Host for DockerHost<'_> {
             }
             return;
         }
-        // Retention: the newest snapshots and kept images of this target only.
-        let keep = job.keep_snapshots.clamp(1, jobs::MAX_KEEP);
+        // Retention: the newest snapshots of this target only.
+        let keep = self
+            .config
+            .retention
+            .snapshots
+            .unwrap_or(job.keep_snapshots)
+            .clamp(1, jobs::MAX_KEEP);
         let mut roots: Vec<PathBuf> = st.paths.iter().map(|(d, _)| d.root.clone()).collect();
         roots.extend(st.snapshots.iter().map(|(d, _)| d.root.clone()));
         roots.sort();
@@ -1168,28 +1306,20 @@ impl Host for DockerHost<'_> {
         for root in roots {
             snapshot::prune(&root, target, keep).await;
         }
-        let repo = rollback_tag(target, 0, "x");
-        let repo = repo.split(':').next().unwrap_or_default();
-        if let Ok(tags) = self
-            .docker(
-                &["image", "ls", "--format", "{{.Tag}}", repo],
-                Duration::from_secs(30),
+        // Its kept images after a successful update: a rollback can only
+        // undo the newest one. After a rolled-back update the last good
+        // update's images stay.
+        if how == Close::Succeeded {
+            let repo = rollback_tag(target, 0, "x");
+            let repo = repo.split(':').next().unwrap_or_default();
+            let gone = prune_rollback_images(
+                self.socket(),
+                Some(repo),
+                self.config.retention.rollback_images,
             )
-            .await
-        {
-            let mut runs: Vec<(i64, String)> = tags
-                .lines()
-                .filter_map(|t| Some((t.split('-').next()?.parse().ok()?, t.to_string())))
-                .collect();
-            let mut ids: Vec<i64> = runs.iter().map(|(r, _)| *r).collect();
-            ids.sort_unstable_by(|a, b| b.cmp(a));
-            ids.dedup();
-            let kept: Vec<i64> = ids.into_iter().take(keep).collect();
-            runs.retain(|(r, _)| !kept.contains(r));
-            for (_, tag) in runs {
-                let _ = self
-                    .docker(&["rmi", &format!("{repo}:{tag}")], Duration::from_secs(60))
-                    .await;
+            .await;
+            if !gone.is_empty() {
+                tracing::info!(images = ?gone, "kept images removed");
             }
         }
     }
@@ -1202,7 +1332,14 @@ pub struct ClientReport<'a> {
 }
 
 impl Report for ClientReport<'_> {
-    async fn step(&self, step: &str, status: &str, log: &str, ms: u64) -> Result<bool, String> {
+    async fn step(
+        &self,
+        step: &str,
+        status: &str,
+        log: &str,
+        ms: u64,
+        notes: &[Note],
+    ) -> Result<bool, String> {
         self.client
             .step(
                 self.run,
@@ -1211,13 +1348,14 @@ impl Report for ClientReport<'_> {
                     status,
                     log,
                     duration_ms: ms,
+                    notes,
                 },
             )
             .await
     }
 
-    async fn finish(&self, outcome: &str, detail: &str) {
-        if let Err(err) = self.client.finish(self.run, outcome, detail).await {
+    async fn finish(&self, outcome: &str, note: &Note) {
+        if let Err(err) = self.client.finish(self.run, outcome, note).await {
             tracing::warn!(run = self.run, "result not sent: {err}");
         }
     }
@@ -1227,15 +1365,6 @@ impl Report for ClientReport<'_> {
     }
 }
 
-/// This container's id, as Docker sets the hostname (empty outside one).
-fn own_id() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|h| h.trim().to_string())
-        .ok()
-        .filter(|h| h.len() >= 12 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-        .unwrap_or_default()
-}
-
 /// Checks and runs one job from Wren.
 pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     let run = job.run_id;
@@ -1243,10 +1372,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     tracing::info!(run, target = %job.target.name, kind = ?job.kind, "job received");
     // The allowlist first: a target it leaves out isn't even looked at.
     if !config.updates.allows(&job.target.name) {
-        let why = format!(
-            "refused by agent config: {} is not allowed by [updates] in agent.toml",
-            job.target.name
-        );
+        let why = Note::new("refused.not_allowed", &[("target", &job.target.name)]);
         tracing::warn!(run, "{why}");
         report.finish("refused", &why).await;
         return;
@@ -1255,13 +1381,13 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
         Ok(all) => all,
         Err(err) => {
             report
-                .finish("failed", &format!("can't read Docker: {err}"))
+                .finish("failed", &Note::plain(format!("can't read Docker: {err}")))
                 .await;
             return;
         }
     };
     let templates = crate::discover::unraid_templates(Path::new("/"));
-    let plan = match jobs::check(&job, config, &all, &templates, &own_id()) {
+    let plan = match jobs::check(&job, config, &all, &templates, &jobs::own_id()) {
         Ok(plan) => plan,
         Err(why) => {
             tracing::warn!(run, "{why}");
@@ -1273,10 +1399,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     // same image): nothing is stopped or recreated. Not for script stacks,
     // whose script may do more than the images show.
     if plan.kind() != Kind::Script && jobs::already_on(&job, &plan.ctrs) {
-        let why = format!(
-            "already up to date: {} already runs the approved version; nothing was stopped",
-            job.target.name
-        );
+        let why = Note::new("done.already_on", &[("target", &job.target.name)]);
         tracing::info!(run, "{why}");
         report.finish("succeeded", &why).await;
         return;
@@ -1348,16 +1471,31 @@ mod tests {
         /// What Wren says about the monitors, in turn ('' = skipped).
         monitors: Mutex<Vec<&'static str>>,
         steps: Mutex<Vec<String>>,
+        /// The notes of each step.
+        notes: Mutex<Vec<(String, Vec<&'static str>)>>,
         finished: Mutex<Option<(String, String)>>,
     }
 
     impl Report for Log {
-        async fn step(&self, step: &str, status: &str, _: &str, _: u64) -> Result<bool, String> {
+        async fn step(
+            &self,
+            step: &str,
+            status: &str,
+            _: &str,
+            _: u64,
+            notes: &[Note],
+        ) -> Result<bool, String> {
             self.steps.lock().unwrap().push(format!("{step}:{status}"));
+            if !notes.is_empty() {
+                self.notes
+                    .lock()
+                    .unwrap()
+                    .push((step.into(), notes.iter().map(|n| n.code).collect()));
+            }
             Ok(self.cancel && step == "preflight" && status != "running")
         }
-        async fn finish(&self, outcome: &str, detail: &str) {
-            *self.finished.lock().unwrap() = Some((outcome.into(), detail.into()));
+        async fn finish(&self, outcome: &str, note: &Note) {
+            *self.finished.lock().unwrap() = Some((outcome.into(), note.text()));
         }
         async fn monitors(&self) -> Result<(String, String), String> {
             let mut m = self.monitors.lock().unwrap();
@@ -1546,6 +1684,98 @@ mod tests {
             detail.contains("update broke") && detail.contains("rollback broke"),
             "{detail}"
         );
+    }
+
+    /// A plan for a plain container whose only data path is shared (or
+    /// none at all).
+    fn container_plan(require: bool, data: bool) -> Plan {
+        let mut p = plan(JobKind::Update, false);
+        p.stack = None;
+        p.kind = Some(Kind::Container);
+        if let Some(j) = p.job.as_mut() {
+            j.require_snapshot = require;
+        }
+        p.notes = vec![Note::new(
+            "path.shared",
+            &[("path", "/mnt/user/appdata/x"), ("with", "rclone")],
+        )];
+        if data {
+            p.data = vec![("/mnt/user/appdata/y".into(), "/mnt/user/appdata".into())];
+        }
+        p
+    }
+
+    #[tokio::test]
+    async fn nothing_snapshotted_is_a_warning_with_reasons() {
+        let (fake, log) = (Fake::default(), Log::default());
+        assert_eq!(
+            run(&fake, &log, &container_plan(false, false)).await,
+            "succeeded"
+        );
+        let notes = log.notes.lock().unwrap().clone();
+        assert_eq!(
+            notes,
+            [("snapshot".to_string(), vec!["snapshot.none", "path.shared"])]
+        );
+        // A warning, not a failure: the run goes on.
+        assert!(
+            log.steps
+                .lock()
+                .unwrap()
+                .contains(&"snapshot:ok".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn require_snapshot_stops_before_anything_is_touched() {
+        let (fake, log) = (Fake::default(), Log::default());
+        assert_eq!(
+            run(&fake, &log, &container_plan(true, false)).await,
+            "failed"
+        );
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+        let (outcome, detail) = log.finished.lock().unwrap().clone().unwrap();
+        assert_eq!(outcome, "failed");
+        assert!(detail.contains("requires a snapshot"), "{detail}");
+        // With a data path it runs.
+        let (fake, log) = (Fake::default(), Log::default());
+        assert_eq!(
+            run(&fake, &log, &container_plan(true, true)).await,
+            "succeeded"
+        );
+    }
+
+    #[test]
+    fn kept_images_but_the_newest_runs_go_unless_in_use() {
+        let tags = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(t, i)| ((*t).into(), (*i).into()))
+                .collect()
+        };
+        let all = tags(&[
+            ("21-ww-test-container", "sha256:b"),
+            ("22-ww-test-container", "sha256:c"),
+            ("20-ww-test-container", "sha256:a"),
+            ("7-db", "sha256:d"),
+            ("7-web", "sha256:e"),
+            ("latest", "sha256:f"),
+        ]);
+        let none = HashSet::new();
+        let mut gone = tags_to_remove(&all, 1, &none);
+        gone.sort();
+        assert_eq!(
+            gone,
+            [
+                "20-ww-test-container",
+                "21-ww-test-container",
+                "7-db",
+                "7-web"
+            ]
+        );
+        assert_eq!(tags_to_remove(&all, 2, &none).len(), 3);
+        // An image a container still uses stays.
+        let used: HashSet<String> = ["sha256:a".to_string()].into();
+        assert!(!tags_to_remove(&all, 1, &used).contains(&"20-ww-test-container".to_string()));
     }
 
     #[tokio::test]

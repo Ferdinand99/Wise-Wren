@@ -105,6 +105,7 @@ pub struct RunView {
     pub status: String,
     pub status_class: &'static str,
     pub status_label: &'static str,
+    /// The result in the reader's language.
     pub detail: String,
     pub requested_by: String,
     pub created_at: String,
@@ -112,7 +113,10 @@ pub struct RunView {
     pub finished_at: Option<String>,
     pub cancel_requested: bool,
     pub trigger: String,
-    pub trigger_label: &'static str,
+    /// Who or what started it ("Approved by …", "Scheduled by …", "Automatic").
+    pub trigger_label: String,
+    /// No data snapshot was taken: why, per path (`None`: one was taken).
+    pub no_snapshot: Option<Vec<String>>,
     /// When a scheduled run starts, in the site's time zone.
     pub scheduled_for: Option<String>,
     /// The same, `YYYY-MM-DDTHH:MM` for a date-time field.
@@ -149,7 +153,13 @@ impl RunView {
 
     pub fn new(r: Run) -> RunView {
         let (status_class, status_label) = run_look(&r.status);
+        let detail = r.detail_text();
+        let no_snapshot = r.no_snapshot();
+        let trigger_label = crate::run_notify::trigger_text(&r);
         RunView {
+            detail,
+            no_snapshot,
+            trigger_label,
             id: r.id,
             target_id: r.target_id,
             kind_label: kind_label(&r.target_kind),
@@ -162,13 +172,11 @@ impl RunView {
             status_class,
             status_label,
             status: r.status,
-            detail: r.detail,
             requested_by: r.requested_by,
             created_at: r.created_at,
             started_at: r.started_at,
             finished_at: r.finished_at,
             cancel_requested: r.cancel_requested,
-            trigger_label: crate::run_notify::trigger_label(&r.trigger),
             trigger: r.trigger,
             scheduled_for: r.scheduled_for,
             scheduled_input: String::new(),
@@ -184,6 +192,14 @@ impl RunView {
     pub fn needs_you(&self) -> bool {
         self.status == runs::ROLLBACK_FAILED
     }
+
+    /// The reasons no snapshot was taken, as one line.
+    pub fn no_snapshot_text(&self) -> String {
+        self.no_snapshot
+            .as_ref()
+            .map(|why| why.join("; "))
+            .unwrap_or_default()
+    }
 }
 
 pub struct StepView {
@@ -193,20 +209,47 @@ pub struct StepView {
     pub status_label: &'static str,
     pub duration_ms: i64,
     pub log: String,
+    /// Done, but with a warning (the snapshot took nothing).
+    pub warning: bool,
+    /// The agent's notes in the reader's language.
+    pub notes: Vec<String>,
 }
 
 impl StepView {
     fn new(s: Step) -> StepView {
-        let (status_class, status_label) = step_look(&s.status);
+        let (warning, notes) = crate::texts::notes(&s.notes);
+        let warning = warning && s.status == "ok";
+        let (status_class, status_label) = if warning {
+            ("warning", i18n::t("snap.step_warning"))
+        } else {
+            step_look(&s.status)
+        };
         StepView {
             label: step_label(&s.step),
-            status: s.status,
+            status: if warning { "warning".into() } else { s.status },
             status_class,
             status_label,
             duration_ms: s.duration_ms,
             log: s.log,
+            warning,
+            notes,
         }
     }
+}
+
+/// How many finished runs the Overview shows below the running and queued
+/// ones.
+pub const OVERVIEW_FINISHED: i64 = 8;
+
+/// The Overview's runs: running, then queued, then the newest finished.
+pub async fn overview_runs(core: &Core) -> ApiResult<Vec<RunView>> {
+    let (rows, tz) = core
+        .with_conn(move |c| Ok((runs::overview(c, OVERVIEW_FINISHED)?, schedule::site_tz(c)?)))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RunView::new(r).localize(&tz))
+        .collect())
 }
 
 /// The newest runs (`target_id`: of one target).
@@ -409,20 +452,30 @@ async fn approve_many(
         })
         .await?;
     let ok = results.iter().filter(|r| r.is_ok()).count();
+    // What the agent would refuse is skipped, and counted.
+    let blocked = results
+        .iter()
+        .filter(|r| matches!(r, Err(Refusal::Blocked(_))))
+        .count();
     let refused: Vec<String> = results
         .iter()
-        .filter_map(|r| r.as_ref().err().map(|e| e.message()))
+        .filter_map(|r| r.as_ref().err())
+        .filter(|e| !matches!(e, Refusal::Blocked(_)))
+        .map(Refusal::message)
         .collect();
     changed(&wren);
+    let mut text = i18n::tn("runs.approved_many", ok as i64);
+    if blocked > 0 {
+        text = format!("{text} {}", i18n::tn("blocked.skipped", blocked as i64));
+    }
     let jar = if refused.is_empty() {
-        flash(jar, "success", i18n::tn("runs.approved_many", ok as i64))
+        flash(jar, "success", text)
     } else {
         flash(
             jar,
             "error",
             format!(
-                "{} {}",
-                i18n::tn("runs.approved_many", ok as i64),
+                "{text} {}",
                 i18n::tf("runs.some_refused", &[("why", &refused.join(" "))])
             ),
         )
@@ -553,6 +606,7 @@ async fn target_policy(
         mode: mode.map(str::to_string),
         health_seconds: health,
         require_vv: matches!(field(&f, "require_vv"), "true" | "1" | "on"),
+        require_snapshot: matches!(field(&f, "require_snapshot"), "true" | "1" | "on"),
     };
     let (who, admin) = (user.username.clone(), user.is_admin());
     let res = wren

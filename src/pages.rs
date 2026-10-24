@@ -74,6 +74,10 @@ pub struct TargetView {
     pub auto: bool,
     /// Wren's or VV's own image: never updated by Wren in v1.
     pub own: bool,
+    /// Why the server's agent would refuse an update, in words ('' when it
+    /// wouldn't): not allowed by `[updates]`, a folder outside its roots,
+    /// files it can't reach.
+    pub blocked: String,
 }
 
 /// The status's design-system class and label.
@@ -115,6 +119,7 @@ impl TargetView {
             _ => String::new(),
         };
         TargetView {
+            blocked: t.blocked.as_ref().map(|b| b.message()).unwrap_or_default(),
             id: t.id,
             server_id: t.server_id,
             server_name: t.server_name,
@@ -255,9 +260,19 @@ pub struct UpdateRow {
 }
 
 impl UpdateRow {
-    /// Approve, skip and snooze apply.
+    /// Skip and snooze apply (and approve, unless [`Self::blocked`]).
+    pub fn actionable(&self) -> bool {
+        !self.notify_only && !self.own && self.active.is_none()
+    }
+
+    /// Approve and schedule apply.
     pub fn approvable(&self) -> bool {
-        !self.notify_only && !self.own && self.active.is_none() && !self.t.files_missing()
+        self.actionable() && !self.blocked()
+    }
+
+    /// The agent would refuse it: approving is off, with the reason.
+    pub fn blocked(&self) -> bool {
+        !self.t.blocked.is_empty()
     }
 }
 
@@ -342,6 +357,7 @@ struct TargetPage {
     show_target: bool,
     is_admin: bool,
     require_vv: bool,
+    require_snapshot: bool,
     /// The server's auto window.
     window: Option<(String, String)>,
     vv: crate::vv_pages::VvCard,
@@ -415,6 +431,7 @@ async fn target_page(
             can_check: user.can_edit(),
             back_href,
             row,
+            require_snapshot: policy.require_snapshot,
             mode: policy.mode.unwrap_or_default(),
             server_mode: policy.server_mode,
             health: policy

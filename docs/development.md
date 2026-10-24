@@ -38,6 +38,9 @@ src/
   schedule.rs         # auto windows (site time zone), the auto picker, Wren's and VV's own images
   vv.rs               # Vigilant Vole: client, maintenance windows, monitor health, the reconciler
   vv_pages.rs         # Settings → Vigilant Vole, monitor links on the target page
+  policy.rs           # the agent's reported [updates] and roots: blocked targets, roots to suggest
+  texts.rs            # the agent's coded run texts and step notes, in the reader's language
+  agent_toml.rs       # the agent.toml helper (admins): builds a snippet to copy, stores nothing
   run_notify.rs       # run results, agent offline/back
   targets.rs          # targets, their images, remote digests; status derived from both
   registry.rs         # image refs, manifest HEAD with the Bearer challenge, Retry-After
@@ -167,8 +170,9 @@ Optional while `WW_SERVER_URL` and `WW_AGENT_TOKEN` are set (they override the f
 ```toml
 server = "http://10.0.3.26:3003"
 token = "wwa_…"
-# Folders Wren may touch, each mounted at the same path in the agent.
-roots = ["/mnt/user/appdata", "/mnt/cache/appdata"]
+# Folders Wren may touch, each mounted at the same path in the agent
+# (on Unraid also Compose Manager's stacks).
+roots = ["/mnt/user/appdata", "/mnt/cache/appdata", "/boot/config/plugins/compose.manager/projects"]
 # docker_socket = "/var/run/docker.sock"
 
 # A Compose stack updated by a script of its own (design §4; Fluxer from the spike).
@@ -205,7 +209,25 @@ deny = ["ww-test-keep*"]          # wins over allow
 ```
 
 A job for a target outside `allow` (or inside `deny`) is refused with "refused by agent config" before the agent
-even reads Docker; `wren-agent --check` prints what the section allows.
+even reads Docker; `wren-agent --check` prints what the section allows, and hints when
+`/boot/config/plugins/compose.manager/projects` exists outside `roots`.
+
+```toml
+# Optional: rollback points kept per target.
+[retention]
+rollback_images = 1               # updates whose old images stay tagged (1-10, default 1)
+snapshots = 2                     # data snapshots (1-10; default: the job's keep_snapshots)
+```
+
+**What Wren knows ahead.** The inventory carries the agent's `policy` (`{"allow": [...] | null, "deny": [...],
+"roots": [...]}`; never the token or scripts) and each container's bind sources (`binds`). Wren stores the policy per
+server (`servers.policy`, NULL from agents before 0.4.0) and computes per target a **blocked** reason
+(`policy::blocked`): outside allow or inside deny, a stack folder outside the roots, stack files not reachable. Blocked
+targets show a badge (Updates, Targets card, target page), can't be approved or scheduled (pages, `409` from
+`POST /api/v1/targets/{id}/approve|schedule`, an MCP error), are skipped by bulk approval, and their queued runs lapse;
+`blocked_reason` is on every target in the API. The bind sources and Compose folders become the roots the
+**agent.toml helper** suggests (`servers.folders`; `GET /servers/{id}/agent-toml`, admins, a GET form that only renders
+text).
 
 ## Discovery and version checks
 
@@ -379,7 +401,7 @@ data, never a command:
  "from_key": "ww-test-container=sha256:02d8…", "to_key": "ww-test-container=sha256:4f90…",
  "images": [{"container": "ww-test-container", "image": "localhost:5056/ww-test/app:container",
              "from": "sha256:02d8…", "to": "sha256:4f90…"}],
- "health_seconds": 180, "keep_snapshots": 2, "rollback_of": null}}
+ "health_seconds": 180, "keep_snapshots": 2, "rollback_of": null, "require_snapshot": false}}
 ```
 
 Kinds: `update` and `rollback` (of run `rollback_of`). Before acting, the agent checks the job against `[updates]`,
@@ -389,6 +411,13 @@ Compose stack's folder and files are under `roots` and mounted at the same path,
 `agent.toml` (its scripts are the ones there, run by name). Anything else: the run ends as `refused` and nothing
 changed. It posts each step to `POST /api/agent/v1/runs/{id}/steps` (`{"step", "status", "log", "duration_ms"}`)
 and the end to `…/finish` (`succeeded`, `rolled_back`, `failed`, `rollback_failed`, `refused`, `cancelled`).
+
+**Coded texts (0.4.0+).** Besides the English `detail`, the finish body carries `code` and `params`
+(`refused.not_allowed {target}`, `refused.not_under_roots {folder}`, `done.already_on {target}`, …), and a step report
+`notes` (`[{"code", "params"}]`: for the snapshot `path.shared {path, with}`, `path.not_under_roots {path}`,
+`path.root {path}`, `path.volume {volume, container}` and `snapshot.none`). Wren keeps known codes only
+(`texts::key`) and renders them in the page's or the channel's language (`[agent_msg]` in the locales); free text from
+older agents shows as it came. Refusals that come from the agent's own `agent.toml` send no notification.
 
 ### A run
 
@@ -402,12 +431,16 @@ has a time limit.
    (`vv::before_stop`, see [Vigilant Vole](#vigilant-vole)). If Wren can't be reached then, the run stops with nothing changed.
 2. **Stop** what runs of the target (`docker stop -t 60`).
 3. **Snapshot** of the target's data paths: its own bind mounts under `roots`, never a root itself and never a path
-   another container also mounts (both are listed in the log). `/mnt/user/…` is resolved to its disk or pool with
+   another container also uses, i.e. mounts the same folder or one inside it (a container that mounts a folder
+   *above* it, like a backup tool or the agent itself, doesn't count; the agent also knows its own container id
+   from `/proc/self/cgroup`, `/proc/self/mountinfo` or its hostname). Every path left out is noted with why; when
+   none was snapshotted the step is a warning (`snapshot.none`), and with the target's **Require a snapshot** the run
+   stops before anything is touched (`failed.no_snapshot`). `/mnt/user/…` is resolved to its disk or pool with
    `getfattr -n system.LOCATIONS` when that path is mounted too. Method per path, in the spike's order: btrfs
    subvolume snapshot (subvolume root and `CAP_SYS_ADMIN`), reflink copy (`cp --reflink=always`), plain copy
    (`cp -a`, after checking size + 10 % fits). The run is refused when the space doesn't fit with 1 GB (or 2 %)
    left. Snapshots live in `<root>/.wren-snapshots/<target>/<run>/` on the same filesystem; the last 2 per target
-   are kept.
+   are kept (`[retention] snapshots`).
 4. **Update**: a container is recreated with its own configuration through the Docker API (values that were only
    the old image's defaults are dropped, the old container is kept renamed `<name>-wren-old-<run>` until the run
    ends); an Unraid template container goes through Unraid's own `update_container <name>` (falling back to the API
@@ -420,7 +453,9 @@ has a time limit.
    copy is back), put the old container or images back (a script stack runs its rollback script, or gets its
    Compose files and images back), start, check health again. If the rollback fails, the agent stops and leaves
    everything as it is: the run is `rollback_failed` ("needs you").
-7. **Close**: the old container is removed after success; older snapshots and kept images of the target go.
+7. **Close**: the old container is removed after success; older snapshots of the target go, and after a successful
+   update its kept images but the newest `[retention] rollback_images` updates' (default 1; never an image a container
+   uses, never with force). The agent also prunes every target's kept images this way once at start.
 
 Script stacks with `handles_own_backup = true` skip steps 2 and 3. One run at a time per server; a stack updates
 as one unit. A running run whose agent goes offline and stays silent for 10 minutes (or any run silent for 26
@@ -442,7 +477,8 @@ as `succeeded` without stopping anything, in Wren before the job goes out and in
 and the agent offline (once per outage, after 90 s without a heartbeat) and back.
 
 **Pages and API:** the run page shows every step live (status, duration, log), the target page its run history,
-mode and health period, the Overview the recent runs. `GET /api/v1/runs[?target_id=&server_id=&limit=]`,
+mode and health period, the Overview the running run, then the queued ones, then the 8 newest finished.
+`GET /api/v1/runs[?target_id=&server_id=&limit=]`,
 `GET /api/v1/runs/{id}` (with steps), `POST /api/v1/targets/{id}/{approve,skip,snooze}` (an API token with write
 access of an editor or admin; session cookies don't work here), MCP `list_runs` and `approve_update`.
 
@@ -463,7 +499,7 @@ access of an editor or admin; session cookies don't work here), MCP `list_runs` 
 - **Schedules** (nav): upcoming scheduled updates with their VV window, and per server the auto window and the
   targets that update on their own. `GET /api/v1/schedules`, MCP `list_schedules`; modes through
   `POST /api/v1/targets/{id}/mode`, `POST /api/v1/servers/{id}/mode` and MCP `set_mode`.
-- Run results name what started them (approved now, scheduled, automatic).
+- Run results name who or what started them ("Approved by …", "Scheduled by …", "Automatic (auto window)").
 
 ## Vigilant Vole
 

@@ -31,7 +31,7 @@ use vole_kit::http::ApiError;
 use vole_kit::http::ratelimit::{Rate, too_many_requests};
 
 use crate::Wren;
-use crate::inventory::{COMPOSE, CONTAINER, SCRIPT, UNRAID};
+use crate::inventory::{CONTAINER, UNRAID};
 use crate::targets;
 
 pub const JOBS_PATH: &str = "/api/agent/v1/jobs";
@@ -107,12 +107,13 @@ pub fn effective_mode<'a>(target: Option<&'a str>, server: &'a str) -> &'a str {
 
 /// Why an approval (or another action) was refused; the translation key
 /// says it in words.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     NotFound,
     NoUpdate,
     NotifyOnly,
-    FilesMissing,
+    /// The server's agent would refuse it ([`crate::policy`]).
+    Blocked(crate::policy::Blocked),
     /// The available version changed since the person looked.
     Changed,
     AlreadyQueued,
@@ -131,12 +132,12 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    pub fn key(self) -> &'static str {
+    pub fn key(&self) -> &'static str {
         match self {
             Refusal::NotFound => "runs.err_not_found",
             Refusal::NoUpdate => "runs.err_no_update",
             Refusal::NotifyOnly => "runs.err_notify_only",
-            Refusal::FilesMissing => "runs.err_files_missing",
+            Refusal::Blocked(_) => "blocked.err",
             Refusal::Changed => "runs.err_changed",
             Refusal::AlreadyQueued => "runs.err_queued",
             Refusal::TooLate => "runs.err_too_late",
@@ -149,8 +150,11 @@ impl Refusal {
         }
     }
 
-    pub fn message(self) -> String {
-        vole_kit::i18n::t(self.key()).to_string()
+    pub fn message(&self) -> String {
+        match self {
+            Refusal::Blocked(b) => vole_kit::i18n::tf("blocked.err", &[("why", &b.message())]),
+            r => vole_kit::i18n::t(r.key()).to_string(),
+        }
     }
 }
 
@@ -190,7 +194,7 @@ struct Approvable {
     available: String,
     available_key: String,
     mode: String,
-    files_reachable: bool,
+    blocked: Option<crate::policy::Blocked>,
     own: bool,
 }
 
@@ -198,19 +202,29 @@ fn approvable(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Approva
     let own = crate::schedule::own_target(c, target_id)?;
     c.query_row(
         "SELECT t.server_id, t.kind, t.name, t.status, t.available, t.available_key,
-                COALESCE(NULLIF(t.mode, ''), s.mode), t.files_reachable
+                COALESCE(NULLIF(t.mode, ''), s.mode), t.files_reachable, t.working_dir, s.policy
          FROM targets t JOIN servers s ON s.id = t.server_id WHERE t.id = ?1",
         [target_id],
         |r| {
+            let (kind, name): (String, String) = (r.get(1)?, r.get(2)?);
+            let policy =
+                crate::policy::AgentPolicy::parse(r.get::<_, Option<String>>(9)?.as_deref());
+            let working_dir: String = r.get(8)?;
             Ok(Approvable {
                 server_id: r.get(0)?,
-                kind: r.get(1)?,
-                name: r.get(2)?,
+                blocked: crate::policy::blocked(
+                    policy.as_ref(),
+                    &kind,
+                    &name,
+                    &working_dir,
+                    r.get(7)?,
+                ),
+                kind,
+                name,
                 status: r.get(3)?,
                 available: r.get(4)?,
                 available_key: r.get(5)?,
                 mode: r.get(6)?,
-                files_reachable: r.get(7)?,
                 own,
             })
         },
@@ -229,8 +243,8 @@ fn may_update(t: &Approvable) -> Result<(), Refusal> {
     if t.mode == NOTIFY {
         return Err(Refusal::NotifyOnly);
     }
-    if (t.kind == COMPOSE || t.kind == SCRIPT) && !t.files_reachable {
-        return Err(Refusal::FilesMissing);
+    if let Some(b) = &t.blocked {
+        return Err(Refusal::Blocked(b.clone()));
     }
     Ok(())
 }
@@ -603,14 +617,14 @@ fn job_json(c: &Connection, run: &Run) -> rusqlite::Result<Value> {
     } else {
         Vec::new()
     };
-    let health: Option<i64> = c
+    let (health, require_snapshot): (Option<i64>, bool) = c
         .query_row(
-            "SELECT health_seconds FROM targets WHERE id = ?1",
+            "SELECT health_seconds, require_snapshot FROM targets WHERE id = ?1",
             [target_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?
-        .flatten();
+        .unwrap_or((None, false));
     Ok(json!({
         "run_id": run.id,
         "kind": run.kind,
@@ -621,15 +635,36 @@ fn job_json(c: &Connection, run: &Run) -> rusqlite::Result<Value> {
         "health_seconds": health.unwrap_or(HEALTH_SECONDS).clamp(MIN_HEALTH, MAX_HEALTH),
         "keep_snapshots": KEEP_SNAPSHOTS,
         "rollback_of": run.rollback_of,
+        "require_snapshot": require_snapshot,
     }))
 }
 
 fn close(c: &Connection, run_id: i64, status: &str, detail: &str) -> rusqlite::Result<()> {
+    close_coded(c, run_id, status, detail, None)
+}
+
+/// [`close`] with the result's code and values (shown translated).
+fn close_coded(
+    c: &Connection,
+    run_id: i64,
+    status: &str,
+    detail: &str,
+    note: Option<&crate::texts::Note>,
+) -> rusqlite::Result<()> {
+    let (code, params) = match note.filter(|n| crate::texts::key(&n.code).is_some()) {
+        Some(n) => (
+            n.code.clone(),
+            serde_json::to_string(&n.params).unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
+    };
     // An empty detail keeps one Wren wrote (why it cancelled the run).
     c.execute(
         "UPDATE runs SET status = ?2, detail = CASE WHEN ?3 = '' THEN detail ELSE ?3 END,
+             detail_code = CASE WHEN ?3 = '' AND ?4 = '' THEN detail_code ELSE ?4 END,
+             detail_params = CASE WHEN ?3 = '' AND ?4 = '' THEN detail_params ELSE ?5 END,
              finished_at = datetime('now') WHERE id = ?1",
-        params![run_id, status, detail],
+        params![run_id, status, detail, code, params],
     )?;
     Ok(())
 }
@@ -713,7 +748,11 @@ pub fn dispatch_to(
             };
             // Nothing to do: the approved version already runs.
             if already_on(c, target_id, &run.to_key)? {
-                close(
+                let note = crate::texts::Note {
+                    code: "done.already_on".into(),
+                    params: [("target".to_string(), run.target_name.clone())].into(),
+                };
+                close_coded(
                     c,
                     id,
                     SUCCEEDED,
@@ -721,6 +760,7 @@ pub fn dispatch_to(
                         "already up to date: {} already runs the approved version; nothing was stopped",
                         run.target_name
                     ),
+                    Some(&note),
                 )?;
                 continue;
             }
@@ -785,6 +825,9 @@ pub struct StepBody {
     pub log: String,
     #[serde(default)]
     pub duration_ms: i64,
+    /// Coded notes (0.4.0+ agents: why snapshot paths were left out).
+    #[serde(default)]
+    pub notes: Vec<crate::texts::Note>,
 }
 
 /// Records a step of a running run of this server; whether to cancel
@@ -807,10 +850,18 @@ pub fn record_step(
     };
     let log: String = clip_log(&b.log);
     c.execute(
-        "INSERT INTO run_steps (run_id, step, status, duration_ms, log) VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO run_steps (run_id, step, status, duration_ms, log, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (run_id, step) DO UPDATE SET status = excluded.status,
-             duration_ms = excluded.duration_ms, log = excluded.log",
-        params![run_id, b.step, b.status, b.duration_ms.max(0), log],
+             duration_ms = excluded.duration_ms, log = excluded.log, notes = excluded.notes",
+        params![
+            run_id,
+            b.step,
+            b.status,
+            b.duration_ms.max(0),
+            log,
+            crate::texts::clean(&b.notes)
+        ],
     )?;
     c.execute(
         "UPDATE runs SET last_report_at = datetime('now') WHERE id = ?1",
@@ -837,6 +888,18 @@ pub fn record_finish(
     outcome: &str,
     detail: &str,
 ) -> rusqlite::Result<Option<Run>> {
+    record_finish_coded(c, server_id, run_id, outcome, detail, None)
+}
+
+/// [`record_finish`] with the agent's code for the result (0.4.0+).
+pub fn record_finish_coded(
+    c: &Connection,
+    server_id: i64,
+    run_id: i64,
+    outcome: &str,
+    detail: &str,
+    note: Option<&crate::texts::Note>,
+) -> rusqlite::Result<Option<Run>> {
     let ok: bool = c.query_row(
         "SELECT EXISTS (SELECT 1 FROM runs WHERE id = ?1 AND server_id = ?2 AND status = 'running')",
         params![run_id, server_id],
@@ -845,7 +908,16 @@ pub fn record_finish(
     if !ok {
         return Ok(None);
     }
-    close(c, run_id, outcome, &clip_log(detail))?;
+    let note = note.map(|n| crate::texts::Note {
+        code: n.code.clone(),
+        params: n
+            .params
+            .iter()
+            .take(8)
+            .map(|(k, v)| (k.chars().take(32).collect(), clip_log(v)))
+            .collect(),
+    });
+    close_coded(c, run_id, outcome, &clip_log(detail), note.as_ref())?;
     // A fresh inventory shows what runs now.
     let target_id: Option<i64> =
         c.query_row("SELECT target_id FROM runs WHERE id = ?1", [run_id], |r| {
@@ -990,13 +1062,36 @@ pub struct Run {
     pub scheduled_for: Option<String>,
     pub vv_window_id: Option<i64>,
     pub vv_state: String,
+    /// The result's code and its values as JSON (shown translated).
+    pub detail_code: String,
+    pub detail_params: String,
+    /// The snapshot step's notes as JSON ('' without).
+    pub snapshot_notes: String,
+}
+
+impl Run {
+    /// The result in the current language.
+    pub fn detail_text(&self) -> String {
+        crate::texts::detail(&self.detail_code, &self.detail_params, &self.detail)
+    }
+
+    /// Why no data snapshot was taken (`None`: one was, or no word).
+    pub fn no_snapshot(&self) -> Option<Vec<String>> {
+        crate::texts::no_snapshot(&self.snapshot_notes)
+    }
+
+    /// Refused by the agent's own `agent.toml` (no notification).
+    pub fn config_refusal(&self) -> bool {
+        self.status == REFUSED && crate::texts::is_config_refusal(&self.detail_code, &self.detail)
+    }
 }
 
 const COLUMNS: &str =
     "r.id, r.server_id, s.name, r.target_id, r.target_kind, r.target_name, r.kind,
     r.rollback_of, r.from_key, r.to_key, r.shown, r.status, r.detail, r.requested_by, r.created_at,
     r.started_at, r.finished_at, r.cancel_requested, r.trigger, r.scheduled_for, r.vv_window_id,
-    r.vv_state";
+    r.vv_state, r.detail_code, r.detail_params,
+    COALESCE((SELECT notes FROM run_steps x WHERE x.run_id = r.id AND x.step = 'snapshot'), '')";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -1022,6 +1117,9 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Run> {
         scheduled_for: r.get(19)?,
         vv_window_id: r.get(20)?,
         vv_state: r.get(21)?,
+        detail_code: r.get(22)?,
+        detail_params: r.get(23)?,
+        snapshot_notes: r.get(24)?,
     })
 }
 
@@ -1061,6 +1159,25 @@ pub fn list(c: &Connection, f: Filter) -> rusqlite::Result<Vec<Run>> {
     .collect()
 }
 
+/// The Overview's runs: the running one, then the queued ones (approved,
+/// waiting) in the order they go, then the newest `finished` others.
+pub fn overview(c: &Connection, finished: i64) -> rusqlite::Result<Vec<Run>> {
+    c.prepare(&format!(
+        "SELECT {COLUMNS} FROM (
+             SELECT r.*, CASE r.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END AS grp
+             FROM runs r WHERE r.status IN ('running', 'queued')
+             UNION ALL
+             SELECT * FROM (SELECT r.*, 2 AS grp FROM runs r
+                            WHERE r.status NOT IN ('running', 'queued') ORDER BY r.id DESC LIMIT ?1)
+         ) r JOIN servers s ON s.id = r.server_id
+         ORDER BY r.grp,
+             CASE WHEN r.grp = 1 THEN COALESCE(r.scheduled_for, r.created_at) END,
+             CASE WHEN r.grp = 2 THEN -r.id ELSE r.id END"
+    ))?
+    .query_map([finished.max(1)], row)?
+    .collect()
+}
+
 /// Runs approved for a later time that haven't started, soonest first.
 pub fn scheduled(c: &Connection) -> rusqlite::Result<Vec<Run>> {
     c.prepare(&format!(
@@ -1092,11 +1209,13 @@ pub struct Step {
     pub started_at: String,
     pub duration_ms: i64,
     pub log: String,
+    /// The agent's coded notes as JSON ('' without).
+    pub notes: String,
 }
 
 pub fn steps(c: &Connection, run_id: i64) -> rusqlite::Result<Vec<Step>> {
     c.prepare(
-        "SELECT step, status, started_at, duration_ms, log FROM run_steps WHERE run_id = ?1 ORDER BY id",
+        "SELECT step, status, started_at, duration_ms, log, notes FROM run_steps WHERE run_id = ?1 ORDER BY id",
     )?
     .query_map([run_id], |r| {
         Ok(Step {
@@ -1105,6 +1224,7 @@ pub fn steps(c: &Connection, run_id: i64) -> rusqlite::Result<Vec<Step>> {
             started_at: r.get(2)?,
             duration_ms: r.get(3)?,
             log: r.get(4)?,
+            notes: r.get(5)?,
         })
     })?
     .collect()
@@ -1120,6 +1240,8 @@ pub struct Policy {
     pub snoozed_until: Option<String>,
     /// Cancel a run when the Vigilant Vole window can't be opened.
     pub require_vv: bool,
+    /// Stop a run before anything stops when no data can be snapshotted.
+    pub require_snapshot: bool,
     /// The server's auto window.
     pub window: Option<(String, String)>,
     /// One of Wren's or VV's own images: never updated by Wren.
@@ -1144,7 +1266,7 @@ pub fn policy(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Policy>
             "SELECT t.mode, s.mode, t.health_seconds,
                 t.skipped_key != '' AND t.skipped_key = t.available_key,
                 CASE WHEN t.snoozed_until > datetime('now') THEN t.snoozed_until END,
-                t.require_vv, s.auto_start, s.auto_end
+                t.require_vv, s.auto_start, s.auto_end, t.require_snapshot
          FROM targets t JOIN servers s ON s.id = t.server_id WHERE t.id = ?1",
             [target_id],
             |r| {
@@ -1157,6 +1279,7 @@ pub fn policy(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Policy>
                     skipped: r.get(3)?,
                     snoozed_until: r.get(4)?,
                     require_vv: r.get(5)?,
+                    require_snapshot: r.get(8)?,
                     window: start.zip(end),
                     own: false,
                 })
@@ -1177,10 +1300,11 @@ pub struct TargetSettings {
     pub mode: Option<String>,
     pub health_seconds: Option<i64>,
     pub require_vv: bool,
+    pub require_snapshot: bool,
 }
 
-/// Sets a target's mode (`None`: the server's), health period and "require
-/// VV". Turning automatic updates on (directly, or by following an `auto`
+/// Sets a target's mode (`None`: the server's), health period, "require
+/// VV" and "require a snapshot". Turning automatic updates on (directly, or by following an `auto`
 /// server) needs an admin and the server's auto window; it is logged.
 pub fn set_target_policy(
     c: &Connection,
@@ -1207,14 +1331,22 @@ pub fn set_target_policy(
         }
     }
     c.execute(
-        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4 WHERE id = ?1",
-        params![target_id, s.mode, s.health_seconds, s.require_vv],
+        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4, require_snapshot = ?5
+         WHERE id = ?1",
+        params![
+            target_id,
+            s.mode,
+            s.health_seconds,
+            s.require_vv,
+            s.require_snapshot
+        ],
     )?;
     let detail = format!(
-        "mode={} health={} require_vv={}",
+        "mode={} health={} require_vv={} require_snapshot={}",
         s.mode.as_deref().unwrap_or("server"),
         s.health_seconds.map_or("default".into(), |h| h.to_string()),
-        s.require_vv
+        s.require_vv,
+        s.require_snapshot
     );
     log_action(c, user, "settings", Some(target_id), None, &detail)?;
     if new_mode != old.effective() {
@@ -1421,6 +1553,11 @@ struct FinishBody {
     outcome: String,
     #[serde(default)]
     detail: String,
+    /// The result's code and values (0.4.0+ agents).
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    params: std::collections::BTreeMap<String, String>,
 }
 
 /// `POST /api/agent/v1/runs/{id}/finish`.
@@ -1443,7 +1580,13 @@ pub async fn finish(
     }
     let run = match wren
         .core
-        .with_conn(move |c| record_finish(c, server_id, run_id, &b.outcome, &b.detail))
+        .with_conn(move |c| {
+            let note = crate::texts::Note {
+                code: b.code.clone(),
+                params: b.params.clone(),
+            };
+            record_finish_coded(c, server_id, run_id, &b.outcome, &b.detail, Some(&note))
+        })
         .await
     {
         Ok(Some(run)) => run,

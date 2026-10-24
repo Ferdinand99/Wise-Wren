@@ -276,6 +276,7 @@ async fn set_target_mode(
                     mode: mode.map(str::to_string),
                     health_seconds: Some(60),
                     require_vv: false,
+                    require_snapshot: false,
                 },
                 "someone",
                 admin,

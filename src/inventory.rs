@@ -49,6 +49,8 @@ pub struct Inventory {
     pub script_stacks: Vec<ScriptStack>,
     /// Why Docker couldn't be read, if it couldn't.
     pub error: String,
+    /// What the agent allows (0.4.0+; `None` from an older agent).
+    pub policy: Option<crate::policy::AgentPolicy>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -64,6 +66,8 @@ pub struct Container {
     /// `org.opencontainers.image.*`, `com.docker.compose.*`,
     /// `net.unraid.docker.*` labels.
     pub labels: BTreeMap<String, String>,
+    /// Its bind mounts' host folders (0.4.0+).
+    pub binds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -295,9 +299,17 @@ pub async fn receive(
     let planned = plan(&inv);
     let error = clip(&inv.error);
     let count = planned.len();
+    let (policy, folders) = policy_and_folders(&inv);
     if let Err(err) = wren
         .core
-        .with_conn(move |c| crate::targets::apply(c, id, &planned, &error))
+        .with_conn(move |c| {
+            crate::targets::apply(c, id, &planned, &error)?;
+            c.execute(
+                "UPDATE servers SET policy = ?2, folders = ?3 WHERE id = ?1",
+                rusqlite::params![id, policy, folders],
+            )?;
+            Ok(())
+        })
         .await
     {
         return err.into_response();
@@ -306,6 +318,37 @@ pub async fn receive(
     let _ = wren.changes.send(());
     wren.checks.notify_one();
     Json(json!({ "targets": count })).into_response()
+}
+
+/// The agent's policy as stored (`None` from an agent before 0.4.0) and
+/// the roots to suggest from the folders the inventory showed, as JSON.
+pub fn policy_and_folders(inv: &Inventory) -> (Option<String>, String) {
+    let policy = inv.policy.as_ref().map(|p| {
+        let clean =
+            |list: &[String]| -> Vec<String> { list.iter().take(200).map(|s| clip(s)).collect() };
+        let p = crate::policy::AgentPolicy {
+            allow: p.allow.as_deref().map(clean),
+            deny: clean(&p.deny),
+            roots: clean(&p.roots),
+        };
+        serde_json::to_string(&p).unwrap_or_default()
+    });
+    let seen = inv
+        .containers
+        .iter()
+        .flat_map(|c| c.binds.iter())
+        .chain(inv.compose_projects.iter().map(|p| &p.working_dir))
+        .chain(inv.script_stacks.iter().map(|s| &s.working_dir))
+        .map(String::as_str);
+    let folders: Vec<String> = crate::policy::suggest_roots(seen)
+        .into_iter()
+        .take(50)
+        .map(|f| clip(&f))
+        .collect();
+    (
+        policy,
+        serde_json::to_string(&folders).unwrap_or_else(|_| "[]".into()),
+    )
 }
 
 #[cfg(test)]
@@ -326,6 +369,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            binds: Vec::new(),
         }
     }
 
@@ -373,6 +417,7 @@ mod tests {
                 }),
             }],
             error: String::new(),
+            policy: None,
         };
         let p = plan(&inv);
         let kinds: Vec<(&str, &str)> = p.iter().map(|t| (t.kind, t.name.as_str())).collect();

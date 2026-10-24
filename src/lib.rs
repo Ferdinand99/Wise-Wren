@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agent_api;
+pub mod agent_toml;
 pub mod api;
 pub mod api_settings;
 pub mod channels;
@@ -20,6 +21,7 @@ pub mod db;
 pub mod fetch;
 pub mod inventory;
 pub mod pages;
+pub mod policy;
 pub mod product;
 pub mod registries;
 pub mod registry;
@@ -30,6 +32,7 @@ pub mod schedule;
 pub mod server;
 pub mod servers;
 pub mod targets;
+pub mod texts;
 pub mod updates_notify;
 pub mod versions;
 pub mod vv;
@@ -149,6 +152,7 @@ pub fn router(wren: Wren) -> Router {
     let core = wren.core.clone();
     let protected = Router::new()
         .merge(servers::router())
+        .merge(agent_toml::router())
         .merge(channels::router())
         .merge(pages::router())
         .merge(run_pages::router())

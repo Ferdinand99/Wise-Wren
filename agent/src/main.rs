@@ -58,7 +58,7 @@ fn main() -> ExitCode {
             Some(allow) => format!("updates only for {}", allow.join(", ")),
         };
         println!(
-            "{}: OK ({} roots, {} script stacks; {updates}{})",
+            "{}: OK ({} roots, {} script stacks; {updates}{}; old images of the last {} update(s) kept per target)",
             path.display(),
             config.roots.len(),
             config.script_stacks.len(),
@@ -66,8 +66,13 @@ fn main() -> ExitCode {
                 String::new()
             } else {
                 format!(", never for {}", config.updates.deny.join(", "))
-            }
+            },
+            config.retention.rollback_images
         );
+        let exists = std::path::Path::new(config::COMPOSE_MANAGER).is_dir();
+        if let Some(hint) = config.compose_manager_hint(exists) {
+            println!("{hint}");
+        }
         return ExitCode::SUCCESS;
     }
 

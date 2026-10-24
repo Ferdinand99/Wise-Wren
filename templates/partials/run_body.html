@@ -4,6 +4,9 @@
   {%- if run.needs_you() %}
   {{ m::callout("danger", tr("runs.needs_you_help"), tr("runs.needs_you")) }}
   {%- endif %}
+  {%- if run.no_snapshot.is_some() %}
+  <div data-no-snapshot="1">{{ m::callout("warning", run.no_snapshot_text(), tr("snap.none")) }}</div>
+  {%- endif %}
   <section class="card" aria-labelledby="run-title">
     <div class="card-head">
       <h2 class="card-title" id="run-title">{% if run.is_rollback %}{{ tr("runs.kind_rollback") }}{% else %}{{ tr("runs.kind_update") }}{% endif %}</h2>
@@ -29,8 +32,7 @@
       {%- else if !run.shown.is_empty() %}
       <div class="dl-row"><dt>{{ tr("targets.col_available") }}</dt><dd class="mono break">{{ run.shown }}</dd></div>
       {%- endif %}
-      <div class="dl-row"><dt>{{ tr("runs.requested_by") }}</dt><dd>{{ run.requested_by }} · {{ m::time_ago(run.created_at) }}</dd></div>
-      <div class="dl-row"><dt>{{ tr("runs.trigger") }}</dt><dd data-trigger="{{ run.trigger }}">{{ run.trigger_label }}</dd></div>
+      <div class="dl-row"><dt>{{ tr("runs.trigger") }}</dt><dd data-trigger="{{ run.trigger }}">{{ run.trigger_label }} · {{ m::time_ago(run.created_at) }}</dd></div>
       {%- if let Some(at) = run.scheduled_for %}
       <div class="dl-row"><dt>{{ tr("schedules.col_when") }}</dt><dd>{{ at }}{% if run.waiting() %} · {{ tr("runs.waits") }}{% endif %}</dd></div>
       {%- endif %}
@@ -66,7 +68,7 @@
             <td class="td-primary">{{ s.label }}</td>
             <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ s.status_class }}"><span class="dot" aria-hidden="true"></span>{{ s.status_label }}</span></td>
             <td data-label="{{ tr("runs.col_duration") }}" class="mono">{% if s.status == "running" %}…{% else %}{{ millis(s.duration_ms) }}{% endif %}</td>
-            <td data-label="{{ tr("runs.col_log") }}">{% if s.log.is_empty() %}–{% else %}<details{% if s.status == "failed" %} open{% endif %}><summary>{{ tr("runs.show_log") }}</summary><pre class="run-log">{{ s.log }}</pre></details>{% endif %}</td>
+            <td data-label="{{ tr("runs.col_log") }}">{% if !s.notes.is_empty() %}<ul class="step-notes">{% for n in s.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}{% if s.log.is_empty() %}{% if s.notes.is_empty() %}–{% endif %}{% else %}<details{% if s.status == "failed" %} open{% endif %}><summary>{{ tr("runs.show_log") }}</summary><pre class="run-log">{{ s.log }}</pre></details>{% endif %}</td>
           </tr>
           {%- endfor %}
         </tbody>

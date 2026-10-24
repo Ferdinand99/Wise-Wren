@@ -91,6 +91,18 @@ pub async fn run(
         "wren-agent started"
     );
     tokio::pin!(stop);
+    // Kept images beyond `[retention] rollback_images`, from before this
+    // setting or a run that never finished, go once at start.
+    let (socket, keep) = (
+        config.docker_socket.clone(),
+        config.retention.rollback_images,
+    );
+    tokio::spawn(async move {
+        let gone = run::prune_rollback_images(&socket, None, keep).await;
+        if !gone.is_empty() {
+            tracing::info!(images = ?gone, "kept images beyond [retention] removed");
+        }
+    });
     let job_task = tokio::spawn(jobs_loop(config.clone()));
     let mut connected = false;
     let mut failures = 0u32;
@@ -160,7 +172,7 @@ async fn jobs_loop(config: Arc<Config>) {
             }
             Ok(jobs::Polled::Job(Err((run, why)))) => {
                 tracing::warn!(run, "{why}");
-                let _ = client.finish(run, "refused", &why).await;
+                let _ = client.finish(run, "refused", &jobs::Note::plain(why)).await;
             }
             Err(SendError::Refused(_)) => tokio::time::sleep(REFUSED_WAIT).await,
             Err(SendError::Failed(msg)) => {

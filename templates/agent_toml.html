@@ -1,0 +1,106 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("toml.title"), tr1("toml.sub", "server", server_name), back_href.as_str(), server_name.as_str()) %}{% endcall %}
+
+<div class="stack">
+  {#- A GET form: it only renders the text below; nothing is stored or sent. -#}
+  <form method="get" action="/servers/{{ server_id }}/agent-toml" class="stack" id="toml-form">
+    <input type="hidden" name="go" value="1">
+    <input type="hidden" name="stack_was" value="{{ stack_kind }}">
+    <section class="card card-flush" aria-labelledby="updates-title">
+      <div class="card-head card-pad">
+        <div>
+          <h2 class="card-title" id="updates-title">{{ tr("toml.updates") }}</h2>
+          <p class="card-sub">{{ tr("toml.updates_help") }}</p>
+        </div>
+      </div>
+      <div class="card-pad stack-sm">
+        <label class="check"><input type="radio" name="updates" value="list"{% if !all %} checked{% endif %}><span class="check-text"><span class="check-label">{{ tr("toml.mode_list") }}</span></span></label>
+        <label class="check"><input type="radio" name="updates" value="all"{% if all %} checked{% endif %}><span class="check-text"><span class="check-label">{{ tr("toml.mode_all") }}</span></span></label>
+      </div>
+      {%- if picks.is_empty() %}
+      <div class="card-pad"><p class="help">{{ tr("toml.no_targets") }}</p></div>
+      {%- else %}
+      <div class="table-wrap">
+        <table class="table table-stack" id="toml-targets">
+          <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("targets.col_kind") }}</th><th>{{ tr("toml.col_allow") }}</th><th>{{ tr("toml.col_deny") }}</th></tr></thead>
+          <tbody>
+            {%- for p in picks %}
+            <tr>
+              <td class="td-primary">{{ p.name }}</td>
+              <td data-label="{{ tr("targets.col_kind") }}">{{ p.kind_label }}</td>
+              <td data-label="{{ tr("toml.col_allow") }}"><input type="checkbox" name="allow" value="{{ p.name }}"{% if p.allow %} checked{% endif %} aria-label="{{ tr("toml.col_allow") }}: {{ p.name }}"></td>
+              <td data-label="{{ tr("toml.col_deny") }}"><input type="checkbox" name="deny" value="{{ p.name }}"{% if p.deny %} checked{% endif %} aria-label="{{ tr("toml.col_deny") }}: {{ p.name }}"></td>
+            </tr>
+            {%- endfor %}
+          </tbody>
+        </table>
+      </div>
+      {%- endif %}
+    </section>
+
+    <section class="card stack-sm" aria-labelledby="roots-title">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="roots-title">{{ tr("toml.roots") }}</h2>
+          <p class="card-sub">{{ tr("toml.roots_help") }}</p>
+        </div>
+      </div>
+      {%- for f in folders %}
+      <label class="check"><input type="checkbox" name="root" value="{{ f.path }}"{% if f.checked %} checked{% endif %}><span class="check-text"><span class="check-label mono">{{ f.path }}</span></span></label>
+      {%- endfor %}
+      {{ m::field_textarea("roots_extra", tr("toml.roots_extra"), extra_roots, 2, "/srv/apps", tr("toml.roots_extra_help"), true) }}
+    </section>
+
+    <section class="card stack-sm" aria-labelledby="stack-title">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="stack-title">{{ tr("toml.stack") }}</h2>
+          <p class="card-sub">{{ tr("toml.stack_help") }}</p>
+        </div>
+      </div>
+      <div class="field">
+        <label class="label" for="f-stack">{{ tr("toml.stack") }}</label>
+        <select id="f-stack" name="stack">
+          <option value=""{% if stack_is("") %} selected{% endif %}>{{ tr("toml.stack_none") }}</option>
+          <option value="fluxer"{% if stack_is("fluxer") %} selected{% endif %}>{{ tr("toml.stack_fluxer") }}</option>
+          <option value="custom"{% if stack_is("custom") %} selected{% endif %}>{{ tr("toml.stack_custom") }}</option>
+        </select>
+      </div>
+      {%- if !stack_is("") %}
+      {{ m::field_text("stack_name", tr("toml.stack_name"), stack.name, "text", "fluxer", tr("toml.stack_name_help")) }}
+      {{ m::field_text("stack_project", tr("toml.stack_project"), stack.project, "text", "fluxer") }}
+      {{ m::field_text("stack_dir", tr("targets.working_dir"), stack.dir, "text", "/mnt/cache/appdata/fluxer") }}
+      {{ m::field_text("stack_timeout", tr("toml.stack_timeout"), stack.timeout, "text", "20m", tr("toml.stack_timeout_help")) }}
+      {{ m::checkbox("stack_own", tr("toml.stack_own"), stack.own_backup, tr("toml.stack_own_help")) }}
+      {{ m::field_textarea("stack_update", tr("toml.stack_update"), stack.update, 4, "", "", true) }}
+      {{ m::field_textarea("stack_rollback", tr("toml.stack_rollback"), stack.rollback, 2, "", "", true) }}
+      {%- endif %}
+    </section>
+    <div class="toolbar"><button type="submit" class="btn btn-primary">{{ m::icon("refresh") }}<span>{{ tr("toml.build") }}</span></button></div>
+  </form>
+
+  <section class="card stack-sm" aria-labelledby="result-title">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title" id="result-title">{{ tr("toml.result") }}</h2>
+        <p class="card-sub">{{ tr("toml.nothing_stored") }}</p>
+      </div>
+    </div>
+    <pre class="code"><code id="agent-toml">{{ toml }}</code></pre>
+    <div class="toolbar"><button type="button" class="btn btn-secondary btn-sm" data-copy="#agent-toml">{{ m::icon("copy") }}<span>{{ tr("toml.copy") }}</span></button></div>
+    <h3 class="section-title">{{ tr("toml.steps") }}</h3>
+    <ol class="stack-sm">
+      <li>{{ tr1("toml.step_file", "path", path) }}</li>
+      <li>{{ tr("toml.step_check") }} <code>docker exec wren-agent wren-agent --check</code></li>
+      <li>{{ tr("toml.step_restart") }} <code>docker restart wren-agent</code></li>
+    </ol>
+  </section>
+</div>
+{% endblock %}

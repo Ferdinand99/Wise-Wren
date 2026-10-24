@@ -32,6 +32,32 @@ pub struct Inventory {
     pub compose_projects: Vec<ComposeProject>,
     pub script_stacks: Vec<ScriptStack>,
     pub error: String,
+    /// What this agent allows (`[updates]` and `roots`), so Wren can tell
+    /// before an approval what the agent would refuse.
+    pub policy: Policy,
+}
+
+/// The parts of `agent.toml` Wren may show: never the token or scripts.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Policy {
+    /// `None`: no `allow` list, every name is allowed.
+    pub allow: Option<Vec<String>>,
+    pub deny: Vec<String>,
+    pub roots: Vec<String>,
+}
+
+impl Policy {
+    pub fn of(config: &Config) -> Policy {
+        Policy {
+            allow: config.updates.allow.clone(),
+            deny: config.updates.deny.clone(),
+            roots: config
+                .roots
+                .iter()
+                .map(|r| r.to_string_lossy().to_string())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -43,6 +69,8 @@ pub struct Container {
     pub repo_digests: Vec<String>,
     pub state: String,
     pub labels: BTreeMap<String, String>,
+    /// Its bind mounts' host folders (Wren suggests `roots` from them).
+    pub binds: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -94,6 +122,7 @@ fn under(root: &Path, path: &str) -> PathBuf {
 pub async fn scan(config: &Config, root: &Path) -> Inventory {
     let mut inv = Inventory {
         unraid_templates: unraid_templates(root),
+        policy: Policy::of(config),
         ..Inventory::default()
     };
     match containers(&config.docker_socket).await {
@@ -156,6 +185,15 @@ pub async fn containers(socket: &str) -> Result<Vec<Container>, String> {
                     .collect()
             })
             .unwrap_or_default();
+        let binds = inspect
+            .get("Mounts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|m| text(m, "Type") == "bind")
+            .map(|m| text(m, "Source"))
+            .filter(|s| s.starts_with('/'))
+            .collect();
         out.push(Container {
             name,
             image: text(&config, "Image"),
@@ -163,6 +201,7 @@ pub async fn containers(socket: &str) -> Result<Vec<Container>, String> {
             repo_digests,
             state: text(c, "State"),
             labels,
+            binds,
         });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -384,7 +423,7 @@ mod tests {
                 let body = match line.split(' ').nth(1).unwrap() {
                     "/containers/json?all=1" => r#"[{"Id":"aaa1","Image":"redis","State":"running"},{"Id":"bbb2","Image":"postgres:16","State":"exited"}]"#.to_string(),
                     "/containers/aaa1/json" => r#"{"Name":"/Newt","Image":"sha256:111","Config":{"Image":"redis@sha256:abc","Labels":{"org.opencontainers.image.source":"https://github.com/x/y","traefik.enable":"true"}}}"#.to_string(),
-                    "/containers/bbb2/json" => r#"{"Name":"/postiz-postgres","Image":"sha256:222","Config":{"Image":"postgres:16","Labels":{"com.docker.compose.project":"postiz","com.docker.compose.project.working_dir":"/srv/postiz","com.docker.compose.project.config_files":"/srv/postiz/compose.yaml"}}}"#.to_string(),
+                    "/containers/bbb2/json" => r#"{"Name":"/postiz-postgres","Image":"sha256:222","Config":{"Image":"postgres:16","Labels":{"com.docker.compose.project":"postiz","com.docker.compose.project.working_dir":"/srv/postiz","com.docker.compose.project.config_files":"/srv/postiz/compose.yaml"}},"Mounts":[{"Type":"bind","Source":"/srv/postiz/db"},{"Type":"volume","Name":"x","Source":"/var/lib/docker/volumes/x/_data"}]}"#.to_string(),
                     "/images/sha256:111/json" => r#"{"RepoDigests":["redis@sha256:abc"]}"#.to_string(),
                     "/images/sha256:222/json" => r#"{"RepoDigests":["postgres@sha256:def"]}"#.to_string(),
                     other => panic!("unexpected {other}"),
@@ -437,6 +476,15 @@ installed_command = "cat VERSION"
         assert_eq!(newt.repo_digests, ["redis@sha256:abc"]);
         assert!(!newt.labels.contains_key("traefik.enable"));
         assert_eq!(inv.containers[1].state, "exited");
+        assert_eq!(inv.containers[1].binds, ["/srv/postiz/db"]);
+        assert_eq!(
+            inv.policy,
+            Policy {
+                allow: None,
+                deny: Vec::new(),
+                roots: vec!["/srv".into()]
+            }
+        );
         assert_eq!(
             inv.compose_projects,
             [ComposeProject {

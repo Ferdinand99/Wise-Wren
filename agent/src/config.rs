@@ -42,6 +42,13 @@
 //! deny = ["ww-keep-*"]
 //! ```
 //!
+//! ```toml
+//! # Optional: how many rollback points the agent keeps per target.
+//! [retention]
+//! rollback_images = 1   # runs whose old images stay tagged (1-10)
+//! snapshots = 2         # data snapshots (1-10; default: what Wren asks, 2)
+//! ```
+//!
 //! Every problem names the field it is about; the agent refuses to start
 //! with any of them.
 
@@ -60,6 +67,8 @@ pub const TOKEN_PREFIX: &str = "wwa_";
 pub const TOKEN_BODY_LEN: usize = 43;
 /// Longest script timeout.
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+/// Where Unraid's Compose Manager plugin keeps its stacks.
+pub const COMPOSE_MANAGER: &str = "/boot/config/plugins/compose.manager/projects";
 /// Where Docker listens unless `docker_socket` says otherwise.
 pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 
@@ -89,7 +98,30 @@ pub struct Config {
     pub scan_interval: Duration,
     /// Which targets Wren may update (`[updates]`).
     pub updates: UpdatePolicy,
+    /// How many rollback points stay per target (`[retention]`).
+    pub retention: Retention,
 }
+
+/// `[retention]`: the old images of the newest `rollback_images` updates
+/// stay tagged `wren-rollback/<target>:…` (a rollback can only undo the
+/// newest one); `snapshots`, when set, replaces the count Wren asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Retention {
+    pub rollback_images: usize,
+    pub snapshots: Option<usize>,
+}
+
+impl Default for Retention {
+    fn default() -> Retention {
+        Retention {
+            rollback_images: 1,
+            snapshots: None,
+        }
+    }
+}
+
+/// The most rollback points of either kind kept per target.
+pub const MAX_RETENTION: usize = 10;
 
 /// `[updates]`: globs on target names. `allow: None` (no section, or no
 /// `allow` key) allows every name; `deny` always wins.
@@ -185,6 +217,14 @@ struct RawConfig {
     docker_socket: Option<String>,
     scan_interval: Option<String>,
     updates: Option<RawUpdates>,
+    retention: Option<RawRetention>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRetention {
+    rollback_images: Option<i64>,
+    snapshots: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -565,9 +605,28 @@ impl Config {
             deny: raw_updates.deny,
         };
 
+        let raw_retention = raw.retention.unwrap_or_default();
+        let mut count = |v: Option<i64>, field: &str| -> Option<usize> {
+            let n = v?;
+            match usize::try_from(n) {
+                Ok(n) if (1..=MAX_RETENTION).contains(&n) => Some(n),
+                _ => {
+                    problems.push(format!(
+                        "retention.{field} = {n}: use a whole number from 1 to {MAX_RETENTION}"
+                    ));
+                    None
+                }
+            }
+        };
+        let retention = Retention {
+            rollback_images: count(raw_retention.rollback_images, "rollback_images").unwrap_or(1),
+            snapshots: count(raw_retention.snapshots, "snapshots"),
+        };
+
         if problems.is_empty() {
             Ok(Config {
                 updates,
+                retention,
                 server,
                 token,
                 roots,
@@ -578,6 +637,18 @@ impl Config {
         } else {
             Err(ConfigError(problems))
         }
+    }
+
+    /// A hint for `--check` when Unraid's Compose Manager keeps stacks in a
+    /// folder (`exists`) that isn't under `roots`: Wren can't update them.
+    pub fn compose_manager_hint(&self, exists: bool) -> Option<String> {
+        let dir = Path::new(COMPOSE_MANAGER);
+        (exists && !self.roots.iter().any(|r| dir.starts_with(r))).then(|| {
+            format!(
+                "hint: Compose Manager keeps its stacks in {COMPOSE_MANAGER}, which is not under roots; \
+                 add it to roots so Wren can update those stacks"
+            )
+        })
     }
 
     /// Reads `path` (when it doesn't exist and wasn't asked for by name,
@@ -863,6 +934,48 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
         let text = format!("{}[updates]\nalow = []\n", base());
         let err = Config::from_parts(Some(&text), no_env).unwrap_err();
         assert!(err.to_string().contains("alow"), "{err}");
+    }
+
+    #[test]
+    fn retention_defaults_and_limits() {
+        let c = Config::from_parts(Some(&base()), no_env).unwrap();
+        assert_eq!(c.retention, Retention::default());
+        assert_eq!(c.retention.rollback_images, 1);
+        let text = format!(
+            "{}[retention]\nrollback_images = 2\nsnapshots = 3\n",
+            base()
+        );
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert_eq!(
+            (c.retention.rollback_images, c.retention.snapshots),
+            (2, Some(3))
+        );
+        for bad in ["rollback_images = 0", "snapshots = 11", "images = 1"] {
+            let text = format!("{}[retention]\n{bad}\n", base());
+            let err = Config::from_parts(Some(&text), no_env)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("retention.") || err.contains("images"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_hints_at_compose_manager() {
+        let c = Config::from_parts(Some(&base()), no_env).unwrap();
+        assert!(c.compose_manager_hint(false).is_none());
+        assert!(
+            c.compose_manager_hint(true)
+                .unwrap()
+                .contains(COMPOSE_MANAGER)
+        );
+        let text = format!(
+            "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata\", \"{COMPOSE_MANAGER}\"]\n"
+        );
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert!(c.compose_manager_hint(true).is_none());
     }
 
     #[test]

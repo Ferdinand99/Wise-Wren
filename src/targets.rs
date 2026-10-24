@@ -320,6 +320,8 @@ pub struct Target {
     /// The first image (the target's image for single containers).
     pub image: String,
     pub image_count: i64,
+    /// Why the server's agent would refuse to update it ([`crate::policy`]).
+    pub blocked: Option<crate::policy::Blocked>,
 }
 
 const COLUMNS: &str = "t.id, t.server_id, s.name, t.kind, t.name, t.working_dir, t.files_reachable,
@@ -328,10 +330,20 @@ const COLUMNS: &str = "t.id, t.server_id, s.name, t.kind, t.name, t.working_dir,
     s.check_interval_hours, t.check_requested, t.last_checked_at, t.notes_url, t.notes_title,
     t.notified_key,
     COALESCE((SELECT image FROM target_images i WHERE i.target_id = t.id ORDER BY container LIMIT 1), ''),
-    (SELECT COUNT(*) FROM target_images i WHERE i.target_id = t.id)";
+    (SELECT COUNT(*) FROM target_images i WHERE i.target_id = t.id), s.policy";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<Target> {
+    let policy = crate::policy::AgentPolicy::parse(r.get::<_, Option<String>>(26)?.as_deref());
+    let (kind, name, working_dir, files_reachable): (String, String, String, bool) =
+        (r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?);
     Ok(Target {
+        blocked: crate::policy::blocked(
+            policy.as_ref(),
+            &kind,
+            &name,
+            &working_dir,
+            files_reachable,
+        ),
         id: r.get(0)?,
         server_id: r.get(1)?,
         server_name: r.get(2)?,

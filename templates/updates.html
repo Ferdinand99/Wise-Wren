@@ -36,7 +36,7 @@
             {%- if can_act %}
             <td>{% if r.approvable() %}<input type="checkbox" name="ids" value="{{ r.t.id }}" aria-label="{{ tr1("updates.pick", "name", r.t.name) }}"><input type="hidden" name="key_{{ r.t.id }}" value="{{ r.t.available_key }}">{% endif %}</td>
             {%- endif %}
-            <td class="td-primary"><a href="/targets/{{ r.t.id }}">{{ r.t.name }}</a> <span class="muted">{{ r.t.kind_label }}</span>{% if r.t.files_missing() %} <span class="badge">{{ tr("targets.files_missing") }}</span>{% endif %}</td>
+            <td class="td-primary"><a href="/targets/{{ r.t.id }}">{{ r.t.name }}</a> <span class="muted">{{ r.t.kind_label }}</span>{% if r.blocked() %} <span class="badge badge-blocked" title="{{ r.t.blocked }}" data-blocked="1">{{ tr("blocked.badge") }}</span>{% endif %}</td>
             <td data-label="{{ tr("updates.col_server") }}"><a href="/servers/{{ r.t.server_id }}">{{ r.t.server_name }}</a></td>
             <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ r.t.current }}</td>
             <td data-label="{{ tr("targets.col_available") }}" class="mono break">{{ r.t.available }}{% if !r.t.notes_url.is_empty() %} · <a href="{{ r.t.notes_url }}" target="_blank" rel="noopener noreferrer">{% if r.t.notes_title.is_empty() %}{{ tr("targets.notes") }}{% else %}{{ r.t.notes_title }}{% endif %}</a>{% endif %}</td>
@@ -48,13 +48,18 @@
             </td>
             {%- if can_act %}
             <td data-label="{{ tr("updates.col_actions") }}">
-              {%- if r.approvable() %}
+              {%- if r.actionable() %}
               <div class="cluster">
+                {%- if r.blocked() %}
+                <button type="button" class="btn btn-primary btn-sm" disabled title="{{ r.t.blocked }}">{{ tr("updates.approve") }}</button>
+                {%- else %}
                 <button type="submit" class="btn btn-primary btn-sm" formaction="/targets/{{ r.t.id }}/approve" name="key" value="{{ r.t.available_key }}">{{ tr("updates.approve") }}</button>
+                {%- endif %}
                 <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/skip">{{ tr("updates.skip") }}</button>
                 <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/snooze" name="hours" value="24">{{ tr("updates.snooze_day") }}</button>
                 <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ r.t.id }}/snooze" name="hours" value="168">{{ tr("updates.snooze_week") }}</button>
               </div>
+              {%- if r.blocked() %}<p class="help">{{ tr1("blocked.help", "why", r.t.blocked) }}</p>{% endif %}
               {%- else %}–{% endif %}
             </td>
             {%- endif %}

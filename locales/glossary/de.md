@@ -28,7 +28,7 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | notification channel | Benachrichtigungskanal / Kanal (der) | VV |
 | token / agent token | Token (das) / Agent-Token | VV: „das Token“ |
 | revoke | widerrufen | VV/kit: „Widerrufen“ |
-| online / offline | online / offline | VV: „Online“; overview counts use „Verbunden“ / „Nicht verbunden“ |
+| online / offline | online / offline | VV: „Online“; the product term: „Online“ / „Nicht online“ (also the overview counts) |
 | waiting for the agent | wartet auf den Agenten | VV: „Wartet auf erste Verbindung“ |
 | overview | Übersicht (die) |  |
 | host name | Hostname (der) | VV: „Host“ |

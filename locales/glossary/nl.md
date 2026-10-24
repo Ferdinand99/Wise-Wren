@@ -28,7 +28,7 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | notification channel | meldingskanaal / kanaal | VV: “melding”, “meldingskanaal” |
 | token / agent token | token (het) / agenttoken | VV: “API-token” |
 | revoke | intrekken | VV/kit: “Intrekken” |
-| online / offline | online / offline | VV: “online / offline”; overview counts use “Verbonden” / “Niet verbonden” |
+| online / offline | online / offline | VV: “online / offline”; the product term: “Online” / “Niet online” (also the overview counts) |
 | waiting for the agent | wacht op de agent | VV: “Wacht op eerste verbinding” |
 | overview | overzicht (het) |  |
 | host name | hostnaam |  |
