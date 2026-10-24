@@ -12,8 +12,18 @@ as it was. Snapshots are short-lived **rollback points**.
 A target's own bind mounts under the agent's `roots`:
 
 - never a root itself (mounting all of `/mnt/user/appdata` into one container doesn't make Wren copy all of it);
-- never a folder another container also mounts (the run log lists both kinds of skipped folders);
-- never named Docker volumes (listed as "not snapshotted").
+- never a folder another container uses too: one that mounts **the same folder or a folder inside it**. A container
+  that mounts a folder *above* it doesn't count: a backup tool or file manager with all of `/mnt/user/appdata`, or
+  the agent itself, doesn't stop sonarr's `/mnt/user/appdata/sonarr` from being snapshotted;
+- never a folder outside the roots (sonarr's `/mnt/user/plex_data` with the usual roots), nor named Docker volumes.
+
+The run page's **Snapshot** step lists every folder left out and why ("also used by rclone", "not under the agent's
+roots", "a named Docker volume"). When nothing at all could be snapshotted, the step shows **Warning** instead of
+Done, the run page says "No data snapshot was taken" with the reasons, and so does the result notification.
+
+**Require a snapshot** (target page, Update settings; `require_snapshot` in `POST /api/v1/targets/{id}/mode`): with it
+on, a run whose target has no folder Wren can snapshot stops before anything is touched (failed, nothing changed).
+Off by default.
 
 Script stacks with `handles_own_backup = true` (like Fluxer) are not stopped or snapshotted by Wren: their own
 script does that.
@@ -28,7 +38,18 @@ Per folder, in this order:
 3. **plain copy** (`cp -a`) after checking that the folder's size plus 10 % fits.
 
 A run is refused before anything stops when the snapshot wouldn't leave 1 GB (or 2 %) free. Snapshots are kept in
-`<root>/.wren-snapshots/<target>/<run>/`; the last two per target are kept.
+`<root>/.wren-snapshots/<target>/<run>/`; the last two per target are kept (`[retention] snapshots` in
+`agent.toml` changes that, 1–10).
+
+**Leave `.wren-snapshots` out of your own backups.** Snapshots live under the roots, so a backup of all of appdata
+would copy them too. With rclone, for example: `rclone sync /mnt/user/appdata remote:appdata --exclude
+"/.wren-snapshots/**"` (or `--exclude ".wren-snapshots/**"` for every folder level).
+
+**Kept images.** Before an update the agent tags each old image `wren-rollback/<target>:<run>-<container>` so a
+rollback can go back to it. After a successful update only the newest update's images stay per target (a rollback
+can only undo the newest one); `[retention] rollback_images` in `agent.toml` keeps more (1–10). The agent also cleans
+up once when it starts, so tags from before 0.4.0 go. It only removes `wren-rollback/` tags, never an image a
+container still uses, and never with force.
 
 **Not tested yet:** btrfs subvolume snapshots on real Unraid pools (the default agent has no `CAP_SYS_ADMIN`, so
 Unraid uses reflink copies), and ZFS (treated as a plain copy, which can be slow and large). On ext4 and other

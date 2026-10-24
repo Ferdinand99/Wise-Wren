@@ -495,6 +495,9 @@ async fn run_results_notify() {
         scheduled_for: None,
         vv_window_id: None,
         vv_state: String::new(),
+        detail_code: String::new(),
+        detail_params: String::new(),
+        snapshot_notes: String::new(),
     };
     for status in ["succeeded", "rolled_back", "rollback_failed", "cancelled"] {
         r.status = status.into();
@@ -516,8 +519,9 @@ async fn run_results_notify() {
     );
     assert!(text[2].contains("needs you"), "{}", text[2]);
     assert_eq!(got[2]["event"], "run_rollback_failed");
-    // Run results name what started them.
-    assert!(text[0].contains("Approved now"), "{}", text[0]);
+    // Run results name who or what started them.
+    assert!(text[0].contains("Approved by ed"), "{}", text[0]);
+    assert!(!text[0].contains("Approved now"), "{}", text[0]);
     r.status = "succeeded".into();
     r.trigger = "auto".into();
     wise_wren::run_notify::send_result(&app.wren, &r).await;

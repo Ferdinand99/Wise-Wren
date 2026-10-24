@@ -8,6 +8,7 @@
 {% block content %}
 {% call m::page_header(target.name.as_str(), target.kind_label, back_href.as_str(), target.server_name.as_str()) %}
   <span class="pill pill-lg status-{{ target.status_class }}" data-status="{{ target.status }}"><span class="dot" aria-hidden="true"></span>{{ target.status_label }}</span>
+  {%- if !target.blocked.is_empty() %} <span class="badge badge-blocked" title="{{ target.blocked }}" data-blocked="1">{{ tr("blocked.badge") }}</span>{% endif %}
   {%- if can_check %}
   <form method="post" action="/targets/{{ target.id }}/check">
     <button type="submit" class="btn btn-secondary">{{ m::icon("refresh") }}<span>{{ tr("targets.check_now") }}</span></button>
@@ -17,7 +18,9 @@
 
 <div class="stack">
   {%- if target.files_missing() %}
-  {{ m::callout("warning", tr1("targets.files_missing_help", "dir", target.working_dir)) }}
+  {{ m::callout("warning", tr1("targets.files_missing_help", "dir", target.working_dir), tr("blocked.badge")) }}
+  {%- else if !target.blocked.is_empty() %}
+  {{ m::callout("warning", tr1("blocked.help", "why", target.blocked), tr("blocked.badge")) }}
   {%- endif %}
   {%- if row.own %}
   {{ m::callout("info", tr("runs.own_help"), tr("runs.own")) }}
@@ -88,8 +91,6 @@
     <p class="help">{{ tr("runs.own_help") }}</p>
     {%- else if row.notify_only %}
     <p class="help">{{ tr("runs.notify_only_help") }}</p>
-    {%- else if target.files_missing() %}
-    <p class="help">{{ tr("runs.err_files_missing") }}</p>
     {%- else if row.skipped %}
     <p class="help">{{ tr("updates.skipped") }}</p>
     {%- if can_check %}<form method="post" action="/targets/{{ target.id }}/resume"><button type="submit" class="btn btn-secondary btn-sm">{{ tr("updates.resume") }}</button></form>{% endif %}
@@ -98,12 +99,16 @@
     {%- if can_check %}
     <form method="post" action="/targets/{{ target.id }}/approve" class="cluster">
       <input type="hidden" name="key" value="{{ target.available_key }}">
-      <button type="submit" class="btn btn-primary btn-sm">{{ tr("updates.approve") }}</button>
+      <button type="submit" class="btn btn-primary btn-sm"{% if row.blocked() %} disabled title="{{ target.blocked }}"{% endif %}>{{ tr("updates.approve") }}</button>
       <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/skip">{{ tr("updates.skip") }}</button>
       <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/snooze" name="hours" value="24">{{ tr("updates.snooze_day") }}</button>
       <button type="submit" class="btn btn-ghost btn-sm" formaction="/targets/{{ target.id }}/snooze" name="hours" value="168">{{ tr("updates.snooze_week") }}</button>
     </form>
+    {%- if row.blocked() %}
+    <p class="help" data-blocked="1">{{ tr1("blocked.help", "why", target.blocked) }}</p>
+    {%- else %}
     <p class="help">{{ tr("runs.approve_help") }}</p>
+    {%- endif %}
     <form method="post" action="/targets/{{ target.id }}/schedule" class="cluster">
       <input type="hidden" name="key" value="{{ target.available_key }}">
       <div class="field">
@@ -111,7 +116,7 @@
         <input id="f-at" type="datetime-local" name="at" required>
         <p class="help">{{ tr1("runs.schedule_help", "tz", tz) }}</p>
       </div>
-      <button type="submit" class="btn btn-secondary btn-sm">{{ tr("runs.schedule") }}</button>
+      <button type="submit" class="btn btn-secondary btn-sm"{% if row.blocked() %} disabled title="{{ target.blocked }}"{% endif %}>{{ tr("runs.schedule") }}</button>
     </form>
     {%- endif %}
     {%- endif %}
@@ -145,6 +150,7 @@
       </div>
       {{ m::field_number("health_seconds", tr("runs.health"), health, tr("runs.seconds"), "5", "3600", "1", tr("runs.health_help")) }}
       {{ m::checkbox("require_vv", tr("vv.require"), require_vv, tr("vv.require_help")) }}
+      {{ m::checkbox("require_snapshot", tr("snap.require"), require_snapshot, tr("snap.require_help")) }}
       <div><button type="submit" class="btn btn-secondary btn-sm">{{ tr("common.save") }}</button></div>
     </form>
   </section>

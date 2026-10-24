@@ -52,3 +52,17 @@
   word-break: break-word;
   font-size: 0.8125rem;
 }
+
+/* The agent would refuse an update (its [updates], roots or files): amber,
+   like a warning, so it reads before anyone tries to approve. */
+.badge-blocked {
+  background: var(--warn-fill);
+  color: var(--warn-text);
+}
+
+/* Why a snapshot left paths out, above a step's log. */
+.step-notes {
+  margin: 0 0 0.25rem;
+  padding-inline-start: 1.1rem;
+  font-size: 0.8125rem;
+}

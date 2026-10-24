@@ -8,6 +8,7 @@
     </div>
     {%- if agent.is_admin %}
     <div class="toolbar">
+      <a class="btn btn-secondary btn-sm" href="/servers/{{ server.id }}/agent-toml">{{ m::icon("code") }}<span>{{ tr("toml.title") }}</span></a>
       <button type="button" class="btn btn-secondary btn-sm" hx-post="/servers/{{ server.id }}/token" hx-target="#agent-card" hx-swap="outerHTML"
         hx-confirm="{{ tr1("servers.new_token_q", "name", server.name) }}" data-confirm-message="{{ tr("servers.new_token_msg") }}">{{ m::icon("refresh") }}<span>{{ tr("servers.new_token") }}</span></button>
       {%- if server.has_token %}

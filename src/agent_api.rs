@@ -233,9 +233,16 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
         lines.push("-v /etc/wren-agent:/config".to_string());
     }
     lines.push(AGENT_IMAGE.to_string());
-    // The agent.toml default, said where the agent is started.
+    // The agent.toml default, said where the agent is started; on Unraid
+    // also the roots that cover appdata and Compose Manager's stacks.
+    let roots = if unraid {
+        "# Recommended roots in agent.toml: /mnt/user/appdata, /mnt/cache/appdata and\n\
+         # /boot/config/plugins/compose.manager/projects (Compose Manager's stacks).\n"
+    } else {
+        ""
+    };
     format!(
-        "# Without [updates] in agent.toml, every target may be updated once approved in Wren.\n{}",
+        "# Without [updates] in agent.toml, every target may be updated once approved in Wren.\n{roots}{}",
         lines.join(" \\\n  ")
     )
 }
@@ -268,6 +275,7 @@ mod tests {
         ] {
             assert!(run.contains(part), "{part} missing in\n{run}");
         }
+        assert!(run.contains("/boot/config/plugins/compose.manager/projects"));
         for never in ["--privileged", "--cap-add", "--pid"] {
             assert!(!run.contains(never));
         }

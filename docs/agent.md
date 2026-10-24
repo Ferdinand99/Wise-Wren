@@ -35,6 +35,8 @@ docker run -d --name wren-agent --restart unless-stopped \
 
 The Unraid mounts let the agent run Unraid's own `update_container` for template containers, so the Docker tab
 stays in sync. If your appdata pool isn't called `cache`, mount it at its own path too (`/mnt/<pool>/appdata`).
+Stacks from the **Compose Manager** plugin live in `/boot/config/plugins/compose.manager/projects/<name>`: the
+`/boot/config` mount reaches them, and `roots` must include that folder (below), or Wren can't update them.
 
 ### Other Linux hosts (best-effort)
 
@@ -70,8 +72,13 @@ server = "http://10.0.3.26:3003"   # or WW_SERVER_URL
 token = "wwa_…"                    # or WW_AGENT_TOKEN
 
 # Folders Wren may touch: snapshots, Compose files, script stacks. Each one
-# mounted at the same path in the agent. Never "/".
-roots = ["/mnt/user/appdata", "/mnt/cache/appdata"]
+# mounted at the same path in the agent. Never "/". On Unraid also Compose
+# Manager's stacks.
+roots = [
+  "/mnt/user/appdata",
+  "/mnt/cache/appdata",
+  "/boot/config/plugins/compose.manager/projects",
+]
 
 # docker_socket = "/var/run/docker.sock"
 # scan_interval = "30m"            # how often the agent sends an inventory (1m–24h)
@@ -81,6 +88,11 @@ roots = ["/mnt/user/appdata", "/mnt/cache/appdata"]
 [updates]
 allow = ["nextcloud", "immich", "media-*"]
 deny = ["media-db*"]               # deny wins over allow
+
+# How many rollback points stay per target (optional).
+[retention]
+rollback_images = 1                # updates whose old images stay tagged (1-10)
+snapshots = 2                      # data snapshots (1-10)
 ```
 
 | Key | What |
@@ -90,10 +102,26 @@ deny = ["media-db*"]               # deny wins over allow
 | `docker_socket` | Default `/var/run/docker.sock`. |
 | `scan_interval` | Default `30m`. "Check now" in Wren asks for an inventory at once. |
 | `[updates] allow` / `deny` | Globs on target names. A job outside `allow` or inside `deny` ends as **refused by agent config** before the agent even reads Docker. Wren still shows those targets and their new versions. |
+| `[retention]` | `rollback_images` (default 1): after a successful update the old images of the newest N updates stay tagged `wren-rollback/…`, older ones go. `snapshots` (default: Wren's 2). See [Snapshots](snapshots.md). |
 | `[[script_stack]]` | A Compose stack that updates with its own script (below). |
 
 **`[updates]` is your last word.** Whatever happens to the Wren server, the agent only touches what this file
 allows. Use it on production servers.
+
+The agent reports its `[updates]` globs and its `roots` (never its token or scripts) to Wren, so Wren knows ahead what
+it would refuse: those targets show **Blocked** with the reason ("not allowed by [updates] in agent.toml", "folder …
+not under the agent's roots", "files not reachable") and can't be approved or scheduled. Agents before 0.4.0 don't
+report it; then Wren blocks nothing it can't see.
+
+`wren-agent --check` also says when `/boot/config/plugins/compose.manager/projects` exists but isn't under `roots`.
+
+### The agent.toml helper
+
+On a server's page, admins find **agent.toml helper**: it builds the `[updates]` list (tick the targets to allow, or
+allow `*` and tick the ones to deny), suggests `roots` from the folders the agent's inventory showed (data folders
+and Compose folders), and fills a `[[script_stack]]` (with a Fluxer preset). Wren only shows the text to copy; it
+stores nothing and sends nothing to the agent. Put it in `/mnt/user/appdata/wren-agent/agent.toml` (keep your server
+and token lines), run `docker exec wren-agent wren-agent --check`, and restart the agent while no update runs.
 
 ## Script stacks (Fluxer)
 

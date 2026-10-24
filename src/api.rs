@@ -35,7 +35,7 @@ const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status
 
 const HEARTBEAT_EXAMPLE: &str = r#"{"agent_version": "0.1.0", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "unraid": true, "boot_id": "18f3a2c4e5d6b7a8-1-9c0d", "uptime_seconds": 3600}"#;
 
-const TARGETS_EXAMPLE: &str = r#"{"targets": [{"id": 7, "server": {"id": 1, "name": "LANBox"}, "kind": "compose", "name": "postiz", "image": "ghcr.io/gitroomhq/postiz-app:latest", "images": 6, "status": "update", "status_detail": "", "available": "2/6", "version_key": "postiz=sha256:5c0d…,postiz-postgres=sha256:a1b2…", "installed_version": "", "latest_version": "", "version_source": null, "version_error": "", "working_dir": "/boot/config/plugins/compose.manager/projects/postiz", "files_reachable": true, "source_url": "https://github.com/gitroomhq/postiz-app", "release_notes": {"url": "https://github.com/gitroomhq/postiz-app/releases/tag/v2.1.0", "title": "v2.1.0"}, "check_interval_hours": 6, "last_checked_at": "2026-10-23 10:00:00"}]}"#;
+const TARGETS_EXAMPLE: &str = r#"{"targets": [{"id": 7, "server": {"id": 1, "name": "LANBox"}, "kind": "compose", "name": "postiz", "image": "ghcr.io/gitroomhq/postiz-app:latest", "images": 6, "status": "update", "status_detail": "", "available": "2/6", "version_key": "postiz=sha256:5c0d…,postiz-postgres=sha256:a1b2…", "installed_version": "", "latest_version": "", "version_source": null, "version_error": "", "working_dir": "/boot/config/plugins/compose.manager/projects/postiz", "files_reachable": true, "blocked_reason": null, "source_url": "https://github.com/gitroomhq/postiz-app", "release_notes": {"url": "https://github.com/gitroomhq/postiz-app/releases/tag/v2.1.0", "title": "v2.1.0"}, "check_interval_hours": 6, "last_checked_at": "2026-10-23 10:00:00"}]}"#;
 
 const RUNS_EXAMPLE: &str = r#"{"runs": [{"id": 12, "server": {"id": 1, "name": "LANBox"}, "target": {"id": 7, "kind": "container", "name": "ww-test-container"}, "kind": "update", "rollback_of": null, "from_key": "ww-test-container=sha256:02d8…", "to_key": "ww-test-container=sha256:4f90…", "version": "4f90b33d4a1c", "status": "succeeded", "detail": "", "requested_by": "owner", "created_at": "2026-10-23 10:00:00", "started_at": "2026-10-23 10:00:01", "finished_at": "2026-10-23 10:03:20"}]}"#;
 
@@ -80,7 +80,7 @@ pub static DOCS: DocsSpec = DocsSpec {
         r("GET", "/api/v1/targets", "viewer", "Targets", "List what Wren watches on every server (or `?server_id=`): containers, Unraid template containers, Compose stacks and script stacks, with the current and available version and the status `current`, `update` or `unknown`.")
             .res(TARGETS_EXAMPLE),
         r("GET", "/api/v1/targets/{id}", "viewer", "Targets", "One target with its mode (`mode`: its own, or `null` for the server's; `effective_mode`), health period, `require_vv`, skip and snooze, whether Wren never updates it (its own and Vigilant Vole's images) and its linked Vigilant Vole monitors.")
-            .res(r#"{"id": 7, "name": "ww-test-container", "status": "update", "version_key": "ww-test-container=sha256:4f90…", "mode": null, "effective_mode": "approve", "updates_itself": false, "health_seconds": null, "require_vv": false, "skipped": false, "snoozed_until": null, "wren_never_updates": false, "monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
+            .res(r#"{"id": 7, "name": "ww-test-container", "status": "update", "version_key": "ww-test-container=sha256:4f90…", "mode": null, "effective_mode": "approve", "updates_itself": false, "health_seconds": null, "require_vv": false, "require_snapshot": false, "skipped": false, "snoozed_until": null, "wren_never_updates": false, "monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
         r("POST", "/api/v1/targets/{id}/check", "editor", "Targets", "Check now for one target (its server's agent sends a fresh inventory first).")
             .res(r#"{"checking": true}"#),
         r("POST", "/api/v1/targets/{id}/interval", "editor", "Targets", "Override the target's check interval: `hours` 1–168, or `null` for the server's.")
@@ -99,10 +99,10 @@ pub static DOCS: DocsSpec = DocsSpec {
             .res(RUNS_EXAMPLE),
         r("GET", "/api/v1/runs/{id}", "viewer", "Runs", "One run with each step (`preflight`, `stop`, `snapshot`, `update`, `health`, `rollback`): status, duration and the end of its log.")
             .res(RUN_EXAMPLE),
-        r("POST", "/api/v1/targets/{id}/approve", "editor", "Runs", "Approve the target's available update now. Send `{\"version_key\": \"…\"}` (the target's `version_key`) to approve exactly the version you saw: a different one is refused, and if a newer version appears before the run starts, the approval lapses. Refused for `notify` targets and stacks whose files the agent can't reach. Needs an API token with write access.")
+        r("POST", "/api/v1/targets/{id}/approve", "editor", "Runs", "Approve the target's available update now. Send `{\"version_key\": \"…\"}` (the target's `version_key`) to approve exactly the version you saw: a different one is refused, and if a newer version appears before the run starts, the approval lapses. Refused for `notify` targets; `409` with the reason when the server's agent would refuse it (the target's `blocked_reason`: not allowed by its `[updates]`, a stack folder outside its roots, files it can't reach). Needs an API token with write access.")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…"}"#)
             .res(r#"{"run_id": 12, "status": "queued"}"#),
-        r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule.")
+        r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule. `409` as for approve.")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…", "at": "2026-10-24T03:00:00+02:00"}"#)
             .res(r#"{"run_id": 14, "status": "queued", "scheduled_for": "2026-10-24 01:00:00"}"#),
         r("POST", "/api/v1/runs/{id}/reschedule", "editor", "Schedules", "Move a scheduled run that hasn't started (`at` as for schedule). Its planned window in Vigilant Vole moves with it.")
@@ -114,7 +114,7 @@ pub static DOCS: DocsSpec = DocsSpec {
             .res(r#"{"run_id": 15, "status": "queued", "rollback_of": 12}"#),
         r("GET", "/api/v1/schedules", "viewer", "Schedules", "Upcoming scheduled updates (soonest first) with their Vigilant Vole window, and per server its mode, auto window (local times in the site's time zone) and the targets that update on their own inside it.")
             .res(SCHEDULES_EXAMPLE),
-        r("POST", "/api/v1/targets/{id}/mode", "editor", "Schedules", "Set a target's mode: `approve`, `notify`, `auto` or `null` (the server's). Turning automatic updates on (`auto`, or `null` on an `auto` server) needs an admin and the server's auto window; it is logged. Optional: `health_seconds`, `require_vv` (cancel a run when the Vigilant Vole window can't be opened).")
+        r("POST", "/api/v1/targets/{id}/mode", "editor", "Schedules", "Set a target's mode: `approve`, `notify`, `auto` or `null` (the server's). Turning automatic updates on (`auto`, or `null` on an `auto` server) needs an admin and the server's auto window; it is logged. Optional: `health_seconds`, `require_vv` (cancel a run when the Vigilant Vole window can't be opened), `require_snapshot` (stop a run before anything is touched when no data folder can be snapshotted).")
             .req(r#"{"mode": "auto", "require_vv": false}"#)
             .res(r#"{"mode": "auto", "effective_mode": "auto", "updates_itself": true}"#),
         r("POST", "/api/v1/servers/{id}/mode", "editor", "Schedules", "Set a server's mode (`approve`, the default, `notify` or `auto`) and its auto window (`auto_start`, `auto_end` as local `HH:MM`, both empty for none). `auto` and any window change need an admin; `auto` needs a window. Auto updates only start inside the window, for targets whose effective mode is `auto`; a target set to `approve` or `notify` is excluded.")
@@ -315,6 +315,8 @@ pub fn target_json(t: &Target) -> Value {
         "version_error": t.version_error,
         "working_dir": t.working_dir,
         "files_reachable": t.files_reachable,
+        // What the server's agent would refuse (approvals answer 409).
+        "blocked_reason": t.blocked.as_ref().map(crate::policy::Blocked::english),
         "source_url": t.source_url,
         "release_notes": if t.notes_url.is_empty() { Value::Null } else { json!({ "url": t.notes_url, "title": t.notes_title }) },
         "check_interval_hours": t.check_interval_hours.unwrap_or(t.server_interval_hours),
@@ -538,6 +540,13 @@ impl Mcp {
                 } else {
                     "approve"
                 };
+                let id = need(args, "target_id")?;
+                if let Some(why) = blocked_reason(&self.core, id).await.map_err(bad)? {
+                    return Err((
+                        -32602,
+                        format!("The agent would refuse this update: {why}."),
+                    ));
+                }
                 act(
                     &self.wren,
                     &self.user,
@@ -841,6 +850,9 @@ pub fn run_json(r: &Run) -> Value {
         "version": r.shown,
         "status": r.status,
         "detail": r.detail,
+        "detail_code": if r.detail_code.is_empty() { Value::Null } else { json!(r.detail_code) },
+        "detail_params": serde_json::from_str::<Value>(&r.detail_params).unwrap_or(Value::Null),
+        "snapshot_notes": serde_json::from_str::<Value>(&r.snapshot_notes).unwrap_or(Value::Null),
         "requested_by": r.requested_by,
         "trigger": r.trigger,
         "scheduled_for": r.scheduled_for,
@@ -944,6 +956,8 @@ pub struct Body {
     #[serde(default)]
     pub require_vv: Option<bool>,
     #[serde(default)]
+    pub require_snapshot: Option<bool>,
+    #[serde(default)]
     pub auto_start: Option<String>,
     #[serde(default)]
     pub auto_end: Option<String>,
@@ -1007,6 +1021,9 @@ pub async fn act(
                         require_vv: b
                             .require_vv
                             .unwrap_or(old.as_ref().is_some_and(|p| p.require_vv)),
+                        require_snapshot: b
+                            .require_snapshot
+                            .unwrap_or(old.as_ref().is_some_and(|p| p.require_snapshot)),
                     };
                     match runs::set_target_policy(c, target_id, &settings, &who, is_admin)? {
                         Ok(()) => {
@@ -1016,6 +1033,7 @@ pub async fn act(
                                 "effective_mode": p.effective(),
                                 "updates_itself": p.updates_itself(),
                                 "require_vv": p.require_vv,
+                                "require_snapshot": p.require_snapshot,
                             }))
                         }
                         Err(r) => Err(r),
@@ -1029,6 +1047,16 @@ pub async fn act(
     let v = res.map_err(ApiError::from)?;
     changed(wren);
     Ok(v)
+}
+
+/// Why the target's agent would refuse an update (`None`: it wouldn't, or
+/// its agent doesn't say). English, like the API's other texts.
+pub async fn blocked_reason(core: &Core, id: i64) -> ApiResult<Option<String>> {
+    let t = core
+        .with_conn(move |c| targets::get(c, id))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(t.blocked.as_ref().map(crate::policy::Blocked::english))
 }
 
 /// Sets a server's mode and auto window; shared by the API and MCP.
@@ -1088,6 +1116,7 @@ pub async fn target_detail(core: &Core, id: i64) -> ApiResult<Value> {
     v["updates_itself"] = json!(p.updates_itself());
     v["health_seconds"] = json!(p.health_seconds);
     v["require_vv"] = json!(p.require_vv);
+    v["require_snapshot"] = json!(p.require_snapshot);
     v["skipped"] = json!(p.skipped);
     v["snoozed_until"] = json!(p.snoozed_until);
     v["wren_never_updates"] = json!(p.own);
@@ -1111,7 +1140,7 @@ pub async fn run_detail(core: &Core, id: i64) -> ApiResult<Value> {
     let mut v = run_json(&run.ok_or(ApiError::NotFound)?);
     v["steps"] = json!(steps
         .iter()
-        .map(|s| json!({"step": s.step, "status": s.status, "started_at": s.started_at, "duration_ms": s.duration_ms, "log": s.log}))
+        .map(|s| json!({"step": s.step, "status": s.status, "started_at": s.started_at, "duration_ms": s.duration_ms, "log": s.log, "notes": serde_json::from_str::<Value>(&s.notes).unwrap_or(json!([]))}))
         .collect::<Vec<_>>());
     Ok(v)
 }
@@ -1193,6 +1222,34 @@ async fn target_action(
     user: CurrentUser,
     Extension(method): Extension<AuthMethod>,
     Path((id, action)): Path<(i64, String)>,
+    body: Bytes,
+) -> Response {
+    use axum::response::IntoResponse as _;
+    // An approval the agent would refuse: 409 with the reason.
+    if matches!(action.as_str(), "approve" | "schedule") && writer(&user, &method).is_ok() {
+        match blocked_reason(&wren.core, id).await {
+            Ok(Some(why)) => {
+                return vole_kit::http::rest::V1Error::conflict(format!(
+                    "The agent would refuse this update: {why}."
+                ))
+                .into_response();
+            }
+            Ok(None) => {}
+            Err(e) => return e.into_response(),
+        }
+    }
+    match target_action_inner(wren, user, method, id, action, body).await {
+        Ok(v) => v.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn target_action_inner(
+    wren: crate::Wren,
+    user: CurrentUser,
+    method: AuthMethod,
+    id: i64,
+    action: String,
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
     writer(&user, &method)?;

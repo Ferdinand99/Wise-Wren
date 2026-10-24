@@ -249,7 +249,7 @@ async fn overview(
             counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add: user.is_admin(),
-            runs: crate::run_pages::recent(&core, None, RECENT_RUNS).await?,
+            runs: crate::run_pages::overview_runs(&core).await?,
             show_target: true,
         }),
     ))
@@ -526,9 +526,6 @@ async fn remove(
 // Live updates
 // ---------------------------------------------------------------------------
 
-/// Runs on the Overview.
-pub const RECENT_RUNS: i64 = 8;
-
 /// At most this many live views at once.
 static STREAMS: StreamLimit = StreamLimit::new(64);
 
@@ -553,7 +550,7 @@ async fn render_view(core: Core, view: View, can_add: bool) -> Result<String, Ap
             counts: counts(&rows, crate::pages::update_count(&core).await?),
             rows,
             can_add,
-            runs: crate::run_pages::recent(&core, None, RECENT_RUNS).await?,
+            runs: crate::run_pages::overview_runs(&core).await?,
             show_target: true,
         }
         .render(),

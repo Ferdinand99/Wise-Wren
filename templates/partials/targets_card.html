@@ -24,7 +24,7 @@
       <tbody>
         {%- for t in targets %}
         <tr data-status="{{ t.status }}">
-          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if t.files_missing() %} <span class="badge" title="{{ tr1("targets.files_missing_help", "dir", t.working_dir) }}">{{ tr("targets.files_missing") }}</span>{% endif %}{% if t.own %} <span class="badge" title="{{ tr("runs.own_help") }}" data-own="1">{{ tr("runs.own") }}</span>{% else if t.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}" data-auto="1">{{ tr("runs.auto_badge") }}</span>{% endif %}</td>
+          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if !t.blocked.is_empty() %} <span class="badge badge-blocked" title="{{ t.blocked }}" data-blocked="1">{{ tr("blocked.badge") }}</span>{% endif %}{% if t.own %} <span class="badge" title="{{ tr("runs.own_help") }}" data-own="1">{{ tr("runs.own") }}</span>{% else if t.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}" data-auto="1">{{ tr("runs.auto_badge") }}</span>{% endif %}</td>
           <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
           <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
           <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if t.is_update() %}{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{{ tr("targets.notes") }}</a>{% endif %}{% else %}–{% endif %}</td>

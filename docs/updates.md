@@ -39,7 +39,10 @@ Updates page, target page, `POST /api/v1/targets/{id}/approve` or the MCP tool `
 - **Skip** hides this version (a newer one shows again); **snooze** hides the update for a day or a week; **Show
   again** undoes both.
 - Wren never updates itself, its agents or Vigilant Vole yet; their pages say so.
-- Stacks whose files the agent can't reach can't be approved.
+- What the server's agent would refuse shows **Blocked** with the reason and can't be approved or scheduled: a target
+  outside its `[updates]` allow list, a stack whose folder isn't under its `roots`, a stack whose files it can't
+  reach. Approving several together skips those and says how many. The API answers `409` with the reason
+  (`blocked_reason` on every target).
 
 ## Scheduled updates
 
@@ -84,4 +87,7 @@ approved version that is already running ends as succeeded ("already up to date"
 ## Notifications
 
 One "new version available" per target and version (or one digest per check run per channel), run succeeded,
-failed and rolled back, failed with nothing changed, rollback failed (urgent), agent offline and back.
+failed and rolled back, failed with nothing changed, rollback failed (urgent), agent offline and back. A run the agent
+refused because of its own `agent.toml` sends nothing (the run page shows it). Run results say who or what started
+the run ("Approved by …", "Scheduled by …", "Automatic"), in the channel's language like the agent's texts, and when
+no data snapshot was taken, why.

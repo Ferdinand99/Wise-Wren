@@ -2,7 +2,7 @@
 {%- import "kit/macros.html" as m -%}
 <div class="table-wrap">
   <table class="table table-stack table-hover" id="runs">
-    <thead><tr><th>{{ tr("runs.col_run") }}</th>{% if show_target %}<th>{{ tr("targets.col_target") }}</th>{% endif %}<th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th><th>{{ tr("runs.requested_by") }}</th><th>{{ tr("runs.col_when") }}</th></tr></thead>
+    <thead><tr><th>{{ tr("runs.col_run") }}</th>{% if show_target %}<th>{{ tr("targets.col_target") }}</th>{% endif %}<th>{{ tr("targets.col_available") }}</th><th>{{ tr("targets.col_status") }}</th><th>{{ tr("runs.trigger") }}</th><th>{{ tr("runs.col_when") }}</th></tr></thead>
     <tbody>
       {%- for r in runs %}
       <tr data-status="{{ r.status }}">
@@ -12,7 +12,7 @@
         {%- endif %}
         <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if r.shown.is_empty() %}–{% else %}{{ r.shown }}{% endif %}</td>
         <td data-label="{{ tr("targets.col_status") }}"><span class="pill status-{{ r.status_class }}"><span class="dot" aria-hidden="true"></span>{{ r.status_label }}</span></td>
-        <td data-label="{{ tr("runs.requested_by") }}">{{ r.requested_by }} <span class="muted">{{ r.trigger_label }}</span></td>
+        <td data-label="{{ tr("runs.trigger") }}">{{ r.trigger_label }}</td>
         <td data-label="{{ tr("runs.col_when") }}">{% if let Some(at) = r.finished_at %}{{ m::time_ago(at) }}{% else %}{{ m::time_ago(r.created_at) }}{% endif %}</td>
       </tr>
       {%- endfor %}

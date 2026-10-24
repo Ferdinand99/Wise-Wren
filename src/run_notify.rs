@@ -97,6 +97,11 @@ fn alert(
 /// The message about a finished run (`None`: nothing to say, like a
 /// cancelled one).
 pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
+    // Refused by the agent's agent.toml: the run page shows it; Wren blocks
+    // such approvals, so it is no news (one message each was spam).
+    if run.config_refusal() {
+        return None;
+    }
     let args = [
         ("name", run.target_name.as_str()),
         ("server", run.server_name.as_str()),
@@ -151,31 +156,30 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
             run.shown.clone(),
         ));
     }
+    let started_by = trigger_text(run);
     facts.push((
         i18n::t("notify_msg.fact_trigger").to_string(),
-        trigger_label(&run.trigger).to_string(),
+        started_by.clone(),
     ));
-    if run.trigger != runs::BY_AUTO {
-        facts.push((
-            i18n::t("notify_msg.fact_by").to_string(),
-            run.requested_by.clone(),
-        ));
+    // Every channel says what started the run, also those without facts,
+    // and when no data snapshot was taken, why.
+    let mut lines = Vec::new();
+    let text = run.detail_text();
+    if !text.is_empty() {
+        lines.push(text.chars().take(500).collect::<String>());
     }
-    // Every channel says what started the run, also those without facts.
-    let started = format!(
-        "{}: {}",
-        i18n::t("notify_msg.fact_trigger"),
-        trigger_label(&run.trigger)
-    );
-    let detail = Some(if run.detail.is_empty() {
-        started
-    } else {
-        format!(
-            "{}
-{started}",
-            run.detail.chars().take(500).collect::<String>()
-        )
-    });
+    if let Some(why) = run.no_snapshot() {
+        let mut line = i18n::t("snap.none").to_string();
+        if !why.is_empty() {
+            line = format!("{line}: {}", why.join("; "));
+        }
+        lines.push(line.chars().take(600).collect());
+    }
+    lines.push(format!(
+        "{}: {started_by}",
+        i18n::t("notify_msg.fact_trigger")
+    ));
+    let detail = Some(lines.join("\n"));
     Some(alert(
         kind,
         level,
@@ -196,6 +200,18 @@ pub fn trigger_label(trigger: &str) -> &'static str {
         runs::BY_SCHEDULE => "runs.trigger_schedule",
         _ => "runs.trigger_user",
     })
+}
+
+/// Who or what started a run: "Approved by ferdinand99", "Scheduled by
+/// ferdinand99", "Automatic (auto window)".
+pub fn trigger_text(run: &Run) -> String {
+    let who = [("user", run.requested_by.as_str())];
+    match run.trigger.as_str() {
+        runs::BY_AUTO => i18n::t("runs.trigger_auto").to_string(),
+        runs::BY_SCHEDULE => i18n::tf("trigger.schedule_by", &who),
+        _ if run.kind == "rollback" => i18n::tf("trigger.rollback_by", &who),
+        _ => i18n::tf("trigger.user_by", &who),
+    }
 }
 
 /// The message about a run that goes on without a maintenance window
@@ -219,7 +235,7 @@ pub fn no_window_alert(run: &Run, why: &str, base: Option<&str>) -> Alert {
             ),
             (
                 i18n::t("notify_msg.fact_trigger").to_string(),
-                trigger_label(&run.trigger).to_string(),
+                trigger_text(run),
             ),
         ],
         link(base, &format!("/runs/{}", run.id)),

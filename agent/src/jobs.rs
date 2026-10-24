@@ -7,6 +7,8 @@
 //! re-reads Docker and [`check`]s the job against what runs here and its own
 //! `agent.toml`; what they don't allow is refused and nothing changes.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -68,6 +70,91 @@ pub struct Job {
     pub keep_snapshots: usize,
     #[serde(default)]
     pub rollback_of: Option<i64>,
+    /// Stop before anything stops when no data path can be snapshotted
+    /// (the target's "Require a snapshot").
+    #[serde(default)]
+    pub require_snapshot: bool,
+}
+
+/// A message Wren shows in the reader's language: a code and its values.
+/// [`Note::text`] is the English, sent along for Wrens that don't know the
+/// code. A note without a code is plain English only.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct Note {
+    pub code: &'static str,
+    pub params: BTreeMap<&'static str, String>,
+    #[serde(skip)]
+    plain: String,
+}
+
+impl Note {
+    pub fn new(code: &'static str, params: &[(&'static str, &str)]) -> Note {
+        Note {
+            code,
+            params: params.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
+            plain: String::new(),
+        }
+    }
+
+    /// English only, without a code.
+    pub fn plain(text: impl Into<String>) -> Note {
+        Note {
+            plain: text.into(),
+            ..Note::default()
+        }
+    }
+
+    /// The English text.
+    pub fn text(&self) -> String {
+        let Some(mut out) = english(self.code).map(str::to_string) else {
+            return self.plain.clone();
+        };
+        for (k, v) in &self.params {
+            out = out.replace(&format!("{{{k}}}"), v);
+        }
+        out
+    }
+}
+
+impl fmt::Display for Note {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text())
+    }
+}
+
+/// The English of every code the agent sends (Wren has the same codes in
+/// every language).
+fn english(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "refused.not_allowed" => {
+            "refused by agent config: {target} is not allowed by [updates] in agent.toml"
+        }
+        "refused.not_under_roots" => {
+            "refused: the stack's folder {folder} is not under the agent's roots"
+        }
+        "refused.not_mounted" => "refused: {folder} is not mounted in the agent at the same path",
+        "refused.file_outside_roots" => "refused: a Compose file is outside the agent's roots",
+        "refused.no_script_stack" => "refused: agent.toml has no script stack named {target}",
+        "refused.gone" => "refused: nothing of {target} runs here",
+        "refused.changed" => {
+            "refused: {container} changed since Wren's check (it no longer runs {digest})"
+        }
+        "done.already_on" => {
+            "already up to date: {target} already runs the approved version; nothing was stopped"
+        }
+        "failed.no_snapshot" => {
+            "stopped before anything was touched: no data could be snapshotted, and this target requires a snapshot"
+        }
+        "failed.unreachable" => "Wren couldn't be reached before anything stopped: {error}",
+        "path.not_under_roots" => "{path} is not under the agent's roots",
+        "path.root" => "{path} is a root itself",
+        "path.shared" => "{path} is also used by {with}",
+        "path.volume" => "volume {volume} of {container} is a named Docker volume",
+        "snapshot.none" => {
+            "nothing was snapshotted: this target has no data folder Wren can snapshot"
+        }
+        _ => return None,
+    })
 }
 
 fn default_health() -> u64 {
@@ -239,7 +326,7 @@ pub struct Plan {
     /// The target's own, unshared bind paths under the roots, with the root.
     pub data: Vec<(PathBuf, PathBuf)>,
     /// What was left out of the snapshot, and why.
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
 }
 
 impl Plan {
@@ -267,28 +354,45 @@ pub fn under(path: &Path, root: &Path) -> bool {
             .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
-fn overlaps(a: &Path, b: &Path) -> bool {
-    a.starts_with(b) || b.starts_with(a)
+/// Host paths a container mounts that are never data: not worth a note.
+fn system_path(p: &Path) -> bool {
+    [
+        "/etc/localtime",
+        "/etc/timezone",
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+    ]
+    .iter()
+    .any(|s| p == Path::new(s))
+        || ["/dev", "/sys", "/proc"].iter().any(|s| p.starts_with(s))
+}
+
+/// Whether another container's bind `other` uses the data at `path`: the
+/// same folder or one inside it. A container that mounts a folder *above*
+/// it (a backup tool, a file manager, the agent itself) doesn't count.
+pub fn uses(other: &Path, path: &Path) -> bool {
+    other.starts_with(path)
 }
 
 /// Checks a job against what runs here (`all`: every container) and
-/// `agent.toml`. `self_id` is the agent's own container id (or
-/// its start), left out of the "also used by" rule. The refusal says why; nothing has changed then.
+/// `agent.toml`. `self_id` is the agent's own container id (or its start),
+/// left out of the "also used by" rule. The refusal says why; nothing has
+/// changed then.
 pub fn check(
     job: &Job,
     config: &Config,
     all: &[Ctr],
     templates: &[String],
     self_id: &str,
-) -> Result<Plan, String> {
+) -> Result<Plan, Note> {
     let name = job.target.name.as_str();
     if !config.updates.allows(name) {
-        return Err(format!(
-            "refused by agent config: {name} is not allowed by [updates] in agent.toml"
-        ));
+        return Err(Note::new("refused.not_allowed", &[("target", name)]));
     }
     if job.health_seconds > MAX_HEALTH_SECONDS || job.keep_snapshots == 0 {
-        return Err("refused: the job's health period or snapshot count is out of range".into());
+        return Err(Note::plain(
+            "refused: the job's health period or snapshot count is out of range",
+        ));
     }
     let mut plan = Plan::default();
     let kind = match job.target.kind.as_str() {
@@ -296,28 +400,30 @@ pub fn check(
         "unraid" => Kind::Unraid,
         "compose" => Kind::Compose,
         "script" => Kind::Script,
-        other => return Err(format!("refused: unknown target kind {other}")),
+        other => return Err(Note::plain(format!("refused: unknown target kind {other}"))),
     };
     match kind {
         Kind::Container | Kind::Unraid => {
             if !valid_name(name) {
-                return Err(format!("refused: {name} is not a container name"));
+                return Err(Note::plain(format!(
+                    "refused: {name} is not a container name"
+                )));
             }
             let c = all
                 .iter()
                 .find(|c| c.name == name)
-                .ok_or_else(|| format!("refused: no container named {name} runs here"))?;
+                .ok_or_else(|| Note::new("refused.gone", &[("target", name)]))?;
             if !c.label(COMPOSE_PROJECT).is_empty() {
-                return Err(format!(
+                return Err(Note::plain(format!(
                     "refused: {name} belongs to a Compose project, not a single container"
-                ));
+                )));
             }
             let templated = templates.iter().any(|t| t == name);
             if (kind == Kind::Unraid) != templated {
-                return Err(format!(
+                return Err(Note::plain(format!(
                     "refused: {name} is {} an Unraid template container here",
                     if templated { "" } else { "not" }
-                ));
+                )));
             }
             plan.ctrs.push(c.clone());
         }
@@ -327,9 +433,7 @@ pub fn check(
                     .script_stacks
                     .iter()
                     .find(|s| s.name == name)
-                    .ok_or_else(|| {
-                        format!("refused: agent.toml has no script stack named {name}")
-                    })?;
+                    .ok_or_else(|| Note::new("refused.no_script_stack", &[("target", name)]))?;
                 plan.stack = Some(stack.clone());
                 plan.working_dir = stack.working_dir.clone();
                 stack.compose_project.clone()
@@ -337,7 +441,9 @@ pub fn check(
                 name.to_string()
             };
             if !valid_name(&project) {
-                return Err(format!("refused: {project} is not a Compose project name"));
+                return Err(Note::plain(format!(
+                    "refused: {project} is not a Compose project name"
+                )));
             }
             plan.ctrs = all
                 .iter()
@@ -345,9 +451,10 @@ pub fn check(
                 .cloned()
                 .collect();
             if kind == Kind::Compose {
-                let c = plan.ctrs.first().ok_or_else(|| {
-                    format!("refused: no container of Compose project {name} runs here")
-                })?;
+                let c = plan
+                    .ctrs
+                    .first()
+                    .ok_or_else(|| Note::new("refused.gone", &[("target", name)]))?;
                 plan.working_dir = PathBuf::from(c.label(COMPOSE_DIR));
                 plan.files = c
                     .label(COMPOSE_FILES)
@@ -359,15 +466,15 @@ pub fn check(
             }
             let wd = &plan.working_dir;
             if !config.roots.iter().any(|r| under(wd, r)) {
-                return Err(format!(
-                    "refused: the stack's folder {} is not under the agent's roots",
-                    wd.display()
+                return Err(Note::new(
+                    "refused.not_under_roots",
+                    &[("folder", &wd.to_string_lossy())],
                 ));
             }
             if !wd.is_dir() {
-                return Err(format!(
-                    "refused: {} is not mounted in the agent at the same path",
-                    wd.display()
+                return Err(Note::new(
+                    "refused.not_mounted",
+                    &[("folder", &wd.to_string_lossy())],
                 ));
             }
             if plan
@@ -375,7 +482,7 @@ pub fn check(
                 .iter()
                 .any(|f| !config.roots.iter().any(|r| under(f, r)))
             {
-                return Err("refused: a Compose file is outside the agent's roots".into());
+                return Err(Note::new("refused.file_outside_roots", &[]));
             }
         }
     }
@@ -386,67 +493,83 @@ pub fn check(
             .ctrs
             .iter()
             .find(|c| c.name == i.container)
-            .ok_or_else(|| format!("refused: {} is not part of {name}", i.container))?;
+            .ok_or_else(|| {
+                Note::plain(format!("refused: {} is not part of {name}", i.container))
+            })?;
         if c.image != i.image {
-            return Err(format!(
+            return Err(Note::plain(format!(
                 "refused: {} runs {}, not {}",
                 c.name, c.image, i.image
-            ));
+            )));
         }
         if !valid_digest(&i.to) || repo_of(&i.image).is_none() {
-            return Err(format!("refused: {} has no updatable reference", c.name));
+            return Err(Note::plain(format!(
+                "refused: {} has no updatable reference",
+                c.name
+            )));
         }
         // Any repo digest counts; already on `to` is "already up to date".
         let digests = local_digests(&c.image, &c.repo_digests);
         if job.kind == JobKind::Update && !digests.contains(&i.from) && !digests.contains(&i.to) {
-            return Err(format!(
-                "refused: {} changed since Wren's check (it no longer runs {})",
-                c.name, i.from
+            return Err(Note::new(
+                "refused.changed",
+                &[("container", &c.name), ("digest", &i.from)],
             ));
         }
     }
     if job.kind == JobKind::Update && job.images.is_empty() && kind != Kind::Script {
-        return Err("refused: the job names no image to update".into());
+        return Err(Note::plain("refused: the job names no image to update"));
     }
     if job.kind == JobKind::Rollback && job.rollback_of.is_none() {
-        return Err("refused: a rollback job names no run".into());
+        return Err(Note::plain("refused: a rollback job names no run"));
     }
     if plan.ctrs.is_empty() && kind != Kind::Script {
-        return Err(format!("refused: nothing of {name} runs here"));
+        return Err(Note::new("refused.gone", &[("target", name)]));
     }
     // Data paths: the target's own bind mounts under a root (not a root
-    // itself), never one another container also mounts.
+    // itself), never one another container also uses (the same folder or
+    // one inside it). Every path left out is noted with why.
     let own: Vec<&str> = plan.ctrs.iter().map(|c| c.name.as_str()).collect();
     for c in &plan.ctrs {
         for v in &c.volumes {
-            plan.notes.push(format!(
-                "volume {v} of {} is not snapshotted (outside the roots)",
-                c.name
+            plan.notes.push(Note::new(
+                "path.volume",
+                &[("volume", v), ("container", &c.name)],
             ));
         }
         for b in &c.binds {
+            let path = b.to_string_lossy().to_string();
+            let noted = |notes: &[Note]| {
+                notes
+                    .iter()
+                    .any(|n| n.params.get("path").is_some_and(|p| *p == path))
+            };
             let Some(root) = config.roots.iter().find(|r| under(b, r)) else {
+                if !system_path(b) && !noted(&plan.notes) {
+                    plan.notes
+                        .push(Note::new("path.not_under_roots", &[("path", &path)]));
+                }
                 continue;
             };
             if b == root {
-                plan.notes.push(format!(
-                    "{} is a root itself and is not snapshotted",
-                    b.display()
-                ));
+                if !noted(&plan.notes) {
+                    plan.notes.push(Note::new("path.root", &[("path", &path)]));
+                }
                 continue;
             }
             if let Some(other) = all
                 .iter()
                 .filter(|o| !own.contains(&o.name.as_str()))
-                // The agent itself mounts every root.
+                // The agent itself.
                 .filter(|o| self_id.len() < 12 || !o.id.starts_with(self_id))
-                .find(|o| o.binds.iter().any(|ob| overlaps(ob, b)))
+                .find(|o| o.binds.iter().any(|ob| uses(ob, b)))
             {
-                plan.notes.push(format!(
-                    "{} is also used by {} and is not snapshotted",
-                    b.display(),
-                    other.name
-                ));
+                if !noted(&plan.notes) {
+                    plan.notes.push(Note::new(
+                        "path.shared",
+                        &[("path", &path), ("with", &other.name)],
+                    ));
+                }
                 continue;
             }
             if !plan.data.iter().any(|(p, _)| p == b) {
@@ -457,6 +580,50 @@ pub fn check(
     plan.kind = Some(kind);
     plan.job = Some(job.clone());
     Ok(plan)
+}
+
+/// The 64-hex container id right after one of `markers` in `text`.
+fn id_after(text: &str, markers: &[&str]) -> Option<String> {
+    for m in markers {
+        let mut rest = text;
+        while let Some(i) = rest.find(m) {
+            rest = &rest[i + m.len()..];
+            let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+            if id.len() == 64 {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// This container's id: from `/proc/self/cgroup` (cgroup v1, systemd's
+/// `docker-<id>.scope`), else `/proc/self/mountinfo` (Docker's
+/// `/containers/<id>/` files, also with a private cgroup namespace), else
+/// the hostname Docker sets by default. Empty when none says it.
+pub fn own_container_id(cgroup: &str, mountinfo: &str, hostname: &str) -> String {
+    if let Some(id) = id_after(cgroup, &["/docker/", "docker-", "/libpod-"]) {
+        return id;
+    }
+    if let Some(id) = id_after(mountinfo, &["/docker/containers/", "/containers/"]) {
+        return id;
+    }
+    let h = hostname.trim();
+    if h.len() >= 12 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        h.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// [`own_container_id`] of this process.
+pub fn own_id() -> String {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+    own_container_id(
+        &read("/proc/self/cgroup"),
+        &read("/proc/self/mountinfo"),
+        &read("/etc/hostname"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +637,9 @@ pub struct StepReport<'a> {
     pub status: &'a str,
     pub log: &'a str,
     pub duration_ms: u64,
+    /// What Wren shows translated (why paths were left out of a snapshot).
+    #[serde(skip_serializing_if = "<[Note]>::is_empty")]
+    pub notes: &'a [Note],
 }
 
 #[derive(Debug, Deserialize)]
@@ -617,13 +787,17 @@ impl JobClient {
         ))
     }
 
-    pub async fn finish(&self, run: i64, outcome: &str, detail: &str) -> Result<(), String> {
-        self.post(
-            format!("/api/agent/v1/runs/{run}/finish"),
-            &serde_json::json!({ "outcome": outcome, "detail": detail }),
-        )
-        .await
-        .map(|_| ())
+    /// Ends a run. `detail` is the note's English; Wren shows its code in the
+    /// reader's language (older Wrens the English).
+    pub async fn finish(&self, run: i64, outcome: &str, note: &Note) -> Result<(), String> {
+        let mut body = serde_json::json!({ "outcome": outcome, "detail": note.text() });
+        if !note.code.is_empty() {
+            body["code"] = serde_json::json!(note.code);
+            body["params"] = serde_json::json!(note.params);
+        }
+        self.post(format!("/api/agent/v1/runs/{run}/finish"), &body)
+            .await
+            .map(|_| ())
     }
 }
 
@@ -678,6 +852,7 @@ mod tests {
             health_seconds: 5,
             keep_snapshots: 2,
             rollback_of: None,
+            require_snapshot: false,
         }
     }
 
@@ -698,7 +873,8 @@ mod tests {
             "",
         )
         .unwrap_err();
-        assert!(err.starts_with("refused by agent config"), "{err}");
+        assert_eq!(err.code, "refused.not_allowed");
+        assert!(err.text().starts_with("refused by agent config"), "{err}");
         // Allowed by default (no section).
         let c = config("");
         assert!(
@@ -730,14 +906,15 @@ mod tests {
             &[],
             "",
         )
-        .unwrap_err();
+        .unwrap_err()
+        .text();
         assert!(
             err.contains("runs localhost:5056/ww-test/app:latest"),
             "{err}"
         );
         // A container of another target.
         let mut j = job("container", "ww-test-c", "other", "x:1");
-        let err = check(&j, &c, &all, &[], "").unwrap_err();
+        let err = check(&j, &c, &all, &[], "").unwrap_err().text();
         assert!(err.contains("not part of"), "{err}");
         // The running digest moved since the check.
         j = job(
@@ -750,6 +927,7 @@ mod tests {
         assert!(
             check(&j, &c, &all, &[], "")
                 .unwrap_err()
+                .text()
                 .contains("changed since")
         );
         // Not a digest.
@@ -766,6 +944,7 @@ mod tests {
         assert!(
             check(&j, &c, &all, &[], "")
                 .unwrap_err()
+                .text()
                 .contains("not an Unraid")
         );
         assert!(check(&j, &c, &all, &["ww-test-c".into()], "").is_ok());
@@ -775,6 +954,7 @@ mod tests {
         assert!(
             check(&j, &c, &all, &[], "")
                 .unwrap_err()
+                .text()
                 .contains("no script stack")
         );
     }
@@ -810,16 +990,108 @@ mod tests {
                 PathBuf::from("/mnt/user/appdata/ww-test")
             )]
         );
+        let notes: Vec<String> = p.notes.iter().map(Note::text).collect();
         assert!(
-            p.notes.iter().any(|n| n.contains("also used by other")),
-            "{:?}",
-            p.notes
+            notes
+                .iter()
+                .any(|n| n.contains("shared is also used by other")),
+            "{notes:?}"
         );
         assert!(
-            p.notes.iter().any(|n| n.contains("a root itself")),
-            "{:?}",
-            p.notes
+            notes.iter().any(|n| n.contains("a root itself")),
+            "{notes:?}"
         );
+        assert!(
+            !notes.iter().any(|n| n.contains("localtime")),
+            "system paths need no note: {notes:?}"
+        );
+    }
+
+    /// Tower's first night: a backup container and the agent mount all of
+    /// appdata. A container above the data doesn't block its snapshot; one
+    /// at the same folder or inside it does.
+    #[test]
+    fn only_the_same_folder_or_one_inside_it_counts_as_shared() {
+        let c = Config::from_parts(
+            Some(&format!(
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata\", \"/mnt/cache/appdata\"]\n"
+            )),
+            |_| None,
+        )
+        .unwrap();
+        let sonarr = ctr(
+            "sonarr",
+            "lscr.io/linuxserver/sonarr:latest",
+            &["/mnt/user/appdata/sonarr", "/mnt/user/plex_data"],
+        );
+        let j = job(
+            "container",
+            "sonarr",
+            "sonarr",
+            "lscr.io/linuxserver/sonarr:latest",
+        );
+        // rclone and the agent (not recognised as itself) mount the parent.
+        let all = vec![
+            sonarr.clone(),
+            ctr("rclone", "rclone/rclone:latest", &["/mnt/user/appdata"]),
+            ctr(
+                "Wise-Wren-Agent",
+                "wise-wren-agent:latest",
+                &["/mnt/cache/appdata", "/mnt/user/appdata"],
+            ),
+        ];
+        let p = check(&j, &c, &all, &[], "").unwrap();
+        assert_eq!(
+            p.data,
+            vec![(
+                PathBuf::from("/mnt/user/appdata/sonarr"),
+                PathBuf::from("/mnt/user/appdata")
+            )]
+        );
+        let notes: Vec<&str> = p.notes.iter().map(|n| n.code).collect();
+        assert_eq!(notes, ["path.not_under_roots"], "{:?}", p.notes);
+        assert_eq!(p.notes[0].params["path"], "/mnt/user/plex_data");
+        // The same folder, or one inside it: shared, not snapshotted.
+        for other in [
+            "/mnt/user/appdata/sonarr",
+            "/mnt/user/appdata/sonarr/backups",
+        ] {
+            let mut all = all.clone();
+            all.push(ctr("tool", "x/y:1", &[other]));
+            let p = check(&j, &c, &all, &[], "").unwrap();
+            assert!(p.data.is_empty(), "{other}");
+            assert_eq!(p.notes[0].code, "path.shared");
+            assert_eq!(p.notes[0].params["with"], "tool");
+            assert_eq!(
+                p.notes[0].text(),
+                "/mnt/user/appdata/sonarr is also used by tool"
+            );
+        }
+    }
+
+    #[test]
+    fn own_container_id_from_cgroup_mountinfo_or_hostname() {
+        let id = "65cd0cbed6c29b774ff72da96547e9dd5294b9f0f6302121c112be1911873d1d";
+        let layer = "a".repeat(64);
+        assert_eq!(
+            own_container_id(&format!("12:pids:/docker/{id}\n"), "", ""),
+            id
+        );
+        assert_eq!(
+            own_container_id(&format!("0::/system.slice/docker-{id}.scope\n"), "", ""),
+            id
+        );
+        // cgroup v2 with its own namespace says "0::/": mountinfo knows.
+        let mountinfo = format!(
+            "1 0 0:1 / / rw - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/{layer}/diff\n\
+             2 1 0:2 /var/lib/docker/containers/{id}/hostname /etc/hostname rw - xfs /dev/md1p1 rw\n"
+        );
+        assert_eq!(own_container_id("0::/\n", &mountinfo, "Tower"), id);
+        assert_eq!(
+            own_container_id("0::/\n", "", "65cd0cbed6c2\n"),
+            "65cd0cbed6c2"
+        );
+        assert_eq!(own_container_id("0::/\n", "", "Tower"), "");
     }
 
     #[test]
