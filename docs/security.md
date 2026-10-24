@@ -27,8 +27,11 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   channel settings).
 - **Registry passwords and the Vigilant Vole token** are sealed with AES-256-GCM under a key derived from the
   instance's `session.key` in the data folder, and never shown again in pages, API answers, logs or notifications.
-  Notification channel secrets are masked the same way. Back up the data folder as a whole: without
-  `session.key`, the sealed secrets can't be opened and must be entered again.
+- **Notification channel secrets** (tokens, passwords, webhook URLs with a key, headers) are sealed at rest
+  since 0.5 with the same instance key (`session.key` in the data folder, through vole-kit's sealed secrets) and
+  masked in pages and API answers. Channels saved by an older version are sealed at the first start.
+- Back up the data folder as a whole: a copy of the database without `session.key` loses these secrets. They
+  can't be opened and must be entered again (the channel's edit page says so; nothing is sent until then).
 - Registry credentials go to a registry's token service only over HTTPS (or to the registry's own address).
 
 ## The server

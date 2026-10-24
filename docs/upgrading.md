@@ -23,6 +23,12 @@ then look at the target yourself. Restarting an agent (a new image, an edited `a
 from 0.2.1 Wren closes it as "rollback failed" at the agent's next heartbeat and goes on with the next approved
 update.
 
+### To 0.5
+
+Notification channel secrets are sealed with the instance key (`session.key` in the data folder) at the first
+start; the copy in `backups/wren-before-…` keeps them in plaintext for going back. A database copied without
+`session.key` loses the channel secrets: enter them again on each channel's edit page.
+
 ## Agents
 
 Recreate each agent with the new image (Unraid: "Check for updates" on the agent's container). The agent reports
