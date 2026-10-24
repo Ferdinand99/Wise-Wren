@@ -46,7 +46,7 @@ pub async fn send_new(wren: &Wren) -> usize {
     let base = core.base_url().await;
     let mut sent = 0;
     for (id, kind, config, language, digest) in channels {
-        let Ok(config) = serde_json::from_str(&config) else {
+        let Some(config) = crate::channels::config_to_send(core, id, &kind, &config) else {
             continue;
         };
         let lang = match Lang::from_exact_code(&language) {

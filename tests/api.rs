@@ -439,7 +439,18 @@ async fn api_notification_channels_redacted() {
         })
         .await
         .unwrap();
-    assert!(stored.contains("tk_secret123") && stored.contains("ntfy.example.com"));
+    // Kept, and sealed at rest (vole-kit 0.5).
+    let stored: Value = serde_json::from_str(&stored).unwrap();
+    assert_eq!(stored["server"], "https://ntfy.example.com");
+    assert!(
+        stored["access_token"]
+            .as_str()
+            .unwrap()
+            .starts_with("sealed:v1:"),
+        "{stored}"
+    );
+    let opened = vole_kit::notify::sealed::open_config(&app.wren.core.session_key, "ntfy", &stored);
+    assert_eq!(opened.config["access_token"], "tk_secret123");
     let res = call(
         &app,
         "POST",

@@ -7,11 +7,15 @@ mod common;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
+use axum_extra::extract::cookie::Key;
 use common::{App, Web, api_token, bearer, next_event};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt as _;
 use vole_kit::auth::TokenScope;
+use vole_kit::notify::alert::Alert;
 
 fn beat() -> Value {
     json!({
@@ -460,6 +464,119 @@ async fn channel_add_edit_delete() {
             .await,
         0
     );
+}
+
+/// Channel `id`'s config as stored.
+async fn stored_config(app: &App, id: i64) -> Value {
+    let raw: String = app
+        .wren
+        .core
+        .with_conn(move |c| {
+            c.query_row(
+                "SELECT config FROM notification_channels WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+async fn set_config(app: &App, id: i64, config: &Value) {
+    app.exec(format!(
+        "UPDATE notification_channels SET config = '{config}' WHERE id = {id}"
+    ))
+    .await;
+}
+
+/// A webhook receiver: how many requests it got.
+async fn hook() -> (String, Arc<AtomicUsize>) {
+    let got = Arc::new(AtomicUsize::new(0));
+    let g = got.clone();
+    let app = axum::Router::new().fallback(move || {
+        g.fetch_add(1, Ordering::SeqCst);
+        async { StatusCode::OK }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/hook"), got)
+}
+
+/// vole-kit 0.5: a channel's secrets are sealed in the database and opened
+/// to send; plaintext from 0.4 is sealed at the next start, once; a secret
+/// sealed with another instance key asks to be entered again.
+#[tokio::test]
+async fn channel_secrets_are_sealed_at_rest() {
+    let app = App::new().await;
+    let (url, got) = hook().await;
+    let mut web = Web::new(&app, "eddie", "editor").await;
+    let fields = [
+        ("kind", "webhook"),
+        ("name", "Ops hook"),
+        ("c_url", url.as_str()),
+        ("c_method", "POST"),
+    ];
+    let res = web
+        .post_with("/settings/notifications", &fields, true)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let id = app.count("SELECT id FROM notification_channels").await;
+    let stored = stored_config(&app, id).await;
+    assert!(
+        stored["url"].as_str().unwrap().starts_with("sealed:v1:"),
+        "{stored}"
+    );
+    assert_eq!(stored["method"], "POST", "other settings stay readable");
+    let edit_path = format!("/settings/notifications/{id}/edit");
+    let edit = web.get(&edit_path).await;
+    assert!(!edit.body.contains(&url) && !edit.body.contains("sealed:v1:"));
+
+    // Send test and a real notification reach the real URL.
+    let test_path = format!("/settings/notifications/{id}/test");
+    let res = web.post_with(&test_path, &[], true).await;
+    assert!(
+        res.header("hx-trigger").contains("success"),
+        "{}",
+        res.header("hx-trigger")
+    );
+    let alert = |_: Option<&str>| Alert::test("Wren", "body", "test", "Open", None);
+    assert_eq!(
+        wise_wren::run_notify::broadcast(&app.wren.core, alert).await,
+        1
+    );
+    assert_eq!(got.load(Ordering::SeqCst), 2);
+
+    // Plaintext from 0.4 is sealed at the next start; a second changes nothing.
+    let plain = json!({"url": url, "method": "POST"});
+    set_config(&app, id, &plain).await;
+    drop(wise_wren::start(&app.dir, None).await.unwrap());
+    let sealed = stored_config(&app, id).await;
+    assert!(
+        sealed["url"].as_str().unwrap().starts_with("sealed:v1:"),
+        "{sealed}"
+    );
+    drop(wise_wren::start(&app.dir, None).await.unwrap());
+    assert_eq!(stored_config(&app, id).await, sealed);
+    assert_eq!(
+        wise_wren::run_notify::broadcast(&app.wren.core, alert).await,
+        1
+    );
+
+    // Sealed with another instance key (session.key lost): enter it again.
+    let lost = vole_kit::notify::sealed::seal_config(&Key::from(&[7u8; 64]), "webhook", &plain);
+    set_config(&app, id, &lost).await;
+    let edit = web.get(&edit_path).await;
+    assert_eq!(edit.status, StatusCode::OK);
+    assert!(edit.body.contains("instance key changed"), "{}", edit.body);
+    let res = web.post_with(&test_path, &[], true).await;
+    assert!(res.header("hx-trigger").contains("instance key changed"));
+    assert_eq!(
+        wise_wren::run_notify::broadcast(&app.wren.core, alert).await,
+        0
+    );
+    assert_eq!(got.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
