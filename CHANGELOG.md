@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.3.1...v0.4.0) (2026-10-24)
+
+
+### Features
+
+* snapshots that happen, blocked approvals, rollback image retention, agent.toml helper ([#19](https://github.com/Ferdinand99/Wise-Wren/issues/19)) ([2684aa4](https://github.com/Ferdinand99/Wise-Wren/commit/2684aa47dab81048fafce0c58200d4507d33a67e))
+
 ## [0.3.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.3.0...v0.3.1) (2026-10-24)
 
 
