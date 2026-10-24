@@ -16,6 +16,11 @@
 //! env = { COMPOSE_PROJECT_NAME = "fluxer" }
 //! timeout = "20m"
 //!
+//! # Optional: runs in the preflight, before anything stops; when it fails
+//! # the run ends there and the stack keeps running.
+//! [script_stack.check]
+//! command = "curl -fsSL -o /dev/null https://fluxer.dev/rexctl/release.json"
+//!
 //! [script_stack.update]
 //! command = "sh install.sh --update --allow-root --non-interactive --dir \"$PWD\""
 //!
@@ -200,6 +205,8 @@ pub struct ScriptStack {
     pub handles_own_backup: bool,
     pub env: BTreeMap<String, String>,
     pub timeout: Duration,
+    /// Whether the update can run now, asked before anything stops.
+    pub check: Option<String>,
     pub update: String,
     pub rollback: Option<String>,
     pub version: Option<VersionConfig>,
@@ -341,6 +348,7 @@ struct RawStack {
     #[serde(default)]
     env: BTreeMap<String, String>,
     timeout: Option<String>,
+    check: Option<RawScript>,
     update: Option<RawScript>,
     rollback: Option<RawScript>,
     version: Option<RawVersion>,
@@ -546,6 +554,7 @@ impl Config {
                     }
                 }
             };
+            let check = command(s.check, "check", &mut problems);
             let had_update = s.update.is_some();
             let update = command(s.update, "update", &mut problems);
             if !had_update {
@@ -566,6 +575,7 @@ impl Config {
                     handles_own_backup: s.handles_own_backup,
                     env: s.env,
                     timeout,
+                    check,
                     update: update.unwrap_or_default(),
                     rollback,
                     version,
@@ -711,6 +721,9 @@ handles_own_backup = true
 env = { COMPOSE_PROJECT_NAME = "fluxer" }
 timeout = "20m"
 
+[script_stack.check]
+command = "curl -fsSL -o /dev/null https://fluxer.dev/rexctl/release.json"
+
 [script_stack.update]
 command = """
 curl -fsSLO https://fluxer.dev/install.sh && curl -fsSLO https://fluxer.dev/install.sh.sha256 \
@@ -731,6 +744,7 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
         assert!(s.handles_own_backup);
         assert!(s.update.contains("sha256sum -c"));
         assert!(s.rollback.as_deref().unwrap().contains("--rollback"));
+        assert!(s.check.as_deref().unwrap().contains("rexctl/release.json"));
         assert_eq!(s.env["COMPOSE_PROJECT_NAME"], "fluxer");
     }
 

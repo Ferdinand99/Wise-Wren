@@ -79,6 +79,7 @@
       {{ m::field_text("stack_dir", tr("targets.working_dir"), stack.dir, "text", "/mnt/cache/appdata/fluxer") }}
       {{ m::field_text("stack_timeout", tr("toml.stack_timeout"), stack.timeout, "text", "20m", tr("toml.stack_timeout_help")) }}
       {{ m::checkbox("stack_own", tr("toml.stack_own"), stack.own_backup, tr("toml.stack_own_help")) }}
+      {{ m::field_textarea("stack_check", tr("toml.stack_check"), stack.check, 2, "", tr("toml.stack_check_help"), true) }}
       {{ m::field_textarea("stack_update", tr("toml.stack_update"), stack.update, 4, "", "", true) }}
       {{ m::field_textarea("stack_rollback", tr("toml.stack_rollback"), stack.rollback, 2, "", "", true) }}
       {%- endif %}
