@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.3.0...v0.3.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* passkey button after in-app navigation (vole-kit 0.4.1) ([#17](https://github.com/Ferdinand99/Wise-Wren/issues/17)) ([22edbcd](https://github.com/Ferdinand99/Wise-Wren/commit/22edbcd313e74d8b31c168cc2fa31b42afda79f3))
+
 ## [0.3.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.2.1...v0.3.0) (2026-10-23)
 
 
