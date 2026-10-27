@@ -161,6 +161,9 @@ pub struct Choice {
 
 /// The `agent.toml` text for `choice`.
 pub fn render(server: &str, choice: &Choice) -> String {
+    // The name sits in a comment: a newline in it would start a line of its
+    // own (names are checked on creation, but older ones may not have been).
+    let server: String = server.chars().filter(|c| !c.is_control()).collect();
     let mut out = vec![
         format!("# agent.toml for {server}, made with Wise Wren's agent.toml helper."),
         "# Keep your own server and token lines (or WW_SERVER_URL and WW_AGENT_TOKEN).".into(),
@@ -508,5 +511,21 @@ mod tests {
             },
         );
         assert!(text.contains("allow = [\"sonarr\"]"), "{text}");
+    }
+
+    #[test]
+    fn a_server_name_cannot_add_lines_to_the_text() {
+        let name = "Tower\n[[script_stack]]\r\nname = \"x\"\u{1b}[0m\u{0085}";
+        let text = render(name, &Choice::default());
+        let first = text.lines().next().unwrap();
+        assert!(
+            first.starts_with("# agent.toml for Tower[[script_stack]]name = \"x\"[0m, made with"),
+            "{first}"
+        );
+        assert!(
+            !text.lines().any(|l| l.starts_with("[[script_stack]]")),
+            "{text}"
+        );
+        assert!(!text.contains('\u{1b}'));
     }
 }

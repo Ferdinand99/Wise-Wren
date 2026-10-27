@@ -110,6 +110,53 @@ impl std::fmt::Display for SendError {
     }
 }
 
+/// The most the agent reads of Wren's answer to a heartbeat.
+pub const MAX_HEARTBEAT_BYTES: usize = 64 << 10;
+/// ... of a job (or the news that there is none).
+pub const MAX_JOB_BYTES: usize = 256 << 10;
+/// ... of a monitor verdict or a step's answer.
+pub const MAX_VERDICT_BYTES: usize = 64 << 10;
+/// ... of the body of an error answer (shown in the log).
+pub const MAX_ERROR_BYTES: usize = 4 << 10;
+
+/// At most `limit` bytes of a response's body, and whether more followed.
+/// Reads chunk by chunk and stops at the limit: a server can't make the
+/// agent buffer a body of any size.
+pub async fn read_head(
+    mut res: reqwest::Response,
+    limit: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await? {
+        let room = limit - body.len();
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            return Ok((body, true));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, false))
+}
+
+/// Reads Wren's answer as JSON, refusing one larger than `limit` bytes (by
+/// its `Content-Length` before reading, else when the body passes it).
+pub async fn read_json<T: serde::de::DeserializeOwned>(
+    res: reqwest::Response,
+    limit: usize,
+) -> Result<T, String> {
+    let too_big = || format!("Wren's answer is larger than {} KiB", limit >> 10);
+    if res.content_length().is_some_and(|n| n > limit as u64) {
+        return Err(too_big());
+    }
+    let (body, more) = read_head(res, limit)
+        .await
+        .map_err(|e| format!("Wren's answer wasn't understood: {e}"))?;
+    if more {
+        return Err(too_big());
+    }
+    serde_json::from_slice(&body).map_err(|e| format!("Wren's answer wasn't understood: {e}"))
+}
+
 /// Posts heartbeats and inventories to one Wren.
 pub struct Client {
     http: reqwest::Client,
@@ -129,6 +176,9 @@ impl Client {
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
+            // An answer is the answer: a redirect would carry the bodies
+            // (the inventory) somewhere else.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
         let server = server.trim_end_matches('/');
@@ -141,9 +191,9 @@ impl Client {
 
     pub async fn send(&self, beat: &Heartbeat) -> Result<Reply, SendError> {
         let res = self.post(&self.url, beat).await?;
-        res.json()
+        read_json(res, MAX_HEARTBEAT_BYTES)
             .await
-            .map_err(|e| SendError::Failed(format!("Wren's answer wasn't understood: {e}")))
+            .map_err(SendError::Failed)
     }
 
     /// Sends what runs on this server.
@@ -166,15 +216,93 @@ impl Client {
             )));
         }
         if !status.is_success() {
-            let body: String = res
-                .text()
-                .await
-                .unwrap_or_default()
+            // Only a little of it, without control characters: it is logged.
+            let (head, _) = read_head(res, MAX_ERROR_BYTES).await.unwrap_or_default();
+            let body: String = String::from_utf8_lossy(&head)
                 .chars()
+                .filter(|c| !c.is_control())
                 .take(200)
                 .collect();
             return Err(SendError::Failed(format!("Wren answered {status}: {body}")));
         }
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    /// Answers the first connection with `response` and closes; the address.
+    async fn serve(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            // The reader may stop before the end: not an error here.
+            let _ = sock.write_all(&response).await;
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn response(head: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("HTTP/1.1 {head}\r\nConnection: close\r\n\r\n").into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    async fn get(url: &str) -> reqwest::Response {
+        reqwest::get(url).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn answers_within_the_limit_are_read() {
+        let body = br#"{"a": 1}"#;
+        let head = format!("200 OK\r\nContent-Length: {}", body.len());
+        let url = serve(response(&head, body)).await;
+        let v: serde_json::Value = read_json(get(&url).await, 1024).await.unwrap();
+        assert_eq!(v["a"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_big_content_length_is_refused_up_front() {
+        let url = serve(response("200 OK\r\nContent-Length: 10000000", b"{}")).await;
+        let err = read_json::<serde_json::Value>(get(&url).await, 64 << 10)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "Wren's answer is larger than 64 KiB");
+    }
+
+    #[tokio::test]
+    async fn a_body_without_a_length_stops_at_the_limit() {
+        let big = vec![b' '; 300 << 10];
+        let url = serve(response("200 OK", &big)).await;
+        let err = read_json::<serde_json::Value>(get(&url).await, 64 << 10)
+            .await
+            .unwrap_err();
+        assert!(err.contains("larger than 64 KiB"), "{err}");
+        // An error body is read up to its limit only.
+        let url = serve(response("500 Internal Server Error", &big)).await;
+        let (head, more) = read_head(get(&url).await, MAX_ERROR_BYTES).await.unwrap();
+        assert_eq!((head.len(), more), (MAX_ERROR_BYTES, true));
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let url = serve(response(
+            "307 Temporary Redirect\r\nLocation: http://127.0.0.1:9/elsewhere\r\nContent-Length: 0",
+            b"",
+        ))
+        .await;
+        let client = Client::new(&url, "wwa_x").unwrap();
+        let Err(SendError::Failed(msg)) = client.send(&Heartbeat::default()).await else {
+            panic!("a redirect is not an answer");
+        };
+        assert!(msg.contains("307"), "{msg}");
     }
 }

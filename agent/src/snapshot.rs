@@ -18,8 +18,10 @@
 //! finds it from the path alone, and retention only ever deletes inside
 //! `.wren-snapshots/<target>/`.
 
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The folder (under each root) that holds snapshots.
 pub const DIR: &str = ".wren-snapshots";
@@ -91,12 +93,12 @@ pub fn safe_name(name: &str) -> String {
 /// Runs a program (argv, no shell) with a timeout; stdout on success, else
 /// the exit status and the end of stderr.
 pub async fn exec(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let child = tokio::process::Command::new(program)
-        .args(args)
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(timeout, child)
+        .kill_on_drop(true);
+    crate::process::scrub(&mut cmd);
+    let out = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| format!("{program} took longer than {} s", timeout.as_secs()))?
         .map_err(|e| format!("can't start {program}: {e}"))?;
@@ -188,27 +190,46 @@ async fn is_subvolume(path: &Path) -> bool {
 }
 
 /// Whether a reflink copy works between `from`'s filesystem and `dir`
-/// (tries one on a small file in `dir`).
+/// (tries one on a small file in `dir`). `dir` may be writable by others
+/// (the appdata tree), so the probe never writes through a symlink: both
+/// names are new and unguessable, the first is created with `O_EXCL` and the
+/// second must not exist before `cp`.
 pub async fn reflink_works(dir: &Path) -> bool {
+    use tokio::io::AsyncWriteExt as _;
     if tokio::fs::create_dir_all(dir).await.is_err() {
         return false;
     }
-    let a = dir.join(".wren-reflink-probe");
-    let b = dir.join(".wren-reflink-probe-copy");
-    if tokio::fs::write(&a, b"wren").await.is_err() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    // Randomly keyed per call: what the clock doesn't add.
+    let salt = RandomState::new().hash_one(nanos);
+    let stamp = format!("{}-{nanos:x}-{salt:x}", std::process::id());
+    let a = dir.join(format!(".wren-reflink-probe-{stamp}"));
+    let b = dir.join(format!(".wren-reflink-probe-{stamp}-copy"));
+    let made = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&a)
+        .await;
+    let Ok(mut file) = made else {
         return false;
-    }
-    let ok = exec(
-        "cp",
-        &[
-            "--reflink=always",
-            &a.to_string_lossy(),
-            &b.to_string_lossy(),
-        ],
-        Duration::from_secs(10),
-    )
-    .await
-    .is_ok();
+    };
+    let written = file.write_all(b"wren").await.is_ok() && file.flush().await.is_ok();
+    drop(file);
+    let ok = written
+        && tokio::fs::symlink_metadata(&b).await.is_err()
+        && exec(
+            "cp",
+            &[
+                "--reflink=always",
+                &a.to_string_lossy(),
+                &b.to_string_lossy(),
+            ],
+            Duration::from_secs(10),
+        )
+        .await
+        .is_ok();
     let _ = tokio::fs::remove_file(&a).await;
     let _ = tokio::fs::remove_file(&b).await;
     ok
@@ -286,8 +307,16 @@ pub fn fits(need: u64, avail: u64, total: u64) -> Result<(), String> {
 }
 
 /// Takes the snapshot of `p` at `dest` with `method`; a failed reflink copy
-/// falls back to a plain copy. The method used.
+/// falls back to a plain copy. The method used. `dest` must not exist: `cp -a`
+/// into an existing folder nests the copy in it (or follows a symlink put
+/// there), so a taken snapshot is never added to.
 pub async fn take(p: &DataPath, dest: &Path, method: Method) -> Result<Method, String> {
+    if tokio::fs::symlink_metadata(dest).await.is_ok() {
+        return Err(format!(
+            "{} already exists; a snapshot is never copied into an existing folder",
+            dest.display()
+        ));
+    }
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -472,6 +501,55 @@ mod tests {
         assert!(!root.join("app/data.wren-aside-7").exists());
         // The snapshot stays for a later rollback.
         assert!(dest.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A symlink planted at the old fixed probe names (by something else
+    /// that writes to the appdata tree) is not written through.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reflink_probe_does_not_write_through_symlinks() {
+        let root = tmp("probe");
+        let dir = root.join(DIR).join("t/1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = root.join("victim.conf");
+        std::fs::write(&victim, "precious").unwrap();
+        for name in [".wren-reflink-probe", ".wren-reflink-probe-copy"] {
+            std::os::unix::fs::symlink(&victim, dir.join(name)).unwrap();
+        }
+        let _ = reflink_works(&dir).await;
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        for name in [".wren-reflink-probe", ".wren-reflink-probe-copy"] {
+            assert!(dir.join(name).is_symlink(), "{name} left alone");
+        }
+        // The probe cleans up after itself.
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn take_refuses_an_existing_destination() {
+        let root = tmp("exists");
+        let data = root.join("app/data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("a.txt"), "one").unwrap();
+        let p = resolve(&data, &root).await;
+        let dest = p.snapshot_at("t", 3);
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("old.txt"), "earlier").unwrap();
+        let err = take(&p, &dest, Method::Copy).await.unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        // Nothing was nested into it, and its content is untouched.
+        assert!(!dest.join("data").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("old.txt")).unwrap(),
+            "earlier"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

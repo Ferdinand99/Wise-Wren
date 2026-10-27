@@ -13,6 +13,7 @@ pub mod discover;
 pub mod docker;
 pub mod heartbeat;
 pub mod jobs;
+pub mod process;
 pub mod run;
 pub mod snapshot;
 
@@ -90,6 +91,12 @@ pub async fn run(
         boot = %boot.id,
         "wren-agent started"
     );
+    if config::plain_http_beyond_lan(&config.server) {
+        tracing::warn!(
+            server = %config.server,
+            "the server address is plain http:// to a host outside the local network: the token and every job travel unencrypted; use https://"
+        );
+    }
     tokio::pin!(stop);
     // Kept images beyond `[retention] rollback_images`, from before this
     // setting or a run that never finished, go once at start.
@@ -114,7 +121,8 @@ pub async fn run(
         let wait = match client.send(&beat).await {
             Ok(reply) => {
                 if !connected {
-                    tracing::info!(server = %reply.server.name, "connected to Wren");
+                    // Escaped (`?`): the name is Wren's to choose.
+                    tracing::info!(server = ?reply.server.name, "connected to Wren");
                     connected = true;
                 }
                 failures = 0;
@@ -171,7 +179,7 @@ async fn jobs_loop(config: Arc<Config>) {
                 run::handle(&config, &client, job).await;
             }
             Ok(jobs::Polled::Job(Err((run, why)))) => {
-                tracing::warn!(run, "{why}");
+                tracing::warn!(run, reason = ?why, "job refused");
                 let _ = client.finish(run, "refused", &jobs::Note::plain(why)).await;
             }
             Err(SendError::Refused(_)) => tokio::time::sleep(REFUSED_WAIT).await,

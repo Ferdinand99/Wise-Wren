@@ -310,7 +310,9 @@ async fn render_new(
 
 /// What's wrong with a server name, if anything.
 pub fn name_problem(name: &str) -> Option<String> {
-    if name.is_empty() {
+    // No newlines or other control characters: the name is printed into
+    // logs and into the agent.toml helper's text, which an operator copies.
+    if name.is_empty() || name.chars().any(char::is_control) {
         Some(i18n::t("servers.err_name").into())
     } else if name.chars().count() > NAME_MAX {
         Some(i18n::tf(
@@ -639,6 +641,9 @@ mod tests {
     fn names_are_checked() {
         crate::product::install();
         assert!(name_problem("").is_some());
+        for bad in ["a\nb", "a\r\nb", "a\tb", "a\u{1b}[31mb", "a\u{0085}b", "\0"] {
+            assert!(name_problem(bad).is_some(), "{bad:?}");
+        }
         assert!(name_problem(&"x".repeat(NAME_MAX + 1)).is_some());
         assert!(name_problem("LANBox").is_none());
     }

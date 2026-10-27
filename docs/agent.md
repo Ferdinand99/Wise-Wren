@@ -108,6 +108,18 @@ snapshots = 2                      # data snapshots (1-10)
 **`[updates]` is your last word.** Whatever happens to the Wren server, the agent only touches what this file
 allows. Use it on production servers.
 
+For a script stack the globs are checked against both names, the stack's `name` and its `compose_project`: a `deny`
+on either refuses the job, and an `allow` on the stack's name is enough. A Compose job for a project that a
+`[[script_stack]]` owns (its `compose_project`) is refused, so a plain `docker compose up` can't go round the
+stack's script. The agent also never updates **itself**: a job whose target includes the agent's own container
+(alone, or in the same Compose project) is refused with "Wren never updates its own agent".
+
+**Use `https://` for the server address** when the agent doesn't reach Wren over a trusted local network. Plain
+`http://` still works, because many homelabs run Wren on the LAN, but the token and every job then travel
+unencrypted. The agent logs a warning at start when the address is `http://` and the host isn't loopback, a private
+or link-local address, a single-label name or one ending in `.local`, `.lan` or `.home.arpa`. Addresses with a
+`user:password@` part are refused, and the agent doesn't follow redirects.
+
 The agent reports its `[updates]` globs and its `roots` (never its token or scripts) to Wren, so Wren knows ahead what
 it would refuse: those targets show **Blocked** with the reason ("not allowed by [updates] in agent.toml", "folder …
 not under the agent's roots", "files not reachable") and can't be approved or scheduled. Agents before 0.4.0 don't

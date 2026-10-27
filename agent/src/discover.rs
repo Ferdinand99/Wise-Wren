@@ -330,15 +330,15 @@ pub async fn run(
     env: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<String, String> {
-    let child = tokio::process::Command::new("sh")
-        .arg("-c")
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
         .envs(env)
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(timeout, child)
+        .kill_on_drop(true);
+    crate::process::scrub(&mut cmd);
+    let output = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| format!("took longer than {} s", timeout.as_secs()))?
         .map_err(|e| format!("can't start sh: {e}"))?;
