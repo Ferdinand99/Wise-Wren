@@ -80,8 +80,22 @@ pub async fn connection(core: &Core) -> Option<Conn> {
     Some(Conn { url, token: token? })
 }
 
-/// Saves the URL and, when given, a new token (`None` keeps the saved one).
+/// Whether saving `url` needs the token typed again: none is saved, or the
+/// URL is another one. The token is only ever sent to the URL it was given
+/// for (the same rule as a notification channel's destination), so changing
+/// the URL can't point a saved token at a listener.
+pub async fn token_needed(core: &Core, url: &str) -> Result<bool, ApiError> {
+    let url = url.trim().trim_end_matches('/').to_string();
+    let (saved_url, has_token) = core.with_conn(|c| saved(c)).await?;
+    Ok(!has_token || !saved_url.eq_ignore_ascii_case(&url))
+}
+
+/// Saves the URL and, when given, a new token (`None` keeps the saved one,
+/// and only for the saved URL: see [`token_needed`]).
 pub async fn save(core: &Core, url: &str, token: Option<&str>) -> Result<(), ApiError> {
+    if token.is_none() && token_needed(core, url).await? {
+        return Err(ApiError::bad_request(vole_kit::i18n::t("vv.err_no_token")));
+    }
     let url = url.trim().trim_end_matches('/').to_string();
     let sealed = token.map(|t| {
         base64::engine::general_purpose::STANDARD.encode(crate::registries::seal_for(
@@ -140,6 +154,17 @@ impl std::fmt::Display for VvError {
         match self {
             VvError::Unreachable(e) => write!(f, "Vigilant Vole can't be reached: {e}"),
             VvError::Answer(s, m) => write!(f, "Vigilant Vole answered {s}: {m}"),
+        }
+    }
+}
+
+impl VvError {
+    /// What goes to a person who is testing a URL: the status, never what
+    /// the other end wrote (it could be anything it was pointed at).
+    pub fn status_only(&self) -> String {
+        match self {
+            VvError::Answer(s, _) => format!("Vigilant Vole answered {s}"),
+            other => other.to_string(),
         }
     }
 }
@@ -353,7 +378,12 @@ pub async fn test(core: &Core, conn: Conn) -> Tested {
     let me = match client.get("/api/v1/me").await {
         Ok(me) => me,
         Err(VvError::Answer(401 | 403, _)) => return fail(i18n::t("vv.err_token").to_string()),
-        Err(e) => return fail(i18n::tf("vv.err_unreachable", &[("error", &e.to_string())])),
+        Err(e) => {
+            return fail(i18n::tf(
+                "vv.err_unreachable",
+                &[("error", &e.status_only())],
+            ));
+        }
     };
     if me["can_edit"].as_bool() != Some(true) {
         return fail(i18n::t("vv.err_write").to_string());
@@ -366,7 +396,12 @@ pub async fn test(core: &Core, conn: Conn) -> Tested {
         .unwrap_or_default();
     let monitors = match client.monitors().await {
         Ok(m) => m,
-        Err(e) => return fail(i18n::tf("vv.err_unreachable", &[("error", &e.to_string())])),
+        Err(e) => {
+            return fail(i18n::tf(
+                "vv.err_unreachable",
+                &[("error", &e.status_only())],
+            ));
+        }
     };
     let too_old = match monitors.first() {
         Some(_) => monitors.iter().any(|m| !m.has_raw),
@@ -585,14 +620,68 @@ async fn texts(core: &Core, run: &crate::runs::Run) -> (String, String) {
     })
 }
 
+/// Marks a run as "its window is being opened" until dropped.
+struct Opening {
+    set: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
+    run_id: i64,
+}
+
+impl Opening {
+    fn take(
+        set: &std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
+        run_id: i64,
+    ) -> Option<Opening> {
+        let first = set.lock().ok()?.insert(run_id);
+        first.then(|| Opening {
+            set: set.clone(),
+            run_id,
+        })
+    }
+}
+
+impl Drop for Opening {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.run_id);
+        }
+    }
+}
+
 /// Step 2: opens the run's maintenance window (or makes its planned window
 /// start now). `Err`: the run must stop before anything stops (the target
 /// requires VV and it couldn't be done).
+///
+/// At most once per run: the agent reports its preflight once, but a
+/// repeated report (or several at the same time) must not open more windows,
+/// which stay open until their end because only the latest is closed.
 pub async fn before_stop(wren: &Wren, run_id: i64) -> Result<(), String> {
     let core = &wren.core;
+    let Some(_opening) = Opening::take(&wren.vv_opening, run_id) else {
+        return Ok(());
+    };
     let Ok(Some(info)) = core.with_conn(move |c| run_info(c, run_id)).await else {
         return Ok(());
     };
+    let tried: Option<String> = core
+        .with_conn(move |c| {
+            c.query_row(
+                "SELECT status FROM run_steps WHERE run_id = ?1 AND step = 'maintenance'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .await
+        .unwrap_or(None);
+    if tried.is_some() || matches!(info.run.vv_state.as_str(), "open" | "none") {
+        // Done before: a window is open, none is wanted, or it failed.
+        return match tried.as_deref() {
+            Some("failed") if info.require_vv => {
+                Err("the maintenance window couldn't be opened earlier in this run".into())
+            }
+            _ => Ok(()),
+        };
+    }
     if info.links.is_empty() {
         let _ = core
             .with_conn(move |c| {

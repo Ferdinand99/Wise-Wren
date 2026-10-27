@@ -117,7 +117,7 @@ site_name_placeholder = "Otthoni labor frissítései…"
 tz_after = ". Ez a Beállításokban módosítható."
 
 [users]
-roles_help = "A megtekintők nézhetnek, de nem módosíthatnak semmit. A szerkesztők kezelik az értesítési csatornákat. Az adminok mindent tehetnek, a szervereket, az ügynöktokeneket és a felhasználókat is beleértve."
+roles_help = "A megtekintők nézhetnek, de nem módosíthatnak semmit. A szerkesztők jóváhagyják és elindítják a frissítéseket. Az adminok mindent tehetnek, a szervereket, az ügynöktokeneket és a felhasználókat is beleértve."
 
 [tokens]
 sub = "Szkriptek és MI-asszisztensek olvashatják a szervereket és ügynökeiket."

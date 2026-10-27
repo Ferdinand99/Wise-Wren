@@ -108,10 +108,15 @@ async fn save(
     user.require_admin()?;
     let raw = form_value(&body, "url");
     let token = form_value(&body, "token");
-    let (_, has_token) = core.with_conn(|c| vv::saved(c)).await?;
     let error = match vv::normal_url(&raw) {
         None => Some(i18n::t("vv.err_url").to_string()),
-        Some(_) if token.is_empty() && !has_token => Some(i18n::t("vv.err_no_token").to_string()),
+        // The token is bound to its URL: a new URL needs it typed again.
+        Some(url)
+            if (token.is_empty() || token == SECRET_MASK)
+                && vv::token_needed(&core, &url).await? =>
+        {
+            Some(i18n::t("vv.err_no_token").to_string())
+        }
         Some(_) => None,
     };
     if let Some(error) = error {

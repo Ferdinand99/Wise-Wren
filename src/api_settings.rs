@@ -4,7 +4,7 @@
 //! connection and monitor links, notification channels.
 //!
 //! The rules are the pages' (design §8): viewers read, editors check, set
-//! intervals and manage notification channels, admins add and remove
+//! intervals, admins manage notification channels and add and remove
 //! servers, agent tokens, registries, the Vigilant Vole connection and
 //! monitor links. Writes need an API token with write access, never a
 //! session cookie (these paths skip the CSRF check). Secrets are
@@ -338,7 +338,7 @@ pub async fn vv_get(State(core): State<Core>, user: CurrentUser) -> ApiResult<Js
 }
 
 /// `POST /api/v1/vigilant-vole` `{"url", "token"}`: a missing, empty or
-/// masked token keeps the saved one.
+/// masked token keeps the saved one, but only for the same URL.
 pub async fn vv_save(
     State(core): State<Core>,
     user: CurrentUser,
@@ -353,10 +353,8 @@ pub async fn vv_save(
     let token = text(&b, "token")
         .map(str::trim)
         .filter(|t| !t.is_empty() && *t != vole_kit::notify::schema::SECRET_MASK);
-    let (_, saved) = core.with_conn(|c| crate::vv::saved(c)).await?;
-    if token.is_none() && !saved {
-        return Err(ApiError::bad_request(vole_kit::i18n::t("vv.err_no_token")));
-    }
+    // `save` refuses a missing token for a new URL (the token is bound to
+    // the URL it was given for).
     crate::vv::save(&core, &url, token).await?;
     tracing::info!(user = %caller.name, "Vigilant Vole connection saved");
     Ok(Json(vv_json(&core).await?))
@@ -496,11 +494,11 @@ pub async fn unlink_route(
 }
 
 // ---------------------------------------------------------------------------
-// Notification channels (editors)
+// Notification channels (admins)
 // ---------------------------------------------------------------------------
 
 pub async fn channels_list(State(core): State<Core>, user: CurrentUser) -> ApiResult<Json<Value>> {
-    user.require_editor()?;
+    user.require_admin()?;
     Ok(Json(crate::channels::api_list(&core).await?))
 }
 
@@ -509,12 +507,12 @@ pub async fn channel_get(
     user: CurrentUser,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
-    user.require_editor()?;
+    user.require_admin()?;
     Ok(Json(crate::channels::api_get(&core, id).await?))
 }
 
 pub async fn providers(user: CurrentUser) -> ApiResult<Json<Value>> {
-    user.require_editor()?;
+    user.require_admin()?;
     Ok(Json(crate::channels::api_providers()))
 }
 
@@ -525,6 +523,7 @@ pub async fn channel_add(
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
     let caller = write_caller(&user, &method)?;
+    caller.admin()?;
     let b = json_body(&body)?;
     Ok(Json(
         crate::channels::api_save(&core, None, &b, &caller.name).await?,
@@ -540,6 +539,7 @@ pub async fn channel_action(
     body: Bytes,
 ) -> ApiResult<Json<Value>> {
     let caller = write_caller(&user, &method)?;
+    caller.admin()?;
     let b = json_body(&body)?;
     Ok(Json(match action.as_str() {
         "update" => crate::channels::api_save(&core, Some(id), &b, &caller.name).await?,
@@ -562,6 +562,7 @@ pub async fn channel_delete(
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
     let caller = write_caller(&user, &method)?;
+    caller.admin()?;
     Ok(Json(
         crate::channels::api_delete(&core, id, &caller.name).await?,
     ))

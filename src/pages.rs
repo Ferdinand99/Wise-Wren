@@ -95,7 +95,8 @@ pub fn why_unknown(detail: &str) -> String {
         "" => String::new(),
         registry::PINNED => i18n::t("targets.why_pinned").to_string(),
         registry::IMAGE_ID => i18n::t("targets.why_image_id").to_string(),
-        registry::LOCAL => i18n::t("targets.why_local").to_string(),
+        // A reference that isn't well-formed is not from a registry either.
+        registry::LOCAL | registry::INVALID => i18n::t("targets.why_local").to_string(),
         NOT_CHECKED => i18n::t("targets.why_not_checked").to_string(),
         other => match other.strip_prefix(&format!("{REGISTRY}: ")) {
             Some(error) => i18n::tf("targets.why_registry", &[("error", error)]),

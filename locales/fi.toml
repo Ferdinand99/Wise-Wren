@@ -117,7 +117,7 @@ site_name_placeholder = "Kotilabran päivitykset…"
 tz_after = ". Tätä voi muuttaa asetuksissa."
 
 [users]
-roles_help = "Katselijat voivat vain katsoa, ei muuttaa mitään. Muokkaajat hallinnoivat ilmoituskanavia. Ylläpitäjät voivat tehdä kaiken, myös palvelinten, agenttien tunnusten ja käyttäjien hallinnan."
+roles_help = "Katselijat voivat vain katsoa, ei muuttaa mitään. Muokkaajat hyväksyvät ja suorittavat päivityksiä. Ylläpitäjät voivat tehdä kaiken, myös palvelinten, agenttien tunnusten ja käyttäjien hallinnan."
 
 [tokens]
 sub = "Anna skriptien ja tekoälyavustajien lukea palvelimiasi ja niiden agentteja."

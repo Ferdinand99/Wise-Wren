@@ -117,7 +117,7 @@ site_name_placeholder = "Aggiornamenti dell’home lab…"
 tz_after = ". Si può cambiare nelle Impostazioni."
 
 [users]
-roles_help = "I lettori possono guardare ma non modificare nulla. Gli editor gestiscono i canali di notifica. Gli admin possono fare tutto, inclusi server, token degli agenti e utenti."
+roles_help = "I lettori possono guardare ma non modificare nulla. Gli editor approvano ed eseguono gli aggiornamenti. Gli admin possono fare tutto, inclusi server, token degli agenti e utenti."
 
 [tokens]
 sub = "Permetti a script e assistenti IA di leggere i tuoi server e i loro agenti."

@@ -80,6 +80,8 @@ pub struct Wren {
     /// Wakes the Vigilant Vole reconciler ([`vv::sync`]): a run ended, a
     /// scheduled run was moved or cancelled.
     pub vv_sync: Arc<tokio::sync::Notify>,
+    /// Runs whose maintenance window is being opened right now ([`vv::before_stop`]).
+    pub vv_opening: Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
     /// Lets user-influenced fetches (version URLs) reach private addresses.
     /// Off unless `WW_ALLOW_PRIVATE_VERSION_URLS` is set ([`fetch`]); tests
     /// serve their fakes on loopback.
@@ -151,6 +153,7 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         jobs: Arc::new(tokio::sync::Notify::new()),
         job_budgets: Arc::new(TokenBuckets::new()),
         vv_sync: Arc::new(tokio::sync::Notify::new()),
+        vv_opening: Arc::default(),
         allow_private_fetch: Arc::default(),
     })
 }

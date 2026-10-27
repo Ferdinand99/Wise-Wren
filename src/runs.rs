@@ -1304,8 +1304,9 @@ pub struct TargetSettings {
 }
 
 /// Sets a target's mode (`None`: the server's), health period, "require
-/// VV" and "require a snapshot". Turning automatic updates on (directly, or by following an `auto`
-/// server) needs an admin and the server's auto window; it is logged.
+/// VV" and "require a snapshot". Turning automatic updates on (directly, or
+/// by following an `auto` server) needs an admin and the server's auto
+/// window; it is logged.
 pub fn set_target_policy(
     c: &Connection,
     target_id: i64,
@@ -1322,7 +1323,12 @@ pub fn set_target_policy(
         return Ok(Err(Refusal::NotFound));
     }
     let new_mode = effective_mode(s.mode.as_deref(), &old.server_mode).to_string();
-    if new_mode == AUTO && old.effective() != AUTO {
+    // Setting `auto` on the target itself needs an admin whatever the server
+    // does now, judged on what is stored (not the effective mode): an
+    // explicit `auto` outlives the server's and would start updating again
+    // whenever a window opens.
+    let sets_auto = s.mode.as_deref() == Some(AUTO) && old.mode.as_deref() != Some(AUTO);
+    if sets_auto || (new_mode == AUTO && old.effective() != AUTO) {
         if !is_admin {
             return Ok(Err(Refusal::AdminOnly));
         }
@@ -1398,6 +1404,29 @@ pub fn set_server_mode(
         "UPDATE servers SET mode = ?2, auto_start = ?3, auto_end = ?4 WHERE id = ?1",
         params![server_id, mode, s, e],
     )?;
+    // Leaving `auto` takes the targets' own `auto` with it: they would
+    // otherwise go on updating inside the window, which is what "turn auto
+    // off" must stop.
+    if old_mode == AUTO && mode != AUTO {
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM targets WHERE server_id = ?1 AND mode = 'auto'")?
+            .query_map([server_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        c.execute(
+            "UPDATE targets SET mode = NULL WHERE server_id = ?1 AND mode = 'auto'",
+            [server_id],
+        )?;
+        for id in ids {
+            log_action(
+                c,
+                user,
+                "auto_cleared",
+                Some(id),
+                None,
+                &format!("server {server_id} left auto: the target follows the server again"),
+            )?;
+        }
+    }
     log_action(
         c,
         user,

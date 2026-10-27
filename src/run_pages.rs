@@ -291,13 +291,30 @@ fn field<'a>(f: &'a BTreeMap<String, Vec<String>>, key: &str) -> &'a str {
     f.get(key).and_then(|v| v.first()).map_or("", |s| s.trim())
 }
 
+/// `raw` when it is a path on this site: one `/` and then not another `/` or
+/// a `\` (browsers read `/\host` as `//host`), no control characters or
+/// spaces. Tabs and line breaks are removed first, as browsers do before
+/// they look at a URL (`/<tab>/host` would be `//host`).
+fn local_path(raw: &str) -> Option<String> {
+    let path: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
+    let mut chars = path.chars();
+    let ok = chars.next() == Some('/')
+        && !matches!(chars.next(), Some('/' | '\\'))
+        && path.len() <= 2048
+        && !path
+            .chars()
+            .any(|c| c == '\\' || c.is_control() || c.is_whitespace());
+    ok.then_some(path)
+}
+
 /// Where to go back to: a path on this site, else `fallback`.
 fn back(f: &BTreeMap<String, Vec<String>>, fallback: String) -> Redirect {
-    let b = field(f, "back");
-    if b.starts_with('/') && !b.starts_with("//") && !b.contains('\\') {
-        Redirect::to(b)
-    } else {
-        Redirect::to(&fallback)
+    match local_path(field(f, "back")) {
+        Some(path) => Redirect::to(&path),
+        None => Redirect::to(&fallback),
     }
 }
 
@@ -896,4 +913,36 @@ async fn schedules_page(
             can_act: user.can_edit(),
         }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn back_only_goes_to_paths_on_this_site() {
+        for ok in ["/", "/targets/3", "/servers?x=1#y", "/a/b"] {
+            assert_eq!(local_path(ok).as_deref(), Some(ok), "{ok}");
+        }
+        // A tab or line break inside is removed, not kept.
+        assert_eq!(local_path("/ta\tb").as_deref(), Some("/tab"));
+        for bad in [
+            "",
+            "evil.example",
+            "https://evil.example/",
+            "//evil.example",
+            "/\\evil.example",
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/\r\n\\evil.example",
+            "/ /evil.example",
+            "/a\\b",
+            "/a\u{0}b",
+            "/a b",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(local_path(bad), None, "{bad:?}");
+        }
+        assert_eq!(local_path(&format!("/{}", "a".repeat(2048))), None);
+    }
 }

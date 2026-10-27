@@ -117,7 +117,7 @@ site_name_placeholder = "Ev laboratuvarı güncellemeleri…"
 tz_after = ". Ayarlar’dan değiştirilebilir."
 
 [users]
-roles_help = "Görüntüleyiciler bakabilir ama hiçbir şeyi değiştiremez. Editörler bildirim kanallarını yönetir. Yöneticiler sunucular, ajan belirteçleri ve kullanıcılar dahil her şeyi yapabilir."
+roles_help = "Görüntüleyiciler bakabilir ama hiçbir şeyi değiştiremez. Editörler güncellemeleri onaylar ve çalıştırır. Yöneticiler sunucular, ajan belirteçleri ve kullanıcılar dahil her şeyi yapabilir."
 
 [tokens]
 sub = "Betiklerin ve yapay zekâ asistanlarının sunucularınızı ve ajanlarını okumasına izin verin."

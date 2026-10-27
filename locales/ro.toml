@@ -117,7 +117,7 @@ site_name_placeholder = "Actualizări din home lab…"
 tz_after = ". Se poate schimba din Setări."
 
 [users]
-roles_help = "Cititorii pot vedea, dar nu pot modifica nimic. Editorii gestionează canalele de notificări. Administratorii pot face orice, inclusiv servere, tokenuri de agent și utilizatori."
+roles_help = "Cititorii pot vedea, dar nu pot modifica nimic. Editorii aprobă și rulează actualizări. Administratorii pot face orice, inclusiv servere, tokenuri de agent și utilizatori."
 
 [tokens]
 sub = "Lasă scripturile și asistenții AI să citească serverele tale și agenții lor."
