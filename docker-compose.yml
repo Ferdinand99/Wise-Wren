@@ -15,7 +15,8 @@ services:
       - WW_DATA_DIR=/data
       # - WW_PUBLIC_URL=https://wren.example.com  # the address agents and people use; without it, each request's own
       # - WW_TRUST_PROXY=1               # behind a reverse proxy (Caddy/Traefik/nginx) that sets X-Forwarded-*
-      # - WW_SETUP_TOKEN=change-me       # /setup only opens with ?token=change-me
+      # - WW_SETUP_TOKEN=change-me       # /setup only opens with ?token=change-me (unset: a random one is logged at the first start)
+      # - WW_SETUP_OPEN=1                # scripted installs: /setup needs no token
       # - TZ=Europe/Oslo                 # log timestamps
       # - RUST_LOG=info,wise_wren=debug
       # Run the app as another uid:gid, e.g. Unraid's nobody:users.

@@ -79,7 +79,10 @@ curl -fsSLO https://raw.githubusercontent.com/Ferdinand99/Wise-Wren/main/docker-
 docker compose up -d
 ```
 
-Open `http://<host>:3003/setup` to create the first admin, set the address agents use under **Settings → General**
+Open `http://<host>:3003/setup` to create the first admin. Until the first admin exists, `/setup` asks for a setup
+token: set `WW_SETUP_TOKEN`, or read the one Wren makes up and logs at the first start
+(`docker compose logs wise-wren`, a line with `/setup?token=…`); scripted installs can set `WW_SETUP_OPEN=1` instead.
+Then set the address agents use under **Settings → General**
 (or `WW_PUBLIC_URL`), then **Servers → Add server**: Wren shows the agent's token once, with the `docker run` line
 for that host. On **Unraid**, install **Wise Wren** and **Wise Wren Agent** from Community Applications
 ([templates](https://github.com/Ferdinand99/unraid-templates)). Images are on GHCR for amd64 and arm64:
