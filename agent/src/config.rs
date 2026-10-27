@@ -215,7 +215,7 @@ pub fn glob(pattern: &str, name: &str) -> bool {
     p[pi..].iter().all(|c| *c == '*')
 }
 
-fn valid_glob(g: &str) -> bool {
+pub(crate) fn valid_glob(g: &str) -> bool {
     !g.is_empty()
         && g.len() <= 128
         && g.bytes()
@@ -255,6 +255,9 @@ pub struct ScriptStack {
     /// The shortest time between two updates of the stack (the run ledger
     /// counts), whatever Wren asks.
     pub min_interval: Duration,
+    /// The built-in preset this stack was made from ([`crate::presets`]);
+    /// `None` for a stack with commands of its own from `agent.toml`.
+    pub preset: Option<&'static str>,
 }
 
 /// Default shortest time between two updates of a script stack.
@@ -430,7 +433,7 @@ pub fn parse_duration(raw: &str) -> Option<Duration> {
 }
 
 /// An absolute path with no `.` or `..` parts, as a `PathBuf`.
-fn absolute(raw: &str) -> Result<PathBuf, &'static str> {
+pub(crate) fn absolute(raw: &str) -> Result<PathBuf, &'static str> {
     if !raw.starts_with('/') {
         return Err("must be an absolute path (starting with /)");
     }
@@ -444,7 +447,7 @@ fn absolute(raw: &str) -> Result<PathBuf, &'static str> {
     Ok(path)
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
         && name
@@ -697,6 +700,7 @@ impl Config {
                     rollback,
                     version,
                     min_interval,
+                    preset: None,
                 });
             }
         }

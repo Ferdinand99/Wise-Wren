@@ -3,7 +3,8 @@
 //! Reads `agent.toml` (`--config`, `WW_AGENT_CONFIG`, else
 //! `/config/agent.toml`; `WW_SERVER_URL` and `WW_AGENT_TOKEN` override the
 //! file's `server` and `token`), then reports to Wren until stopped.
-//! `--check` only checks the configuration. A configuration problem exits
+//! `--check` only checks the configuration (and says which managed settings
+//! from Wren are in force). A configuration problem exits
 //! with code 2, naming the field.
 
 use std::io::IsTerminal as _;
@@ -13,6 +14,7 @@ use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 use wren_agent::config::{self, Config};
 use wren_agent::ledger::Ledger;
+use wren_agent::managed::{self, Live};
 
 const USAGE: &str = "usage: wren-agent [--config PATH] [--check] [--version]";
 
@@ -54,6 +56,13 @@ fn main() -> ExitCode {
         }
     };
     if check {
+        // What is in force: agent.toml, with the settings Wren sent on top.
+        let live = Live::new(
+            config.clone(),
+            managed::locked_by(|k| std::env::var(k).ok()),
+        );
+        println!("{}", live.describe());
+        let config = live.config();
         let updates = if config.updates.configured() {
             format!(
                 "updates only for {}",

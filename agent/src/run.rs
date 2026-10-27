@@ -1730,6 +1730,7 @@ mod tests {
                 rollback: None,
                 version: None,
                 min_interval: Duration::from_secs(3600),
+                preset: None,
             }),
             ..Plan::default()
         }
