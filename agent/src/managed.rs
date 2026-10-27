@@ -294,19 +294,19 @@ pub fn apply(
                 ));
                 continue;
             }
-            if let Some(mounts) = mounts {
-                if !mounts.iter().any(|m| within(&path, m)) {
-                    problems.push(if mounts.is_empty() {
-                        format!(
-                            "roots[{i}] \"{shown}\": the agent can't tell which folders are mounted into it (it could not read its own container)"
-                        )
-                    } else {
-                        format!(
-                            "roots[{i}] \"{shown}\": not in a folder mounted into the agent; mount it at the same path, or choose a mounted one"
-                        )
-                    });
-                    continue;
-                }
+            if let Some(mounts) = mounts
+                && !mounts.iter().any(|m| within(&path, m))
+            {
+                problems.push(if mounts.is_empty() {
+                    format!(
+                        "roots[{i}] \"{shown}\": the agent can't tell which folders are mounted into it (it could not read its own container)"
+                    )
+                } else {
+                    format!(
+                        "roots[{i}] \"{shown}\": not in a folder mounted into the agent; mount it at the same path, or choose a mounted one"
+                    )
+                });
+                continue;
             }
         }
         if !roots.contains(&path) {
@@ -473,9 +473,10 @@ pub struct Report {
     pub presets: Vec<String>,
     /// Script stacks with commands of their own in `agent.toml` (names only).
     pub custom_stacks: Vec<String>,
-    /// While no settings were received: what `agent.toml` says, for Wren to
-    /// start from.
-    pub import: Option<Settings>,
+    /// The settings in force; while none were received, what `agent.toml`
+    /// says (the first-connect import). Wren starts from it when it holds no
+    /// settings of its own for this server. None when locked.
+    pub current: Option<Settings>,
 }
 
 #[derive(Debug)]
@@ -650,7 +651,12 @@ impl Live {
                 .collect(),
             presets: presets::NAMES.iter().map(|p| p.to_string()).collect(),
             custom_stacks: custom,
-            import: (!self.locked && state.applied.is_none()).then(|| import_of(&self.base)),
+            current: (!self.locked).then(|| {
+                state
+                    .applied
+                    .clone()
+                    .unwrap_or_else(|| import_of(&self.base))
+            }),
         }
     }
 
@@ -788,10 +794,13 @@ mod tests {
         );
     }
 
+    /// A change to valid settings that breaks one hard limit.
+    type Change = Box<dyn Fn(&mut Settings)>;
+
     #[test]
     fn every_hard_limit_refuses_the_whole_update() {
         let base = base_with("");
-        let cases: Vec<(Box<dyn Fn(&mut Settings)>, &str)> = vec![
+        let cases: Vec<(Change, &str)> = vec![
             (Box::new(|s| s.version = 0), "version 0 must be 1 or more"),
             (Box::new(|s| s.roots.push("/".into())), "/ is too broad"),
             (
@@ -992,7 +1001,7 @@ update = { command = "./secret-update.sh --key hunter2" }
         assert!(report.supported && !report.locked);
         assert_eq!(report.custom_stacks, ["mine"]);
         assert_eq!(report.presets, ["fluxer"]);
-        let import = report.import.clone().unwrap();
+        let import = report.current.clone().unwrap();
         assert_eq!(import.version, 0);
         assert_eq!(import.updates.allow, ["*"]);
         assert_eq!(import.updates.deny, ["x"]);
@@ -1044,7 +1053,7 @@ update = { command = "./secret-update.sh --key hunter2" }
         let dir = tmp("offer");
         let live = live_in(&dir, false);
         assert_eq!(live.version(), None);
-        assert!(live.report(&mounts()).import.is_some());
+        assert_eq!(live.report(&mounts()).current.unwrap().version, 0);
         let before = live.config();
         let json = serde_json::to_value(settings()).unwrap();
         assert_eq!(live.offer(&json, &mounts()), Ok(Offered::Applied(2)));
@@ -1054,10 +1063,7 @@ update = { command = "./secret-update.sh --key hunter2" }
         assert_eq!(live.version(), Some(2));
         let report = live.report(&mounts());
         assert_eq!((report.version, report.error.as_str()), (Some(2), ""));
-        assert!(
-            report.import.is_none(),
-            "no import once settings are in force"
-        );
+        assert_eq!(report.current.unwrap().version, 2);
         // On disk, with no temporary file left.
         let file = dir.join(FILE);
         assert!(file.is_file());
@@ -1174,7 +1180,7 @@ update = { command = "./secret-update.sh --key hunter2" }
         assert!(err.contains("WW_AGENT_LOCKED"), "{err}");
         let report = locked.report(&mounts());
         assert!(report.locked && report.supported);
-        assert!(report.import.is_none(), "a locked agent offers no import");
+        assert!(report.current.is_none(), "a locked agent offers no import");
         assert!(locked.describe().contains("locked"));
         // The file is left as it is.
         assert!(dir.join(FILE).is_file());

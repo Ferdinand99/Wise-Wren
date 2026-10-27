@@ -1,0 +1,182 @@
+{% extends "kit/layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block head %}
+  <link rel="stylesheet" href="/static/wren.css">
+{% endblock %}
+
+{% block content %}
+{% call m::page_header(tr("settings.title"), tr1("settings.sub", "server", server_name), back_href.as_str(), server_name.as_str()) %}{% endcall %}
+
+<div class="stack">
+  <section class="card stack-sm" aria-labelledby="status-title">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title" id="status-title">{{ tr("settings.status") }}</h2>
+      </div>
+      {%- if is_admin %}
+      <div class="toolbar"><a class="btn btn-secondary btn-sm" href="/servers/{{ server_id }}/agent-toml">{{ m::icon("code") }}<span>{{ tr("toml.title") }}</span></a></div>
+      {%- endif %}
+    </div>
+    <div data-settings-status="{{ status_code }}">{{ m::callout(status_class, status) }}</div>
+    {%- if !hint.is_empty() %}
+    <p class="help">{{ hint }}</p>
+    {%- endif %}
+  </section>
+
+  {%- if !errors.is_empty() %}
+  <div class="callout status-error" role="alert">
+    <svg class="icon" aria-hidden="true"><use href="/static/icons.svg#alert-circle"></use></svg>
+    <div class="callout-body">
+      <ul class="plain">
+        {%- for e in errors %}
+        <li>{{ e }}</li>
+        {%- endfor %}
+      </ul>
+    </div>
+  </div>
+  {%- endif %}
+
+  {%- if form %}
+  {%- if !can_edit %}
+  {{ m::callout("info", tr("settings.view_only")) }}
+  {%- endif %}
+  <form method="post" action="/servers/{{ server_id }}/settings" class="stack" id="settings-form">
+    <input type="hidden" name="stacks" value="{{ stack_count }}">
+    <fieldset class="fieldset-plain stack"{% if !can_edit %} disabled{% endif %}>
+    <section class="card card-flush" aria-labelledby="updates-title">
+      <div class="card-head card-pad">
+        <div>
+          <h2 class="card-title" id="updates-title">{{ tr("toml.updates") }}</h2>
+          <p class="card-sub">{{ tr("toml.updates_help") }}</p>
+        </div>
+      </div>
+      <div class="card-pad stack-sm">
+        <label class="check"><input type="radio" name="updates" value="list"{% if !draft.all %} checked{% endif %}><span class="check-text"><span class="check-label">{{ tr("toml.mode_list") }}</span></span></label>
+        <label class="check"><input type="radio" name="updates" value="all"{% if draft.all %} checked{% endif %}><span class="check-text"><span class="check-label">{{ tr("toml.mode_all") }}</span></span></label>
+      </div>
+      {%- if picks.is_empty() %}
+      <div class="card-pad"><p class="help">{{ tr("toml.no_targets") }}</p></div>
+      {%- else %}
+      <div class="table-wrap">
+        <table class="table table-stack" id="settings-targets">
+          <thead><tr><th>{{ tr("targets.col_target") }}</th><th>{{ tr("targets.col_kind") }}</th><th>{{ tr("toml.col_allow") }}</th><th>{{ tr("toml.col_deny") }}</th></tr></thead>
+          <tbody>
+            {%- for p in picks %}
+            <tr>
+              <td class="td-primary">{{ p.name }}</td>
+              <td data-label="{{ tr("targets.col_kind") }}">{{ p.kind_label }}</td>
+              <td data-label="{{ tr("toml.col_allow") }}"><input type="checkbox" name="allow" value="{{ p.name }}"{% if p.allow %} checked{% endif %} aria-label="{{ tr("toml.col_allow") }}: {{ p.name }}"></td>
+              <td data-label="{{ tr("toml.col_deny") }}"><input type="checkbox" name="deny" value="{{ p.name }}"{% if p.deny %} checked{% endif %} aria-label="{{ tr("toml.col_deny") }}: {{ p.name }}"></td>
+            </tr>
+            {%- endfor %}
+          </tbody>
+        </table>
+      </div>
+      {%- endif %}
+    </section>
+
+    <section class="card stack-sm" aria-labelledby="safety-title">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="safety-title">{{ tr("settings.safety") }}</h2>
+        </div>
+      </div>
+      {{ m::field_number("min_health", tr("settings.min_health"), draft.min_health, tr("settings.seconds"), "0", "3600", "1", tr("settings.min_health_help")) }}
+      {{ m::checkbox("require_snapshot", tr("settings.require_snapshot"), draft.require_snapshot, tr("settings.require_snapshot_help")) }}
+      {{ m::field_number("rollback_images", tr("settings.rollback_images"), draft.rollback_images, "", "1", "10", "1") }}
+      {{ m::field_number("snapshots", tr("settings.snapshots"), draft.snapshots, "", "1", "10", "1", tr("settings.snapshots_help")) }}
+    </section>
+
+    <section class="card stack-sm" aria-labelledby="roots-title">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="roots-title">{{ tr("toml.roots") }}</h2>
+          <p class="card-sub">{{ tr("settings.roots_help") }}</p>
+        </div>
+      </div>
+      {%- if no_mounts %}
+      {{ m::callout("warning", tr("settings.roots_no_mounts")) }}
+      {%- endif %}
+      {%- for f in roots %}
+      <label class="check"><input type="checkbox" name="root" value="{{ f.path }}"{% if f.checked %} checked{% endif %}><span class="check-text"><span class="check-label mono">{{ f.path }}</span></span></label>
+      {%- endfor %}
+    </section>
+
+    <section class="card stack-sm" aria-labelledby="stack-title">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="stack-title">{{ tr("toml.stack") }}</h2>
+          <p class="card-sub">{{ tr("settings.stacks_help") }}</p>
+        </div>
+      </div>
+      <datalist id="stack-dirs">
+        {%- for d in dirs %}
+        <option value="{{ d }}"></option>
+        {%- endfor %}
+      </datalist>
+      {%- for s in stacks %}
+      <div class="stack-sm" data-stack="{{ s.index }}">
+        <h3 class="section-title">{% if s.is_new %}{{ tr("settings.stack_add") }}{% else %}{{ s.s.name }}{% endif %}</h3>
+        <div class="field">
+          <label class="label" for="f-{{ s.f_preset }}">{{ tr("settings.stack_preset") }}</label>
+          <select id="f-{{ s.f_preset }}" name="{{ s.f_preset }}">
+            {%- for o in s.options %}
+            <option value="{{ o.value }}"{% if o.selected %} selected{% endif %}>{{ o.label }}</option>
+            {%- endfor %}
+          </select>
+        </div>
+        {{ m::field_text(s.f_name.as_str(), tr("toml.stack_name"), s.s.name, "text", "fluxer", tr("toml.stack_name_help")) }}
+        {{ m::field_text(s.f_project.as_str(), tr("toml.stack_project"), s.s.project, "text", "fluxer") }}
+        <div class="field">
+          <label class="label" for="f-{{ s.f_dir }}">{{ tr("targets.working_dir") }}</label>
+          <input id="f-{{ s.f_dir }}" name="{{ s.f_dir }}" type="text" list="stack-dirs" value="{{ s.s.dir }}" placeholder="/mnt/cache/appdata/fluxer" autocomplete="off" spellcheck="false">
+          <p class="help">{{ tr("settings.stack_dir_help") }}</p>
+        </div>
+        {{ m::field_number(s.f_minutes.as_str(), tr("settings.stack_interval"), s.s.minutes, tr("settings.minutes"), "1", "1440", "1") }}
+        {%- if !s.is_new %}
+        {{ m::checkbox(s.f_remove.as_str(), tr("settings.stack_remove"), false) }}
+        {%- endif %}
+      </div>
+      {%- endfor %}
+      {%- if !custom.is_empty() %}
+      {{ m::callout("info", tr1("settings.custom_stacks_help", "names", custom), tr("settings.custom_stacks")) }}
+      {%- endif %}
+    </section>
+    </fieldset>
+    {%- if can_edit %}
+    <div class="toolbar"><button type="submit" class="btn btn-primary">{{ m::icon("check") }}<span>{{ tr("settings.save") }}</span></button></div>
+    {%- endif %}
+  </form>
+  {%- endif %}
+
+  <section class="card card-flush" aria-labelledby="history-title">
+    <div class="card-head card-pad">
+      <div>
+        <h2 class="card-title" id="history-title">{{ tr("settings.history") }}</h2>
+      </div>
+    </div>
+    {%- if history.is_empty() %}
+    <div class="card-pad"><p class="help">{{ tr("settings.history_empty") }}</p></div>
+    {%- else %}
+    <div class="table-wrap">
+      <table class="table table-stack" id="settings-history">
+        <thead><tr><th>{{ tr("settings.col_version") }}</th><th>{{ tr("settings.col_when") }}</th><th>{{ tr("settings.col_by") }}</th><th>{{ tr("settings.col_change") }}</th></tr></thead>
+        <tbody>
+          {%- for h in history %}
+          <tr>
+            <td class="td-primary">{{ h.version }}{% if h.widening %} <span class="badge badge-blocked" title="{{ tr("settings.widened_help") }}" data-widened="1">{{ tr("settings.widened") }}</span>{% endif %}</td>
+            <td data-label="{{ tr("settings.col_when") }}">{{ m::time_ago(h.at) }}</td>
+            <td data-label="{{ tr("settings.col_by") }}">{{ h.by }}</td>
+            <td data-label="{{ tr("settings.col_change") }}">
+              {%- for c in h.changes %}<div>{{ c }}</div>{% endfor %}
+            </td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+    {%- endif %}
+  </section>
+</div>
+{% endblock %}

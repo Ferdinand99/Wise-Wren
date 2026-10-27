@@ -188,3 +188,134 @@ async fn agent_refuses_jobs_outside_its_allowlist() {
         "not a single step ran"
     );
 }
+
+/// One round of the agent's loop: what it reports, Wren's answer, and what it
+/// does with the settings in that answer.
+async fn round(
+    client: &Client,
+    live: &wren_agent::managed::Live,
+) -> Option<Result<wren_agent::managed::Offered, String>> {
+    let mut beat = heartbeat::collect(
+        "/nonexistent/docker.sock",
+        std::path::Path::new("/nonexistent"),
+    )
+    .await;
+    beat.settings = Some(live.report(&[]));
+    let reply = client.send(&beat).await.unwrap();
+    reply.settings.map(|s| live.offer(&s, &[]))
+}
+
+/// The real agent against Wren, one heartbeat at a time as its loop does
+/// them: it imports its agent.toml, applies what an admin saves, and
+/// refuses what its own limits forbid, even when Wren sends it.
+#[tokio::test]
+async fn agent_imports_applies_and_refuses_settings() {
+    use common::Web;
+    use wren_agent::managed::{Live, Offered};
+
+    let app = App::new().await;
+    let (id, token) = app.add_server("LANBox").await;
+    let url = serve(&app).await;
+    let dir = std::env::temp_dir().join(format!("wren-agent-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let text = format!(
+        "server = \"{url}\"\ntoken = \"{token}\"\nroots = [\"/mnt/user/appdata\"]\n[updates]\nallow = [\"*\"]\n"
+    );
+    let mut config = Config::from_parts(Some(&text), |_| None).unwrap();
+    config.ledger = dir.join("runs.json");
+    let live = Live::new(config.clone(), false);
+    let client = Client::new(&url, &token).unwrap();
+    // First contact: Wren starts from the agent.toml and offers the same values back.
+    assert_eq!(round(&client, &live).await, Some(Ok(Offered::Applied(1))));
+    assert!(dir.join("managed.json").is_file(), "kept on disk");
+    assert_eq!(live.config().roots, config.roots);
+    assert_eq!(live.config().updates, config.updates);
+    assert_eq!(round(&client, &live).await, None, "nothing more to say");
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM agent_settings_history WHERE source = 'import'")
+            .await,
+        1
+    );
+
+    // An admin narrows what may be updated; the agent applies it without a restart.
+    let mut web = Web::new(&app, "owner", "admin").await;
+    let res = web
+        .post(
+            &format!("/servers/{id}/settings"),
+            &[
+                ("updates", "list"),
+                ("allow", "nextcloud"),
+                ("min_health", "90"),
+                ("rollback_images", "2"),
+                ("snapshots", ""),
+                ("root", "/mnt/user/appdata"),
+                ("stacks", "0"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        res.status,
+        axum::http::StatusCode::SEE_OTHER,
+        "{}",
+        res.body
+    );
+    assert_eq!(round(&client, &live).await, Some(Ok(Offered::Applied(2))));
+    let now = live.config();
+    assert!(now.updates.allows("nextcloud") && !now.updates.allows("other"));
+    assert_eq!(now.updates.min_health_seconds, 90);
+    assert_eq!(now.retention.rollback_images, 2);
+    assert_eq!(
+        now.server, config.server,
+        "server and token stay with agent.toml"
+    );
+    // The next report says it runs version 2.
+    assert_eq!(round(&client, &live).await, None);
+    let page = web.get(&format!("/servers/{id}/settings")).await;
+    assert!(
+        page.body.contains("Active on the agent (version 2)"),
+        "{}",
+        page.body
+    );
+    // A new process finds them in managed.json.
+    let again = Live::new(config.clone(), false);
+    assert_eq!(again.version(), Some(2));
+    assert!(!again.config().updates.allows("other"));
+
+    // A Wren that was taken over sends a root in /etc: the agent refuses all of it.
+    let evil = serde_json::json!({
+        "version": 3,
+        "updates": {"allow": ["*"], "deny": [], "min_health_seconds": 0, "require_snapshot": false},
+        "roots": ["/etc"],
+        "retention": {"rollback_images": 1, "snapshots": null},
+        "script_stacks": [],
+    });
+    app.exec(format!(
+        "UPDATE agent_settings SET version = 3, settings = '{evil}' WHERE server_id = {id}"
+    ))
+    .await;
+    let refused = round(&client, &live).await.unwrap().unwrap_err();
+    assert!(
+        refused.contains("folders in /etc can't be roots"),
+        "{refused}"
+    );
+    assert_eq!(live.version(), Some(2), "nothing changed");
+    assert!(!live.config().updates.allows("other"));
+    // ... and tells Wren why with its next report.
+    assert_eq!(round(&client, &live).await.unwrap().unwrap_err(), refused);
+    let page = web.get(&format!("/servers/{id}/settings")).await;
+    assert!(
+        page.body.contains("The agent refused version 3"),
+        "{}",
+        page.body
+    );
+    assert!(page.body.contains("folders in /etc"));
+
+    // A locked agent is sent nothing and ignores what it is sent.
+    let locked = Live::new(config, true);
+    assert_eq!(round(&client, &locked).await, None);
+    assert!(locked.config().updates.allows("other"), "agent.toml alone");
+    let page = web.get(&format!("/servers/{id}/settings")).await;
+    assert!(page.body.contains("Locked on the agent"), "{}", page.body);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -6,8 +6,9 @@
       <h2 class="card-title" id="agent-title">{{ tr("servers.agent") }}</h2>
       <p class="card-sub">{{ tr("servers.agent_sub") }}</p>
     </div>
-    {%- if agent.is_admin %}
     <div class="toolbar">
+      <a class="btn btn-secondary btn-sm" href="/servers/{{ server.id }}/settings">{{ m::icon("sliders") }}<span>{{ tr("settings.title") }}</span></a>
+      {%- if agent.is_admin %}
       <a class="btn btn-secondary btn-sm" href="/servers/{{ server.id }}/agent-toml">{{ m::icon("code") }}<span>{{ tr("toml.title") }}</span></a>
       <button type="button" class="btn btn-secondary btn-sm" hx-post="/servers/{{ server.id }}/token" hx-target="#agent-card" hx-swap="outerHTML"
         hx-confirm="{{ tr1("servers.new_token_q", "name", server.name) }}" data-confirm-message="{{ tr("servers.new_token_msg") }}">{{ m::icon("refresh") }}<span>{{ tr("servers.new_token") }}</span></button>
@@ -15,8 +16,8 @@
       <button type="button" class="btn btn-danger btn-sm" hx-post="/servers/{{ server.id }}/revoke" hx-swap="none"
         hx-confirm="{{ tr1("servers.revoke_q", "name", server.name) }}" data-confirm-message="{{ tr("servers.revoke_msg") }}">{{ m::icon("x-circle") }}<span>{{ tr("servers.revoke") }}</span></button>
       {%- endif %}
+      {%- endif %}
     </div>
-    {%- endif %}
   </div>
 
   {%- if let Some(token) = agent.token %}

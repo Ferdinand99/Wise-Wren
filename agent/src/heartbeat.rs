@@ -303,6 +303,23 @@ mod tests {
         assert_eq!((head.len(), more), (MAX_ERROR_BYTES, true));
     }
 
+    #[test]
+    fn settings_in_wrens_answer_are_optional() {
+        // An older Wren sends none; a newer one may send more than this agent knows.
+        let old: Reply =
+            serde_json::from_str(r#"{"server":{"id":1,"name":"a"},"interval_seconds":30}"#)
+                .unwrap();
+        assert!(old.settings.is_none() && !old.scan);
+        let newer: Reply = serde_json::from_str(
+            r#"{"server":{"id":1,"name":"a"},"interval_seconds":30,"scan":true,"settings":{"version":2,"future":[]},"other":1}"#,
+        )
+        .unwrap();
+        assert_eq!(newer.settings.unwrap()["version"], 2);
+        // A heartbeat without a settings report serializes as before.
+        let json = serde_json::to_value(Heartbeat::default()).unwrap();
+        assert!(json.get("settings").is_none());
+    }
+
     #[tokio::test]
     async fn redirects_are_not_followed() {
         let url = serve(response(

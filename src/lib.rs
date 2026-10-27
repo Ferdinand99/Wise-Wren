@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agent_api;
+pub mod agent_settings;
 pub mod agent_toml;
 pub mod api;
 pub mod api_settings;
@@ -165,6 +166,7 @@ pub fn router(wren: Wren) -> Router {
     let protected = Router::new()
         .merge(servers::router())
         .merge(agent_toml::router())
+        .merge(agent_settings::router())
         .merge(channels::router())
         .merge(pages::router())
         .merge(run_pages::router())
