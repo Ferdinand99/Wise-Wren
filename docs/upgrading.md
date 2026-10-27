@@ -43,13 +43,11 @@ allow = ["*"]        # or a list of the names you want updated
 Also check these, or the agent won't start or will refuse runs:
 
 - `server` must be `https://`, unless the host is on your own network (private or loopback address, a single-label
-  name like `tower`, or a name ending in `.local`, `.lan`, `.home.arpa`, `.internal`). `wren-agent --check` says
+  name like `tower`, a name ending in `.local`, `.lan`, `.home.arpa`, `.internal` or `.ts.net`, or a Tailscale address). `wren-agent --check` says
   which.
 - The agent needs `/config` writable: it keeps `runs.json` there (its record of what it ran). Updates made before
   the upgrade have no record, so Wren can't roll them back.
-- With `roots` set, every update now requires a snapshot (`[updates] require_snapshot`, default on): a target with
-  no data folder under `roots` stops before anything is touched. Set `require_snapshot = false` under `[updates]`
-  to keep the old behaviour.
+- New optional `[updates] require_snapshot = true` makes every update need a snapshot (default `false`, as before).
 - A health period shorter than 30 s is raised to 30 s (`min_health_seconds`), and a script stack's update runs at
   most once an hour (`min_interval` on the `[[script_stack]]`).
 

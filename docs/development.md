@@ -202,7 +202,7 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
 ```
 
 The agent refuses to start (exit code 2) and names the field for: a missing or malformed server or token (plain `http://` is accepted only for loopback, private, link-local
-and `.local`/`.lan`/`.home.arpa`/`.internal` hosts or single-label names),
+`.local`/`.lan`/`.home.arpa`/`.internal`/`.ts.net` hosts, Tailscale 100.64.0.0/10 or single-label names),
 relative paths or `..` in roots and `working_dir`, `/` as a root, a `working_dir` outside the roots, a script
 stack without a name (or a name used twice), without `update.command` or without a valid `timeout`, an
 environment name that isn't a variable name, a bad `[updates]` glob or `min_health_seconds`, a bad `min_interval`, and any
@@ -215,7 +215,7 @@ unknown key. A missing `[updates]` allow list is not a start error: the agent ru
 allow = ["ww-test-*", "nextcloud"]
 deny = ["ww-test-keep*"]          # wins over allow
 min_health_seconds = 30           # optional: a job never gets a shorter health period
-require_snapshot = true           # optional: default true when roots are set
+require_snapshot = true           # optional, default false: every update needs a snapshot
 ```
 
 A job for a target outside `allow` (or inside `deny`) is refused with "refused by agent config" before the agent

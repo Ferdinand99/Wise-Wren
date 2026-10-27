@@ -23,7 +23,8 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   (default an hour). A compromised Wren can't replay old runs, roll back an update that never happened or start
   a vendor installer in a loop.
 - Wren can ask for more safety, never less: the agent raises a job's health period to `min_health_seconds`
-  (default 30 s) and requires a snapshot whenever `require_snapshot` is on (the default once `roots` are set).
+  (default 30 s) and requires a snapshot whenever `require_snapshot` is on (off by default: stateless targets
+  have nothing to snapshot).
 - After a restore, the data it replaced is kept next to it (`<folder>.wren-aside-<run>`) until the target's next
   run, so a wrong rollback can be undone.
 - The agent never updates its own container, and a rollback job's digests must be digests.
@@ -31,7 +32,7 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   answer from Wren, and starts none of its child processes (scripts, Docker, `cp`) with its token or Wren's
   address in their environment, so a vendor installer a script stack downloads can't take them. The server
   address must be `https://` unless the host is on your own network (loopback, private or link-local address,
-  a single-label name, or `.local`, `.lan`, `.home.arpa`, `.internal`): the agent refuses to start otherwise.
+  a single-label name, `.local`, `.lan`, `.home.arpa`, `.internal`, `.ts.net` or a Tailscale 100.64.0.0/10 address): the agent refuses to start otherwise.
 
 ## Tokens and secrets
 

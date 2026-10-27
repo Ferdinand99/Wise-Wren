@@ -1025,16 +1025,23 @@ mod tests {
     #[test]
     fn the_agent_raises_the_safety_nets_a_job_asks_for() {
         let all = vec![ctr("ww-test-c", "a/b:1", &[])];
-        // Wren asks for 5 s and no snapshot; the roots make the agent require one.
+        // Wren asks for 5 s and no snapshot. By default the agent raises the
+        // health period but leaves snapshots to Wren (roots or not: a stateless
+        // target has nothing to snapshot).
         let j = job("container", "ww-test-c", "ww-test-c", "a/b:1");
         assert_eq!((j.health_seconds, j.require_snapshot), (5, false));
         let plan = check(&j, &config(""), &all, &[], "").unwrap();
         assert_eq!(plan.job().health_seconds, 30);
-        assert!(plan.job().require_snapshot);
+        assert!(!plan.job().require_snapshot);
+        assert_eq!(plan.effective[1], "snapshot not required");
         assert!(
             plan.effective[0].contains("asked 5 s")
                 && plan.effective[0].contains("minimum is 30 s")
         );
+        // Set to true, the agent requires one whatever Wren asks.
+        let strict = config("[updates]\nallow = [\"*\"]\nrequire_snapshot = true\n");
+        let plan = check(&j, &strict, &all, &[], "").unwrap();
+        assert!(plan.job().require_snapshot);
         assert!(
             plan.effective[1].contains("agent's policy"),
             "{:?}",
@@ -1050,9 +1057,7 @@ mod tests {
             (600, true)
         );
         // The agent can relax its own minimums; Wren's requests still count.
-        let relaxed = config(
-            "[updates]\nallow = [\"*\"]\nmin_health_seconds = 0\nrequire_snapshot = false\n",
-        );
+        let relaxed = config("[updates]\nallow = [\"*\"]\nmin_health_seconds = 0\n");
         let plan = check(&j, &relaxed, &all, &[], "").unwrap();
         assert_eq!(
             (plan.job().health_seconds, plan.job().require_snapshot),

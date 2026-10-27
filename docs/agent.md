@@ -97,7 +97,7 @@ roots = [
 allow = ["nextcloud", "immich", "media-*"]   # or ["*"] to get started
 deny = ["media-db*"]               # deny wins over allow
 # min_health_seconds = 30          # a job never gets a shorter health period
-# require_snapshot = true          # default: true when roots are set
+# require_snapshot = true          # default false: true makes every update need a snapshot
 
 # How many rollback points stay per target (optional).
 [retention]
@@ -113,7 +113,7 @@ snapshots = 2                      # data snapshots (1-10)
 | `scan_interval` | Default `30m`. "Check now" in Wren asks for an inventory at once. |
 | `[updates] allow` / `deny` | **Required.** Globs on target names. Without an `allow` list (no `[updates]` section, only `deny`, or `allow = []`) the agent refuses every update and rollback. A job outside `allow` or inside `deny` ends as **refused by agent config** before the agent even reads Docker. Wren still shows those targets and their new versions. |
 | `[updates] min_health_seconds` | Default `30`, at most `3600`. A job's health period is raised to this; Wren can ask for more, never less. |
-| `[updates] require_snapshot` | Default `true` when `roots` are set, else `false`. When true, an update whose target has no data folder the agent can snapshot stops before anything is touched, whatever Wren asks. Set `false` for hosts where most targets keep no data under `roots`. |
+| `[updates] require_snapshot` | Default `false`. When `true`, an update whose target has no data folder the agent can snapshot stops before anything is touched, whatever Wren asks; stateless targets (a proxy, a runner with a named volume) then never update, so turn it on only where every target keeps data under `roots`. Wren's per-target "Require a snapshot" works either way. |
 | `[[script_stack]] min_interval` | Default `1h`, at most `24h`. The shortest time between two updates of a script stack. |
 | `[retention]` | `rollback_images` (default 1): after a successful update the old images of the newest N updates stay tagged `wren-rollback/…`, older ones go. `snapshots` (default: Wren's 2). See [Snapshots](snapshots.md). |
 | `[[script_stack]]` | A Compose stack that updates with its own script (below). |
@@ -156,7 +156,7 @@ stack's script. The agent also never updates **itself**: a job whose target incl
 
 **The server address must be `https://`, except on your own network.** Plain `http://` is accepted only when the
 host is a loopback, private (RFC 1918), link-local or unique-local IPv6 address, a single-label name (`tower`), or
-a name ending in `.local`, `.lan`, `.home.arpa` or `.internal`. Any other `http://` address is a configuration
+a name ending in `.local`, `.lan`, `.home.arpa`, `.internal` or `.ts.net`, or a Tailscale address (100.64.0.0/10). Any other `http://` address is a configuration
 error (the agent won't start; `--check` says why), because the token and every job would travel unencrypted. Put
 Wren behind a reverse proxy with a certificate for agents that reach it from elsewhere. Addresses with a
 `user:password@` part are refused, and the agent doesn't follow redirects.

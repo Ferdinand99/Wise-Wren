@@ -46,7 +46,7 @@
 //! allow = ["ww-*"]
 //! deny = ["ww-keep-*"]
 //! min_health_seconds = 30   # a job never gets a shorter health period
-//! require_snapshot = true   # default: true when roots are set
+//! require_snapshot = false  # true: every update needs a snapshot (default false)
 //! ```
 //!
 //! A script stack's update runs at most once per `min_interval` (default
@@ -148,7 +148,8 @@ pub struct UpdatePolicy {
     pub deny: Vec<String>,
     /// A job's health period is raised to at least this many seconds.
     pub min_health_seconds: u64,
-    /// Every update requires a snapshot, whatever Wren asks.
+    /// Every update requires a snapshot, whatever Wren asks (default `false`:
+    /// a stateless target has nothing to snapshot).
     pub require_snapshot: bool,
 }
 
@@ -476,7 +477,7 @@ fn check_server(raw: &str) -> Result<String, String> {
     // The token and every job would cross the open internet unprotected.
     if plain_http_beyond_lan(url.as_str()) {
         return Err(format!(
-            "server: plain http:// is only for hosts on your own network (a private or loopback address, a single-label name, or one ending in .local, .lan, .home.arpa or .internal); \
+            "server: plain http:// is only for hosts on your own network (a private or loopback address, a single-label name, or one ending in .local, .lan, .home.arpa, .internal or .ts.net, or a Tailscale 100.64.0.0/10 address); \
              use https:// for {}, for example behind a reverse proxy with a certificate",
             url.host_str().unwrap_or_default()
         ));
@@ -491,7 +492,8 @@ fn check_server(raw: &str) -> Result<String, String> {
 /// Whether the server address is plain `http://` to a host that isn't on a
 /// private network: loopback, RFC 1918, link-local or unique-local
 /// addresses, `localhost`, a single-label name or one ending in `.local`,
-/// `.lan`, `.home.arpa` or `.internal`. The token and every job then cross the open
+/// `.lan`, `.home.arpa`, `.internal` or `.ts.net`, or a Tailscale address
+/// (100.64.0.0/10). The token and every job then cross the open
 /// internet unprotected; [`check_server`] refuses such an address.
 pub fn plain_http_beyond_lan(server: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(server.trim()) else {
@@ -506,7 +508,9 @@ pub fn plain_http_beyond_lan(server: &str) -> bool {
     // IPv6 hosts come in brackets.
     match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V4(ip)) => {
-            !(ip.is_loopback() || ip.is_private() || ip.is_link_local())
+            // 100.64.0.0/10 is the carrier-grade NAT range Tailscale uses.
+            let tailscale = ip.octets()[0] == 100 && ip.octets()[1] & 0xc0 == 0x40;
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || tailscale)
         }
         Ok(std::net::IpAddr::V6(ip)) => {
             let first = ip.segments()[0];
@@ -515,9 +519,16 @@ pub fn plain_http_beyond_lan(server: &str) -> bool {
         }
         Err(_) => {
             let host = host.trim_end_matches('.').to_ascii_lowercase();
-            let local = ["localhost", "local", "lan", "home.arpa", "internal"]
-                .iter()
-                .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+            let local = [
+                "localhost",
+                "local",
+                "lan",
+                "home.arpa",
+                "internal",
+                "ts.net",
+            ]
+            .iter()
+            .any(|s| host == *s || host.ends_with(&format!(".{s}")));
             !(local || !host.contains('.'))
         }
     }
@@ -734,9 +745,9 @@ impl Config {
             allow: raw_updates.allow,
             deny: raw_updates.deny,
             min_health_seconds,
-            // Snapshots are the safety net of every update that has data to
-            // protect: required as soon as the agent has roots to take them in.
-            require_snapshot: raw_updates.require_snapshot.unwrap_or(!roots.is_empty()),
+            // Off unless asked for: a target without a data folder under the roots
+            // (a stateless container) has nothing to snapshot and would never update.
+            require_snapshot: raw_updates.require_snapshot.unwrap_or(false),
         };
 
         let raw_retention = raw.retention.unwrap_or_default();
@@ -1007,6 +1018,10 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
             "http://172.32.0.1",
             "http://[2001:db8::1]:3003",
             "http://notlocal.com",
+            // Just outside 100.64.0.0/10, and a look-alike name.
+            "http://100.63.255.255",
+            "http://100.128.0.1",
+            "http://wren.nots.net",
         ] {
             assert!(plain_http_beyond_lan(beyond), "{beyond}");
         }
@@ -1028,6 +1043,12 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
             "http://wren.home.arpa/",
             "http://wren.lan.",
             "http://wren.internal:3003",
+            // Tailscale: 100.64.0.0/10 and MagicDNS names.
+            "http://100.64.0.1:3003",
+            "http://100.101.102.103",
+            "http://100.127.255.254",
+            "http://tower.tail1234.ts.net:3003",
+            "http://Wren.TS.NET",
         ] {
             assert!(!plain_http_beyond_lan(fine), "{fine}");
         }
@@ -1180,32 +1201,25 @@ allow = [\"*\"]
         )
         .unwrap();
         assert!(c.updates.configured() && c.updates.allows("anything"));
-        // Roots are set in base(): snapshots are required unless said otherwise.
+        // Roots are set in base(), yet snapshots stay optional: a stateless
+        // target has nothing to snapshot.
         assert_eq!(
             (c.updates.min_health_seconds, c.updates.require_snapshot),
-            (30, true)
+            (30, false)
         );
         let text = format!(
             "{}[updates]
 allow = [\"*\"]
 min_health_seconds = 5
-require_snapshot = false
+require_snapshot = true
 ",
             base()
         );
         let c = Config::from_parts(Some(&text), no_env).unwrap();
         assert_eq!(
             (c.updates.min_health_seconds, c.updates.require_snapshot),
-            (5, false)
+            (5, true)
         );
-        // Without roots there is nothing to snapshot into.
-        let no_roots = format!(
-            "server = \"http://10.0.3.26:3003\"
-token = \"{TOKEN}\"
-"
-        );
-        let c = Config::from_parts(Some(&no_roots), no_env).unwrap();
-        assert!(!c.updates.require_snapshot);
         for bad in ["-1", "3601"] {
             let text = format!(
                 "{}[updates]
