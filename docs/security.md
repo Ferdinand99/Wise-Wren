@@ -62,6 +62,10 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   manage **notification channels** (a channel makes the server send requests to an address of its own choosing,
   which editors may not do) and the
   VV connection, and turn on automatic updates. Every action is logged with who did it.
+- Since 0.7.1 (vole-kit 0.6.0): a fresh instance needs a setup token at `/setup` (`WW_SETUP_TOKEN`, or the random
+  one logged at first start); creating a write or never-expiring API token, adding or promoting an admin, resetting
+  another user's password or two-factor sign-in and deleting a passkey ask for the password again; two-factor
+  secrets are sealed at rest; and session-cookie writes to `/api` must come from the same origin.
 - Passkeys (WebAuthn) sign in without a password or code; each user adds them under **Settings → Security**.
   They need an HTTPS public URL (`WW_PUBLIC_URL`, or `http://localhost`), which sets their relying party; the
   password (with two-factor sign-in) remains the fallback.
