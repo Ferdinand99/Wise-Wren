@@ -59,6 +59,11 @@ pub struct Heartbeat {
     /// This process ([`boot`]).
     pub boot_id: String,
     pub uptime_seconds: u64,
+    /// Managed settings (0.8.0+): the version in force, whether the agent is
+    /// locked to `agent.toml`, the folders mounted into it. Filled in by the
+    /// agent loop; older agents send nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::managed::Report>,
 }
 
 /// Reads Docker on `socket` and looks for Unraid under `root`.
@@ -73,6 +78,7 @@ pub async fn collect(socket: &str, root: &Path) -> Heartbeat {
         unraid: docker::is_unraid(root),
         boot_id: boot().id.clone(),
         uptime_seconds: boot().uptime_seconds(),
+        settings: None,
     }
 }
 
@@ -85,6 +91,11 @@ pub struct Reply {
     /// can ask.
     #[serde(default)]
     pub scan: bool,
+    /// Settings an admin made in Wren (0.8.0+; absent from older servers,
+    /// and while the agent is locked or already runs this version). Data
+    /// only: [`crate::managed`] checks it before anything is used.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -290,6 +301,23 @@ mod tests {
         let url = serve(response("500 Internal Server Error", &big)).await;
         let (head, more) = read_head(get(&url).await, MAX_ERROR_BYTES).await.unwrap();
         assert_eq!((head.len(), more), (MAX_ERROR_BYTES, true));
+    }
+
+    #[test]
+    fn settings_in_wrens_answer_are_optional() {
+        // An older Wren sends none; a newer one may send more than this agent knows.
+        let old: Reply =
+            serde_json::from_str(r#"{"server":{"id":1,"name":"a"},"interval_seconds":30}"#)
+                .unwrap();
+        assert!(old.settings.is_none() && !old.scan);
+        let newer: Reply = serde_json::from_str(
+            r#"{"server":{"id":1,"name":"a"},"interval_seconds":30,"scan":true,"settings":{"version":2,"future":[]},"other":1}"#,
+        )
+        .unwrap();
+        assert_eq!(newer.settings.unwrap()["version"], 2);
+        // A heartbeat without a settings report serializes as before.
+        let json = serde_json::to_value(Heartbeat::default()).unwrap();
+        assert!(json.get("settings").is_none());
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::config::{Config, ScriptStack as StackConfig, VersionConfig};
 use crate::docker::get_json;
+use crate::presets;
 
 pub const PATH: &str = "/api/agent/v1/inventory";
 /// Where Unraid keeps the user's container templates (under the root).
@@ -266,9 +267,10 @@ pub fn compose_projects(containers: &[Container], root: &Path) -> Vec<ComposePro
 async fn script_stack(stack: &StackConfig, root: &Path) -> ScriptStack {
     let dir = stack.working_dir.to_string_lossy().to_string();
     let reachable = under(root, &dir).is_dir();
-    let version = match &stack.version {
-        Some(v) => Some(version(stack, v, root, reachable).await),
-        None => None,
+    let version = match (stack.preset, &stack.version) {
+        (Some(preset), _) => Some(preset_version(preset, stack, root, reachable).await),
+        (None, Some(v)) => Some(version(stack, v, root, reachable).await),
+        (None, None) => None,
     };
     ScriptStack {
         name: stack.name.clone(),
@@ -276,6 +278,27 @@ async fn script_stack(stack: &StackConfig, root: &Path) -> ScriptStack {
         working_dir: dir,
         files_reachable: reachable,
         version,
+    }
+}
+
+/// A preset stack's versions: the preset knows where to look ([`presets`]);
+/// Wren gets them as if a `latest_command` had printed the newest one.
+async fn preset_version(
+    preset: &str,
+    stack: &StackConfig,
+    root: &Path,
+    reachable: bool,
+) -> Version {
+    let dir = under(root, &stack.working_dir.to_string_lossy());
+    let found = presets::version(preset, &dir, reachable, presets::FLUXER_RELEASE_URL).await;
+    Version {
+        source: Source {
+            command: true,
+            ..Source::default()
+        },
+        installed: found.installed,
+        latest: found.latest,
+        error: found.error,
     }
 }
 

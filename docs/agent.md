@@ -5,6 +5,10 @@ heartbeat every 30 seconds and an inventory of what runs, and waits for jobs: up
 approved in Wren. It checks every job against its own `agent.toml` and against Docker before it acts, and it never
 takes a command line from Wren. Read [Security notes](security.md) first: **the agent is root on its host**.
 
+Since 0.8 you don't have to edit `agent.toml` for most of this: an admin sets what the agent may do in Wren's web
+UI ([Managed settings](#managed-settings)), and the agent checks those settings against limits of its own. The file
+stays the place for `server`, `token`, scripts with commands of their own, and for agents you lock.
+
 ## 1. Add the server in Wren
 
 Servers → Add server (admins). Wren shows the server's agent token (`wwa_…`) **once**, with a ready `docker run`
@@ -40,7 +44,7 @@ docker run -d --name wren-agent --restart unless-stopped \
 The Unraid mounts let the agent run Unraid's own `update_container` for template containers, so the Docker tab
 stays in sync. If your appdata pool isn't called `cache`, mount it at its own path too (`/mnt/<pool>/appdata`).
 Then create `/mnt/user/appdata/wren-agent/agent.toml` with at least `[updates] allow = ["*"]` (see
-[agent.toml](#agenttoml)) and restart the agent: until it has an allow list the agent refuses every update.
+[agent.toml](#agenttoml)) and restart the agent: until it has an allow list the agent refuses every update. (Since 0.8 you can skip the file's `[updates]` and `roots`: once the agent has connected, set them on the server's **Agent settings** page.)
 Stacks from the **Compose Manager** plugin live in `/boot/config/plugins/compose.manager/projects/<name>`: the
 `/boot/config` mount reaches them, and `roots` must include that folder (below), or Wren can't update them.
 
@@ -68,6 +72,10 @@ folder has the same path in both places; snapshots and rollbacks use those paths
 isn't mounted shows as "files not reachable: mount <working_dir> into the agent" and is notify-only.
 
 ## agent.toml
+
+You need the file for `server`/`token` (or their variables), for custom script stacks, for locked agents, and as the
+starting point the first import reads. This section describes every key; with managed settings, the settings page
+sets the managed ones.
 
 `WW_SERVER_URL` and `WW_AGENT_TOKEN` can replace the `server` and `token` lines (they win over the file), but the
 file itself is needed for `[updates]`: without an allow list the agent refuses every update. The agent reads
@@ -170,16 +178,107 @@ report it; then Wren blocks nothing it can't see.
 
 ### The agent.toml helper
 
-On a server's page, admins find **agent.toml helper**: it builds the `[updates]` list (tick the targets to allow, or
+For locked agents and agents before 0.8 (which can't take settings from Wren), admins find **agent.toml helper** on
+a server's page: it builds the `[updates]` list (tick the targets to allow, or
 allow `*` and tick the ones to deny), suggests `roots` from the folders the agent's inventory showed (data folders
 and Compose folders), and fills a `[[script_stack]]` (with a Fluxer preset). Wren only shows the text to copy; it
 stores nothing and sends nothing to the agent. Put it in `/mnt/user/appdata/wren-agent/agent.toml` (keep your server
 and token lines), run `docker exec wren-agent wren-agent --check`, and restart the agent while no update runs.
 
+## Managed settings
+
+On a server's page, **Agent settings** (admins edit, everyone signed in can read) manages what `agent.toml` used to:
+
+- `[updates]`: which targets may be updated, as ticks in a list of the server's targets (or "every target except
+  the ones you deny"), plus `min_health_seconds` and `require_snapshot`;
+- `roots`: the folders Wren may touch, **chosen from the folders mounted into the agent** (no free text);
+- `[retention]`: how many rollback images and snapshots stay per target;
+- **script stacks from presets** compiled into the agent (Fluxer so far): you choose the preset, a name, the Compose
+  project, a folder inside the roots and the shortest time between updates.
+
+Maintenance windows already live in Wren and are not part of this.
+
+### How it works
+
+1. **First connect.** An agent without managed settings sends what its `agent.toml` says (allow and deny lists, roots,
+   minimums, retention, script stacks that match a preset, and only the *names* of the others; never the token or any
+   command text). Wren stores that as **version 1** and offers the same values back. Nothing changes on the agent, and
+   nothing is lost: the History on the settings page shows "Imported from agent.toml".
+2. **Saving.** Each change is the next version number (Wren counts past any version the agent reports, so a Wren
+   database restored from a backup still moves forward). Wren sends the settings in the heartbeat's answer while the
+   agent reports another version, as data (JSON, no command line).
+3. **The agent decides.** It checks the whole update against its hard limits (below), writes `managed.json` beside
+   `agent.toml` (a temporary file, then a rename; mode 0600), applies it **without a restart** and reports the version
+   in force with its next heartbeat. If any limit is broken it refuses *all* of it, keeps what it had and reports the
+   reason. The page shows "Active on the agent (version N)", "Waiting for the agent" or "The agent refused version N: ...".
+4. **After a restart** the agent reads `managed.json` again. A damaged or no-longer-valid file is reported, and the
+   agent falls back to `agent.toml`.
+
+What stays in `agent.toml`: `server`, `token`, `docker_socket`, `scan_interval`, and every `[[script_stack]]` with
+commands of its own (the settings page lists their names as custom stacks you edit in `agent.toml` on the host). Once
+an agent has managed settings, they **replace** the file's `[updates]`, `roots`, `[retention]` and preset-like stacks,
+so editing those keys in `agent.toml` no longer does anything (use the page, or lock the agent). A stack in
+`agent.toml` counts as a preset only when its commands, environment, time limit and own-backup flag are exactly the
+preset's (the older Fluxer example in these docs included).
+
+### Hard limits
+
+The agent refuses the whole settings update when one of these is broken:
+
+- A root must be an absolute folder, not `/`, with no `.` or `..`, **inside a folder mounted into the agent** (a bind
+  mount of its own container at the same path as on the host; the agent reads its mounts from Docker and reports
+  them), and not under `/boot`, `/etc`, `/proc`, `/sys`, `/dev`, `/var/lib/docker`, `/var/run`, `/run`, `/usr`,
+  `/bin`, `/sbin`, `/lib*` or `/root`. The one exception is Unraid's Compose Manager folder
+  (`/boot/config/plugins/compose.manager/projects`), which these docs ask for anyway. The agent's own config folder
+  can't be a root. A root that `agent.toml` itself lists stays valid: you chose it on the host.
+- Script stacks only by **preset name**; the preset's commands are constants in the agent. The only parameters are
+  the stack's name and Compose project (`a-z`, `0-9`, `-`, `_`), its folder (inside a root) and the shortest time
+  between updates (1 minute to 24 hours). There is no field for a command, and settings with a field the agent
+  doesn't know are refused.
+- Numbers within the bounds `agent.toml` has: `min_health_seconds` 0-3600, `rollback_images` and `snapshots` 1-10;
+  allow and deny entries are names with `*` and `?`.
+- A custom stack from `agent.toml` must stay under the roots.
+- The agent never updates its own container, whatever the settings say.
+- A settings version older than the one in force is refused (a replay).
+
+### Locked agents
+
+Set `WW_AGENT_LOCKED=1` on the agent and it **ignores managed settings entirely**, even a `managed.json` it finds:
+only `agent.toml` counts, as before 0.8. It reports `locked: true`, and Wren shows the settings read-only with
+"Locked on the agent" and never sends it settings. Use this when the host's owner, not Wren's admins, must decide
+what the agent touches. Remove the variable to manage the agent from Wren again; the next heartbeat applies the
+settings Wren holds. `wren-agent --check` says whether the agent is locked and which settings are in force.
+
+### Older agents
+
+An agent before 0.8 sends no settings report. Wren says "this agent version can't take settings from Wren; update
+it", sends it nothing and keeps the agent.toml helper (below) for it. A new agent with an older Wren just never
+receives settings and keeps using `agent.toml`.
+
+### History and notifications
+
+Every change is kept (who, when, what; the first row is the import). A change that **widens** what the agent may do,
+that is a new root, an allow entry the list didn't already cover, a removed deny entry, a new script stack or a
+changed folder, a lower health period or interval, or snapshots no longer required, is marked "Allows more" and sent
+to **every active notification channel** (admins manage those). Narrowing changes are only logged.
+
 ## Script stacks (Fluxer)
 
-Some apps update with the vendor's own script instead of `docker compose pull`. Define the script in `agent.toml`;
-Wren can only ask for it **by name**.
+Some apps update with the vendor's own script instead of `docker compose pull`. Pick the built-in preset on the
+settings page, or define a script of your own in `agent.toml`; Wren can only ask for it **by name**.
+
+### The Fluxer preset
+
+The preset `fluxer` is built into the agent and runs Fluxer's own installer, with the commands of the example below
+and one difference: the installer is downloaded into a temporary folder inside the stack's folder
+(`.wren-install.XXXXXX`), checked against Fluxer's published checksum and removed when the command ends, however it
+ends. It keeps Fluxer's `handles_own_backup`, a 20 minute limit and `COMPOSE_PROJECT_NAME` in the environment. The
+agent detects versions itself: the newest from Fluxer's release document (`https://fluxer.dev/rexctl/release.json`,
+field `version`; the agent follows its redirect only within fluxer.dev and fluxer.app) and the installed one from
+`release` in `.rexctl/state.json` in the stack's folder (the file `rexctl` keeps), so Wren can show "update available".
+
+### A script of your own
+
 
 ```toml
 roots = ["/mnt/cache/appdata/fluxer"]
@@ -246,4 +345,5 @@ edit an agent's `agent.toml` could then make the server fetch addresses on its o
 ## Upgrading the agent
 
 Wren doesn't update its own agents (or itself, or Vigilant Vole) yet: their targets show the new version but
-can't be approved. Pull the new image and recreate the container (Unraid: "Check for updates" → apply).
+can't be approved. Pull the new image and recreate the container (Unraid: "Check for updates" → apply). Managed settings live in
+`managed.json` in the config folder, so they survive an update.

@@ -38,6 +38,10 @@ const MIGRATION_FILES: &[(&str, &str)] = &[
         "0008_target_lifecycle.sql",
         include_str!("../migrations/0008_target_lifecycle.sql"),
     ),
+    (
+        "0009_agent_settings.sql",
+        include_str!("../migrations/0009_agent_settings.sql"),
+    ),
 ];
 
 fn migrations() -> Vec<(String, String)> {

@@ -8,7 +8,10 @@
 //! - `POST /api/agent/v1/heartbeat` with [`Heartbeat`] (JSON) every
 //!   [`INTERVAL_SECONDS`] → `200 {"server": {"id", "name"}, "interval_seconds"}`;
 //!   401 for a missing, unknown or revoked token, 429 with `Retry-After`
-//!   over [`RATE`], 400 for a body that isn't a heartbeat.
+//!   over [`RATE`], 400 for a body that isn't a heartbeat. From agent 0.8 the
+//!   heartbeat carries a `settings` report and the answer may carry
+//!   `settings` an admin made in Wren ([`crate::agent_settings`]); both are
+//!   optional, so older agents and older servers keep working.
 //!
 //! - `POST /api/agent/v1/inventory` ([`crate::inventory`]): what runs on
 //!   the server, sent on the agent's own schedule and when a heartbeat's
@@ -78,6 +81,11 @@ pub struct Heartbeat {
     /// before it started can't finish any more.
     #[serde(default)]
     pub uptime_seconds: Option<u64>,
+    /// Managed settings (0.8+): what the agent runs, may do and has mounted
+    /// ([`crate::agent_settings`]). Absent from older agents; read
+    /// leniently, so a newer agent's report can't make the heartbeat fail.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
 }
 
 /// A boot id as Wren keeps it: letters, digits, `-` and `_`, at most 64;
@@ -153,7 +161,9 @@ pub async fn heartbeat(
     let facts = beat.facts();
     let boot = boot_id(&beat.boot_id);
     let uptime = beat.uptime_seconds;
-    let (scan, interrupted) = match wren
+    let report: Option<crate::agent_settings::Report> =
+        beat.settings.and_then(|v| serde_json::from_value(v).ok());
+    let (scan, interrupted, settings) = match wren
         .core
         .with_conn(move |c| {
             db::record_heartbeat(c, id, &facts)?;
@@ -162,7 +172,9 @@ pub async fn heartbeat(
                 Some(boot) => crate::runs::close_interrupted(c, id, boot, uptime)?,
                 None => Vec::new(),
             };
-            Ok((db::scan_requested(c, id)?, interrupted))
+            // Settings an admin made in Wren, while the agent runs another version.
+            let settings = crate::agent_settings::on_heartbeat(c, id, report)?;
+            Ok((db::scan_requested(c, id)?, interrupted, settings))
         })
         .await
     {
@@ -171,13 +183,17 @@ pub async fn heartbeat(
     };
     let _ = wren.changes.send(());
     crate::runs::after_interrupted(&wren, interrupted);
-    // `scan` is all Wren can ask for: a fresh inventory (§8).
-    Json(json!({
+    // Beside `scan` (a fresh inventory) Wren can send settings, as data an
+    // agent checks against its own limits (§8); never a command line.
+    let mut reply = json!({
         "server": { "id": id, "name": name },
         "interval_seconds": INTERVAL_SECONDS,
         "scan": scan,
-    }))
-    .into_response()
+    });
+    if let Some(settings) = settings {
+        reply["settings"] = serde_json::to_value(settings).unwrap_or_default();
+    }
+    Json(reply).into_response()
 }
 
 // ---------------------------------------------------------------------------

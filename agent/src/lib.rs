@@ -14,6 +14,8 @@ pub mod docker;
 pub mod heartbeat;
 pub mod jobs;
 pub mod ledger;
+pub mod managed;
+pub mod presets;
 pub mod process;
 pub mod run;
 pub mod snapshot;
@@ -23,8 +25,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use config::Config;
 use heartbeat::{Client, SendError};
+use managed::{Live, Offered};
 
 /// Longest wait between heartbeats when Wren can't be reached.
 pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -42,12 +44,14 @@ struct Scans {
 }
 
 impl Scans {
-    fn start(&self, config: &Arc<Config>, client: &Arc<Client>) {
+    fn start(&self, live: &Arc<Live>, client: &Arc<Client>) {
         if self.running.swap(true, Ordering::AcqRel) {
             return;
         }
-        let (config, client, scans) = (config.clone(), client.clone(), self.clone());
+        let (live, client, scans) = (live.clone(), client.clone(), self.clone());
         tokio::spawn(async move {
+            // The settings in force when the scan starts.
+            let config = live.config();
             let inv = discover::scan(&config, Path::new("/")).await;
             if !inv.error.is_empty() {
                 tracing::warn!(error = %inv.error, "can't read Docker for the inventory");
@@ -75,13 +79,16 @@ fn backoff(failures: u32) -> Duration {
 
 /// Sends heartbeats until `stop` resolves.
 pub async fn run(
-    config: Config,
+    config: config::Config,
     stop: impl std::future::Future<Output = ()>,
 ) -> Result<(), String> {
     // The process's boot id and start, before anything is sent.
     let boot = heartbeat::boot();
     let client = Arc::new(Client::new(&config.server, &config.token)?);
-    let config = Arc::new(config);
+    // `agent.toml` with the settings Wren sent on top (unless locked).
+    let locked = managed::locked_by(|k| std::env::var(k).ok());
+    let live = Arc::new(Live::new(config, locked));
+    let config = live.config();
     let scans = Scans::default();
     let mut next_scan = Instant::now();
     tracing::info!(
@@ -96,6 +103,16 @@ pub async fn run(
     // rollback is refused later.
     if let (_, Some(warning)) = ledger::Ledger::load(&config.ledger) {
         tracing::warn!("{warning}");
+    }
+    if locked {
+        tracing::info!(
+            "{} is set: settings from Wren are ignored, agent.toml is in force",
+            managed::LOCK_ENV
+        );
+    } else if let Some(error) = live.error() {
+        tracing::warn!("managed settings not in force: {error}");
+    } else if let Some(version) = live.version() {
+        tracing::info!(version, "managed settings from Wren are in force");
     }
     if !config.updates.configured() {
         tracing::warn!(
@@ -115,11 +132,16 @@ pub async fn run(
             tracing::info!(images = ?gone, "kept images beyond [retention] removed");
         }
     });
-    let job_task = tokio::spawn(jobs_loop(config.clone()));
+    let job_task = tokio::spawn(jobs_loop(live.clone()));
     let mut connected = false;
     let mut failures = 0u32;
+    let mut last_refusal = String::new();
     loop {
-        let beat = heartbeat::collect(&config.docker_socket, Path::new("/")).await;
+        // Settings from Wren may have changed these since the last round.
+        let config = live.config();
+        let mut beat = heartbeat::collect(&config.docker_socket, Path::new("/")).await;
+        let mounts = managed::own_mounts(&config.docker_socket, Path::new("/")).await;
+        beat.settings = Some(live.report(&mounts));
         if !beat.docker_error.is_empty() {
             tracing::warn!(error = %beat.docker_error, "can't read Docker");
         }
@@ -133,12 +155,29 @@ pub async fn run(
                 failures = 0;
                 // A scan on start, on the agent's own schedule, when Wren asks
                 // ("Check now") and again after a failed one.
-                if reply.scan
-                    || Instant::now() >= next_scan
-                    || scans.retry.swap(false, Ordering::Relaxed)
+                let mut scan = reply.scan;
+                if let Some(offered) = &reply.settings {
+                    match live.offer(offered, &mounts) {
+                        Ok(Offered::Applied(version)) => {
+                            tracing::info!(version, "managed settings from Wren applied");
+                            last_refusal.clear();
+                            // Wren should see what the agent allows now.
+                            scan = true;
+                        }
+                        Ok(Offered::Same(_)) => {}
+                        // Said once per reason, not with every heartbeat.
+                        Err(why) => {
+                            if why != last_refusal {
+                                tracing::warn!("managed settings from Wren refused: {why}");
+                                last_refusal = why;
+                            }
+                        }
+                    }
+                }
+                if scan || Instant::now() >= next_scan || scans.retry.swap(false, Ordering::Relaxed)
                 {
-                    next_scan = Instant::now() + config.scan_interval;
-                    scans.start(&config, &client);
+                    next_scan = Instant::now() + live.config().scan_interval;
+                    scans.start(&live, &client);
                 }
                 Duration::from_secs(reply.interval_seconds.clamp(5, 300))
             }
@@ -167,7 +206,8 @@ pub async fn run(
 }
 
 /// Waits for jobs and runs them, one at a time.
-async fn jobs_loop(config: Arc<Config>) {
+async fn jobs_loop(live: Arc<Live>) {
+    let config = live.config();
     let client = match jobs::JobClient::new(&config.server, &config.token) {
         Ok(c) => c,
         Err(err) => {
@@ -181,6 +221,8 @@ async fn jobs_loop(config: Arc<Config>) {
             Ok(jobs::Polled::Nothing) => failures = 0,
             Ok(jobs::Polled::Job(Ok(job))) => {
                 failures = 0;
+                // The settings in force now; a run keeps them to its end.
+                let config = live.config();
                 run::handle(&config, &client, job).await;
             }
             Ok(jobs::Polled::Job(Err((run, why)))) => {
