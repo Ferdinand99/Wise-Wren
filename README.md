@@ -8,7 +8,7 @@
 <p align="center"><strong>Keeps your Docker containers up to date, without surprises.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://hedgerow.tools/Wise-Wren/"><img src="https://img.shields.io/badge/website-hedgerow.tools%2FWise--Wren-black.svg" alt="Website"></a>
 </p>
 
@@ -112,4 +112,4 @@ the family's design, plus a small agent for each server.
 
 ## License
 
-[MIT](LICENSE)
+[GNU AGPL-3.0-only](LICENSE)
