@@ -769,15 +769,15 @@ pub async fn run_script(
     env: &std::collections::BTreeMap<String, String>,
     timeout: Duration,
 ) -> StepResult {
-    let child = tokio::process::Command::new("sh")
-        .arg("-c")
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .current_dir(dir)
         .envs(env)
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(timeout, child)
+        .kill_on_drop(true);
+    crate::process::scrub(&mut cmd);
+    let out = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| format!("the script took longer than {} s", timeout.as_secs()))?
         .map_err(|e| format!("can't start sh: {e}"))?;
@@ -1438,11 +1438,13 @@ impl Report for ClientReport<'_> {
 pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     let run = job.run_id;
     let report = ClientReport { client, run };
-    tracing::info!(run, target = %job.target.name, kind = ?job.kind, "job received");
+    // What the server sent is logged escaped (`?`): a name with a newline or
+    // terminal codes can't forge log lines.
+    tracing::info!(run, target = ?job.target.name, kind = ?job.kind, "job received");
     // The allowlist first: a target it leaves out isn't even looked at.
     if !config.updates.allows(&job.target.name) {
         let why = Note::new("refused.not_allowed", &[("target", &job.target.name)]);
-        tracing::warn!(run, "{why}");
+        tracing::warn!(run, reason = ?why.text(), "job refused");
         report.finish("refused", &why).await;
         return;
     }
@@ -1459,7 +1461,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     let plan = match jobs::check(&job, config, &all, &templates, &jobs::own_id()) {
         Ok(plan) => plan,
         Err(why) => {
-            tracing::warn!(run, "{why}");
+            tracing::warn!(run, reason = ?why.text(), "job refused");
             report.finish("refused", &why).await;
             return;
         }
@@ -1469,7 +1471,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     // whose script may do more than the images show.
     if plan.kind() != Kind::Script && jobs::already_on(&job, &plan.ctrs) {
         let why = Note::new("done.already_on", &[("target", &job.target.name)]);
-        tracing::info!(run, "{why}");
+        tracing::info!(run, note = ?why.text(), "nothing to do");
         report.finish("succeeded", &why).await;
         return;
     }

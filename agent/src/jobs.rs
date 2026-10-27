@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::{Config, ScriptStack};
+use crate::heartbeat::{MAX_JOB_BYTES, MAX_VERDICT_BYTES, read_json};
 
 pub const JOBS_PATH: &str = "/api/agent/v1/jobs";
 /// How long Wren holds a job request open.
@@ -445,6 +446,24 @@ pub fn check(
                     "refused: {project} is not a Compose project name"
                 )));
             }
+            // The policy names targets, and a project can have two: the
+            // script stack's and its Compose project's. A deny on either
+            // holds (an allow on the stack's name is enough).
+            if config.updates.denies(&project) {
+                return Err(Note::new("refused.not_allowed", &[("target", &project)]));
+            }
+            // A script stack owns its project: a plain `compose up` of it
+            // would go round the stack's script (and its deny).
+            if kind == Kind::Compose
+                && config
+                    .script_stacks
+                    .iter()
+                    .any(|s| s.compose_project == project)
+            {
+                return Err(Note::plain(format!(
+                    "refused: {project} is the Compose project of a script stack in agent.toml; it is updated through the stack"
+                )));
+            }
             plan.ctrs = all
                 .iter()
                 .filter(|c| c.label(COMPOSE_PROJECT) == project)
@@ -486,6 +505,13 @@ pub fn check(
             }
         }
     }
+    // The agent never touches itself: stopping its own container mid-run
+    // would leave the run unfinished (and the agent stopped).
+    if self_id.len() >= 12 && plan.ctrs.iter().any(|c| c.id.starts_with(self_id)) {
+        return Err(Note::plain(
+            "refused: Wren never updates its own agent; this target includes the agent's container",
+        ));
+    }
     // Every image of the job is what that container of the target runs now,
     // at the digest Wren saw.
     for i in &job.images {
@@ -505,6 +531,13 @@ pub fn check(
         if !valid_digest(&i.to) || repo_of(&i.image).is_none() {
             return Err(Note::plain(format!(
                 "refused: {} has no updatable reference",
+                c.name
+            )));
+        }
+        // A rollback's `from` ends up in Unraid's update status: a digest too.
+        if job.kind == JobKind::Rollback && !valid_digest(&i.from) {
+            return Err(Note::plain(format!(
+                "refused: {} has no valid digest to roll back from",
                 c.name
             )));
         }
@@ -678,6 +711,9 @@ impl JobClient {
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(POLL_SECONDS + 20))
+            // Step results and finishes are posted once; a redirect would
+            // re-post them somewhere else.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| e.to_string())?;
         Ok(JobClient {
@@ -713,10 +749,9 @@ impl JobClient {
         if !status.is_success() {
             return Err(SendError::Failed(format!("Wren answered {status}")));
         }
-        let poll: Poll = res
-            .json()
+        let poll: Poll = read_json(res, MAX_JOB_BYTES)
             .await
-            .map_err(|e| SendError::Failed(format!("Wren's answer wasn't understood: {e}")))?;
+            .map_err(SendError::Failed)?;
         let run_id = poll.job.get("run_id").and_then(Value::as_i64).unwrap_or(0);
         Ok(Polled::Job(
             serde_json::from_value::<Job>(poll.job)
@@ -739,7 +774,10 @@ impl JobClient {
                 .await
             {
                 Ok(res) if res.status().is_success() => {
-                    return Ok(res.json().await.unwrap_or(Value::Null));
+                    // Too big or not JSON: no answer, as before.
+                    return Ok(read_json(res, MAX_VERDICT_BYTES)
+                        .await
+                        .unwrap_or(Value::Null));
                 }
                 // The run is not (or no longer) this agent's: no retry.
                 Ok(res) if res.status().is_client_error() => {
@@ -777,10 +815,7 @@ impl JobClient {
         if !res.status().is_success() {
             return Err(format!("Wren answered {}", res.status()));
         }
-        let v: Value = res
-            .json()
-            .await
-            .map_err(|e| format!("Wren's answer wasn't understood: {e}"))?;
+        let v: Value = read_json(res, MAX_VERDICT_BYTES).await?;
         Ok((
             v["verdict"].as_str().unwrap_or("skipped").to_string(),
             v["log"].as_str().unwrap_or_default().to_string(),
@@ -957,6 +992,136 @@ mod tests {
                 .text()
                 .contains("no script stack")
         );
+    }
+
+    /// A folder under the temp dir that exists, as a root.
+    fn tmp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wren-jobs-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config_in(root: &Path, extra: &str) -> Config {
+        Config::from_parts(
+            Some(&format!(
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"{}\"]\n{extra}",
+                root.display()
+            )),
+            |_| None,
+        )
+        .unwrap()
+    }
+
+    /// A container of a Compose project.
+    fn member(name: &str, id: &str, project: &str, dir: &Path) -> Ctr {
+        let mut c = ctr(name, "a/b:1", &[]);
+        c.id = id.into();
+        c.labels.insert(COMPOSE_PROJECT.into(), project.into());
+        c.labels
+            .insert(COMPOSE_DIR.into(), dir.to_string_lossy().into());
+        c
+    }
+
+    #[test]
+    fn a_job_that_includes_the_agents_own_container_is_refused() {
+        let c = config("");
+        let own = "c0ffee000000";
+        let all = vec![
+            ctr("wren-agent", "wise-wren-agent:dev", &[]),
+            ctr("other", "x/y:1", &[]),
+        ];
+        let update = job(
+            "container",
+            "wren-agent",
+            "wren-agent",
+            "wise-wren-agent:dev",
+        );
+        let mut rollback = update.clone();
+        rollback.kind = JobKind::Rollback;
+        rollback.rollback_of = Some(3);
+        for j in [update, rollback] {
+            let err = check(&j, &c, &all, &[], own).unwrap_err().text();
+            assert!(err.contains("Wren never updates its own agent"), "{err}");
+        }
+        // Other containers are fine, with or without knowing our own id.
+        let other = job("container", "other", "other", "x/y:1");
+        assert!(check(&other, &c, &all, &[], own).is_ok());
+        assert!(check(&other, &c, &all, &[], "").is_ok());
+
+        // A Compose project the agent belongs to is refused as a whole.
+        let root = tmp_root("own");
+        let c = config_in(&root, "");
+        let all = vec![
+            member("web", "aaaaaaaaaaaaaaaa", "stack", &root),
+            member("wren-agent", "c0ffee000000abc", "stack", &root),
+        ];
+        let j = job("compose", "stack", "web", "a/b:1");
+        let err = check(&j, &c, &all, &[], own).unwrap_err().text();
+        assert!(err.contains("its own agent"), "{err}");
+        assert!(check(&j, &c, &all, &[], "").is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_compose_job_cannot_go_round_a_script_stack() {
+        let root = tmp_root("stack");
+        std::fs::create_dir_all(root.join("fluxer")).unwrap();
+        let stack = format!(
+            "[[script_stack]]\nname = \"fluxer-stack\"\ncompose_project = \"fluxer\"\nworking_dir = \"{}/fluxer\"\ntimeout = \"1m\"\nupdate = {{ command = \"true\" }}\n",
+            root.display()
+        );
+        let all = vec![member("fluxer-web", "aaaaaaaaaaaaaaaa", "fluxer", &root)];
+        let compose = |name: &str| job("compose", name, "fluxer-web", "a/b:1");
+        let c = config_in(&root, &stack);
+        let err = check(&compose("fluxer"), &c, &all, &[], "")
+            .unwrap_err()
+            .text();
+        assert!(err.contains("Compose project of a script stack"), "{err}");
+        // Without the stack, the same job is a plain Compose job.
+        let c = config_in(&root, "");
+        assert!(check(&compose("fluxer"), &c, &all, &[], "").is_ok());
+
+        // The script job itself runs, and so does an allow on the stack's
+        // name alone ...
+        let script = {
+            let mut j = job("script", "fluxer-stack", "fluxer-web", "a/b:1");
+            j.images.clear();
+            j
+        };
+        let c = config_in(&root, &stack);
+        assert!(check(&script, &c, &all, &[], "").is_ok());
+        let c = config_in(
+            &root,
+            &format!("[updates]\nallow = [\"fluxer-stack\"]\n{stack}"),
+        );
+        assert!(check(&script, &c, &all, &[], "").is_ok());
+        // ... but a deny on the Compose project holds for the script job,
+        // and a deny on the stack's name still does.
+        for deny in ["fluxer", "fluxer-stack", "flux*"] {
+            let c = config_in(
+                &root,
+                &format!("[updates]\nallow = [\"*\"]\ndeny = [\"{deny}\"]\n{stack}"),
+            );
+            let err = check(&script, &c, &all, &[], "").unwrap_err();
+            assert_eq!(err.code, "refused.not_allowed", "{deny}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rollback_job_needs_digests_in_its_images() {
+        let c = config("");
+        let img = "localhost:5056/ww-test/app:latest";
+        let all = vec![ctr("ww-test-c", img, &[])];
+        let mut j = job("container", "ww-test-c", "ww-test-c", img);
+        j.kind = JobKind::Rollback;
+        j.rollback_of = Some(4);
+        assert!(check(&j, &c, &all, &[], "").is_ok());
+        for from in ["", "latest", "sha256:short", "x; rm -rf /"] {
+            j.images[0].from = from.into();
+            let err = check(&j, &c, &all, &[], "").unwrap_err().text();
+            assert!(err.contains("no valid digest to roll back from"), "{err}");
+        }
     }
 
     #[test]

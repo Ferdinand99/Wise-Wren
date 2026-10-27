@@ -90,12 +90,12 @@ pub async fn cli(socket: &str, args: &[&str], timeout: Duration) -> Result<Strin
     let host = format!("unix://{socket}");
     let mut all = vec!["-H", host.as_str()];
     all.extend_from_slice(args);
-    let child = tokio::process::Command::new("docker")
-        .args(&all)
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args(&all)
         .stdin(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .output();
-    let out = tokio::time::timeout(timeout, child)
+        .kill_on_drop(true);
+    crate::process::scrub(&mut cmd);
+    let out = tokio::time::timeout(timeout, cmd.output())
         .await
         .map_err(|_| {
             format!(

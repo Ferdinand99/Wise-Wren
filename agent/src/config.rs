@@ -139,13 +139,18 @@ pub struct UpdatePolicy {
 impl UpdatePolicy {
     /// Whether a target with this name may be updated.
     pub fn allows(&self, name: &str) -> bool {
-        if self.deny.iter().any(|g| glob(g, name)) {
+        if self.denies(name) {
             return false;
         }
         match &self.allow {
             None => true,
             Some(allow) => allow.iter().any(|g| glob(g, name)),
         }
+    }
+
+    /// Whether `deny` names this one (it wins over `allow`).
+    pub fn denies(&self, name: &str) -> bool {
+        self.deny.iter().any(|g| glob(g, name))
     }
 }
 
@@ -423,7 +428,46 @@ fn check_server(raw: &str) -> Result<String, String> {
     if url.query().is_some() || url.fragment().is_some() {
         return Err("server: leave out queries and fragments".into());
     }
+    // The address ends up in error messages and logs.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("server: leave out user:password@ (the token authenticates the agent)".into());
+    }
     Ok(url.as_str().trim_end_matches('/').to_string())
+}
+
+/// Whether the server address is plain `http://` to a host that isn't on a
+/// private network: loopback, RFC 1918, link-local or unique-local
+/// addresses, `localhost`, a single-label name or one ending in `.local`,
+/// `.lan` or `.home.arpa`. The token and every job then cross the open
+/// internet unprotected; the agent warns once at start.
+pub fn plain_http_beyond_lan(server: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(server.trim()) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // IPv6 hosts come in brackets.
+    match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local())
+        }
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            // fc00::/7 unique local, fe80::/10 link-local.
+            !(ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80)
+        }
+        Err(_) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            let local = ["localhost", "local", "lan", "home.arpa"]
+                .iter()
+                .any(|s| host == *s || host.ends_with(&format!(".{s}")));
+            !(local || !host.contains('.'))
+        }
+    }
 }
 
 impl Config {
@@ -847,6 +891,57 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
                 .any(|p| p.starts_with("token: not an agent token"))
         );
         assert!(err.0.iter().any(|p| p.starts_with("server: use an http")));
+    }
+
+    #[test]
+    fn server_address_with_credentials_is_refused() {
+        for bad in [
+            "https://user:pass@wren.example.com",
+            "https://user@wren.example.com",
+            "http://:pass@10.0.3.26:3003",
+        ] {
+            let err = check_server(bad).unwrap_err();
+            assert!(err.starts_with("server: leave out user:password@"), "{err}");
+        }
+        assert_eq!(
+            check_server("https://wren.example.com:8443/").unwrap(),
+            "https://wren.example.com:8443"
+        );
+    }
+
+    #[test]
+    fn plain_http_warning_is_for_hosts_beyond_the_lan() {
+        for beyond in [
+            "http://wren.example.com",
+            "http://wren.example.com:3003",
+            "http://8.8.8.8:3003",
+            "http://172.32.0.1",
+            "http://[2001:db8::1]:3003",
+            "http://notlocal.com",
+        ] {
+            assert!(plain_http_beyond_lan(beyond), "{beyond}");
+        }
+        for fine in [
+            "https://wren.example.com",
+            "https://8.8.8.8",
+            "http://localhost:3003",
+            "http://127.0.0.1:3003",
+            "http://10.0.3.26:3003",
+            "http://172.16.5.4",
+            "http://192.168.1.10",
+            "http://169.254.1.1",
+            "http://[::1]:3003",
+            "http://[fd00::5]:3003",
+            "http://[fe80::1]:3003",
+            "http://tower:3003",
+            "http://tower.local:3003",
+            "http://Wren.LAN",
+            "http://wren.home.arpa/",
+            "http://wren.lan.",
+        ] {
+            assert!(!plain_http_beyond_lan(fine), "{fine}");
+        }
+        assert!(!plain_http_beyond_lan("not a url"));
     }
 
     #[test]

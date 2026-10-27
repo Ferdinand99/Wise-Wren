@@ -14,8 +14,13 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
 - The agent re-checks every job against Docker: the target exists, each image is the one that container runs now,
   at the digest Wren saw, and the new one is a digest of the **same repository**. It never pulls an image a target
   doesn't already run, and it only touches folders under its `roots` (no `..`, never `/`).
-- `[updates] allow` / `deny` in `agent.toml` decides which targets may be updated at all, whatever Wren asks.
-- The agent connects out; the host opens no ports.
+- `[updates] allow` / `deny` in `agent.toml` decides which targets may be updated at all, whatever Wren asks
+  (a script stack's Compose project counts too, and a plain Compose job can't go round a script stack).
+- The agent never updates its own container, and a rollback job's digests must be digests.
+- The agent connects out; the host opens no ports. It doesn't follow redirects, reads at most 64 to 256 KiB of any
+  answer from Wren, and starts none of its child processes (scripts, Docker, `cp`) with its token or Wren's
+  address in their environment, so a vendor installer a script stack downloads can't take them. Prefer `https://`
+  for the server address; the agent warns about plain `http://` beyond the local network.
 
 ## Tokens and secrets
 
