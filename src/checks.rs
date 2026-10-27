@@ -6,16 +6,20 @@
 //! A task runs [`run_due`] every [`TICK`] and whenever an inventory arrives
 //! or someone presses "Check now" (`Wren::checks`).
 
-use std::time::Duration;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use crate::Wren;
 use crate::inventory::SCRIPT;
-use crate::registry::{Checker, ImageRef};
+use crate::registry::{Checker, ImageRef, LOOKUP_DEADLINE};
 use crate::targets::{self, Filter, UPDATE};
 use crate::versions::{self, Source};
 
 /// How often the scheduler looks for due targets.
 pub const TICK: Duration = Duration::from_secs(60);
+/// How long one run may spend on registry lookups; what is left waits for
+/// the next run. (Each lookup has [`LOOKUP_DEADLINE`].)
+pub const RUN_DEADLINE: Duration = Duration::from_secs(600);
 
 /// What one run did.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -28,8 +32,13 @@ pub struct Report {
 
 /// Checks every due target. Runs one at a time.
 pub async fn run_due(wren: &Wren) -> Report {
+    run_due_within(wren, RUN_DEADLINE).await
+}
+
+/// [`run_due`] with its own time limit for the registry lookups.
+pub async fn run_due_within(wren: &Wren, budget: Duration) -> Report {
     let _running = wren.check_lock.lock().await;
-    match run(wren).await {
+    match run(wren, budget).await {
         Ok(report) => {
             if report.targets > 0 {
                 tracing::info!(
@@ -49,7 +58,8 @@ pub async fn run_due(wren: &Wren) -> Report {
     }
 }
 
-async fn run(wren: &Wren) -> Result<Report, vole_kit::http::ApiError> {
+async fn run(wren: &Wren, budget: Duration) -> Result<Report, vole_kit::http::ApiError> {
+    let started = Instant::now();
     let core = &wren.core;
     let due = core.with_conn(|c| targets::due(c)).await?;
     if due.is_empty() {
@@ -60,11 +70,21 @@ async fn run(wren: &Wren) -> Result<Report, vole_kit::http::ApiError> {
         .with_conn(move |c| targets::image_refs(c, &ids))
         .await?;
     let creds = crate::registries::credentials(core).await;
-    let mut checker = Checker::new(core.http.clone(), creds);
+    let mut checker = Checker::new(creds, wren.fetch_allow());
+    // Images the time limit left for the next run.
+    let mut skipped: HashSet<&String> = HashSet::new();
     for image in &refs {
         let Ok(parsed) = ImageRef::parse(image) else {
             continue;
         };
+        let Some(left) = budget
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+        else {
+            skipped.insert(image);
+            continue;
+        };
+        checker.deadline = LOOKUP_DEADLINE.min(left);
         let result = checker.digest(&parsed).await;
         if let Err(err) = &result {
             tracing::debug!(image, %err, "registry check failed");
@@ -103,10 +123,23 @@ async fn run(wren: &Wren) -> Result<Report, vole_kit::http::ApiError> {
             .await?;
     }
 
+    // A target with an image that wasn't looked up stays due: the next run
+    // starts with it (the others are marked, so it can't starve behind them).
+    let skipped: Vec<String> = skipped.into_iter().cloned().collect();
     let ids = due.clone();
     core.with_conn(move |c| {
-        targets::mark_checked(c, &ids)?;
-        targets::refresh_all(c)
+        let mut done = Vec::new();
+        for id in ids {
+            let images = targets::image_refs(c, &[id])?;
+            if !images.iter().any(|i| skipped.contains(i)) {
+                done.push(id);
+            }
+        }
+        targets::mark_checked(c, &done)?;
+        targets::refresh_all(c)?;
+        // Digests of images no target runs any more.
+        targets::prune_remote(c)?;
+        Ok(())
     })
     .await?;
 

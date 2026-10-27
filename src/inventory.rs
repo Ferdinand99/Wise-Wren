@@ -143,6 +143,99 @@ pub fn clip(s: &str) -> String {
         .collect()
 }
 
+/// Hard limits of an inventory. Over any of them it is refused as a whole
+/// (not cut down): a partial inventory would delete the targets it cut.
+pub const MAX_CONTAINERS: usize = 2000;
+pub const MAX_TARGETS: usize = 2000;
+pub const MAX_IMAGES_PER_TARGET: usize = 50;
+pub const MAX_LABELS: usize = 100;
+/// Entries of the smaller lists (templates, projects, stacks, binds,
+/// repo digests per container).
+pub const MAX_LIST: usize = 2000;
+pub const MAX_REPO_DIGESTS: usize = 100;
+pub const MAX_BINDS: usize = 200;
+/// Longest single string (names, paths, label keys, states).
+pub const MAX_STRING: usize = 4096;
+/// Longest label value.
+pub const MAX_LABEL_VALUE: usize = 16 << 10;
+
+/// Why an inventory is over the limits, if it is. Image references must fit
+/// [`MAX_TEXT`] whole: a clipped one would name another image.
+pub fn check_limits(inv: &Inventory) -> Result<(), String> {
+    let list = |what: &str, n: usize, max: usize| {
+        if n > max {
+            Err(format!("too many {what} ({n}; at most {max})"))
+        } else {
+            Ok(())
+        }
+    };
+    let text = |what: &str, s: &str, max: usize| {
+        if s.len() > max {
+            Err(format!("a {what} is too long (at most {max} bytes)"))
+        } else {
+            Ok(())
+        }
+    };
+    list("containers", inv.containers.len(), MAX_CONTAINERS)?;
+    list("Unraid templates", inv.unraid_templates.len(), MAX_LIST)?;
+    list("Compose projects", inv.compose_projects.len(), MAX_LIST)?;
+    list("script stacks", inv.script_stacks.len(), MAX_TARGETS)?;
+    for t in &inv.unraid_templates {
+        text("template name", t, MAX_STRING)?;
+    }
+    for p in &inv.compose_projects {
+        text("project name", &p.name, MAX_STRING)?;
+        text("project folder", &p.working_dir, MAX_STRING)?;
+        text("project file list", &p.config_files, MAX_STRING)?;
+    }
+    for s in &inv.script_stacks {
+        text("stack name", &s.name, MAX_STRING)?;
+        text("stack folder", &s.working_dir, MAX_STRING)?;
+        text("stack project", &s.compose_project, MAX_STRING)?;
+    }
+    for c in &inv.containers {
+        text("container name", &c.name, MAX_STRING)?;
+        text("image reference", &c.image, MAX_TEXT)?;
+        text("image ID", &c.image_id, MAX_STRING)?;
+        text("container state", &c.state, MAX_STRING)?;
+        list("labels", c.labels.len(), MAX_LABELS)?;
+        list("repo digests", c.repo_digests.len(), MAX_REPO_DIGESTS)?;
+        list("bind mounts", c.binds.len(), MAX_BINDS)?;
+        for (k, v) in &c.labels {
+            text("label name", k, MAX_STRING)?;
+            text("label value", v, MAX_LABEL_VALUE)?;
+        }
+        for d in &c.repo_digests {
+            text("repo digest", d, 2 * MAX_TEXT)?;
+        }
+        for b in &c.binds {
+            text("bind mount", b, MAX_STRING)?;
+        }
+    }
+    Ok(())
+}
+
+/// Why the targets of an inventory are over the limits, if they are.
+pub fn check_targets(planned: &[Planned]) -> Result<(), String> {
+    if planned.len() > MAX_TARGETS {
+        return Err(format!(
+            "too many targets ({}; at most {MAX_TARGETS})",
+            planned.len()
+        ));
+    }
+    if let Some(p) = planned
+        .iter()
+        .find(|p| p.images.len() > MAX_IMAGES_PER_TARGET)
+    {
+        return Err(format!(
+            "{} has {} images (at most {MAX_IMAGES_PER_TARGET} per target)",
+            p.name,
+            p.images.len()
+        ));
+    }
+    Ok(())
+}
+
 /// `<name>-wren-old-<run>`: the container an update renamed for its rollback.
 pub fn is_kept_aside(name: &str) -> bool {
     name.rsplit_once("-wren-old-")
@@ -296,7 +389,17 @@ pub async fn receive(
             return ApiError::bad_request(format!("not an inventory: {err}")).into_response();
         }
     };
+    if let Err(why) = check_limits(&inv) {
+        tracing::warn!(server_id = id, %why, "inventory refused");
+        return ApiError::bad_request(format!("the inventory is over Wren's limits: {why}"))
+            .into_response();
+    }
     let planned = plan(&inv);
+    if let Err(why) = check_targets(&planned) {
+        tracing::warn!(server_id = id, %why, "inventory refused");
+        return ApiError::bad_request(format!("the inventory is over Wren's limits: {why}"))
+            .into_response();
+    }
     let error = clip(&inv.error);
     let count = planned.len();
     let (policy, folders) = policy_and_folders(&inv);
@@ -437,6 +540,67 @@ mod tests {
         assert_eq!(p[2].images.len(), 1);
         assert_eq!(p[2].installed_version, "v1.10.3");
         assert_eq!(p[3].source_url, "https://github.com/fosrl/newt");
+    }
+
+    #[test]
+    fn inventories_over_the_limits_are_refused() {
+        let ok = |inv: &Inventory| check_limits(inv).and_then(|()| check_targets(&plan(inv)));
+        let with = |containers: Vec<Container>| Inventory {
+            containers,
+            ..Inventory::default()
+        };
+        let one = container("a", "redis:7", &[]);
+        assert!(ok(&with(vec![one.clone()])).is_ok());
+
+        let many = |n: usize| -> Vec<Container> {
+            (0..n)
+                .map(|i| container(&format!("c{i}"), "redis:7", &[]))
+                .collect()
+        };
+        assert!(check_limits(&with(many(MAX_CONTAINERS))).is_ok());
+        let err = check_limits(&with(many(MAX_CONTAINERS + 1))).unwrap_err();
+        assert!(err.contains("containers"), "{err}");
+
+        // Image references are refused, not clipped.
+        let mut long = one.clone();
+        long.image = format!("registry.example/{}", "a".repeat(MAX_TEXT));
+        assert!(check_limits(&with(vec![long])).is_err());
+        let mut edge = one.clone();
+        edge.image = "a".repeat(MAX_TEXT);
+        assert!(check_limits(&with(vec![edge])).is_ok());
+
+        let mut labelled = one.clone();
+        labelled.labels = (0..=MAX_LABELS)
+            .map(|i| (format!("l{i}"), String::new()))
+            .collect();
+        let err = check_limits(&with(vec![labelled])).unwrap_err();
+        assert!(err.contains("labels"), "{err}");
+        let mut fat = one.clone();
+        fat.labels
+            .insert("k".into(), "v".repeat(MAX_LABEL_VALUE + 1));
+        assert!(check_limits(&with(vec![fat])).is_err());
+        let mut digests = one.clone();
+        digests.repo_digests = vec!["redis@sha256:1".into(); MAX_REPO_DIGESTS + 1];
+        assert!(check_limits(&with(vec![digests])).is_err());
+
+        // 51 containers in one Compose project are 51 images in one target.
+        let project = (0..=MAX_IMAGES_PER_TARGET)
+            .map(|i| container(&format!("p{i}"), "redis:7", &[(PROJECT_LABEL, "big")]))
+            .collect();
+        let err = ok(&with(project)).unwrap_err();
+        assert!(err.contains("big"), "{err}");
+
+        let stacks = (0..=MAX_TARGETS)
+            .map(|i| ScriptStack {
+                name: format!("s{i}"),
+                ..ScriptStack::default()
+            })
+            .collect();
+        let inv = Inventory {
+            script_stacks: stacks,
+            ..Inventory::default()
+        };
+        assert!(check_limits(&inv).is_err());
     }
 
     #[test]

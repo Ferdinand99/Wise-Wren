@@ -286,6 +286,30 @@ pub fn set_remote(
     Ok(())
 }
 
+/// Forgets the registry answers no target's image refers to (the table is
+/// keyed by [`ImageRef::canonical`], so strings an agent once reported must
+/// not pile up). Returns how many rows went.
+pub fn prune_remote(c: &Connection) -> rusqlite::Result<usize> {
+    let used: std::collections::HashSet<String> = c
+        .prepare("SELECT DISTINCT image FROM target_images")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .iter()
+        .filter_map(|image| ImageRef::parse(image).ok())
+        .map(|r| r.canonical())
+        .collect();
+    let stored: Vec<String> = c
+        .prepare("SELECT image FROM remote_digests")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut delete = c.prepare("DELETE FROM remote_digests WHERE image = ?1")?;
+    let mut removed = 0;
+    for image in stored.iter().filter(|i| !used.contains(*i)) {
+        removed += delete.execute([image])?;
+    }
+    Ok(removed)
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -586,6 +610,29 @@ pub fn take_new_updates(c: &mut Connection) -> rusqlite::Result<Vec<Target>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreferenced_registry_answers_are_pruned() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE target_images (image TEXT NOT NULL);
+             CREATE TABLE remote_digests (image TEXT NOT NULL PRIMARY KEY);
+             INSERT INTO target_images VALUES ('postgres:16'), ('ghcr.io/a/b:1'), ('sha256:abc');
+             INSERT INTO remote_digests VALUES ('docker.io/library/postgres:16'),
+                 ('ghcr.io/a/b:1'), ('evil.example/x:1'), ('docker.io/library/postgres:15');",
+        )
+        .unwrap();
+        assert_eq!(prune_remote(&c).unwrap(), 2);
+        let left: Vec<String> = c
+            .prepare("SELECT image FROM remote_digests ORDER BY image")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(left, ["docker.io/library/postgres:16", "ghcr.io/a/b:1"]);
+        assert_eq!(prune_remote(&c).unwrap(), 0);
+    }
 
     #[test]
     fn image_statuses() {

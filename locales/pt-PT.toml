@@ -117,7 +117,7 @@ site_name_placeholder = "Atualizações do homelab…"
 tz_after = ". É possível alterar isto nas Definições."
 
 [users]
-roles_help = "Os visualizadores podem ver, mas não alterar nada. Os editores gerem canais de notificação. Os administradores podem fazer tudo, incluindo servidores, tokens de agente e utilizadores."
+roles_help = "Os visualizadores podem ver, mas não alterar nada. Os editores aprovam e executam atualizações. Os administradores podem fazer tudo, incluindo servidores, tokens de agente e utilizadores."
 
 [tokens]
 sub = "Permita que scripts e assistentes de IA leiam os seus servidores e respetivos agentes."

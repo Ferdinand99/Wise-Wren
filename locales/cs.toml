@@ -117,7 +117,7 @@ site_name_placeholder = "Aktualizace v domácím labu…"
 tz_after = ". Změnit to lze v Nastavení."
 
 [users]
-roles_help = "Čtenáři se mohou dívat, ale nic neměnit. Editoři spravují kanály oznámení. Správci mohou všechno, včetně serverů, tokenů agentů a uživatelů."
+roles_help = "Čtenáři se mohou dívat, ale nic neměnit. Editoři schvalují a spouštějí aktualizace. Správci mohou všechno, včetně serverů, tokenů agentů a uživatelů."
 
 [tokens]
 sub = "Umožněte skriptům a AI asistentům číst vaše servery a jejich agenty."

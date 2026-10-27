@@ -238,14 +238,36 @@ async fn api_registries_and_vv_keep_secrets() {
         "POST",
         "/api/v1/vigilant-vole",
         &admin,
-        json!({"url": "http://127.0.0.1:10"}),
+        json!({"url": "http://127.0.0.1:9/"}),
     )
     .await;
     assert_eq!(
         res.json()["token_saved"],
         true,
-        "a missing token keeps the saved one"
+        "a missing token keeps the saved one for the same URL"
     );
+    // The token belongs to its URL: another URL needs it again (WS-07).
+    for body in [
+        json!({"url": "http://127.0.0.1:10"}),
+        json!({"url": "http://127.0.0.1:10", "token": ""}),
+        json!({"url": "http://127.0.0.1:10", "token": "••••••"}),
+        json!({"url": "http://evil.example"}),
+    ] {
+        let res = call(&app, "POST", "/api/v1/vigilant-vole", &admin, body).await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    }
+    let got = bearer(&app, "GET", "/api/v1/vigilant-vole", &admin).await;
+    assert_eq!(got.json()["url"], "http://127.0.0.1:9", "unchanged");
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/vigilant-vole",
+        &admin,
+        json!({"url": "http://127.0.0.1:10", "token": "vv_other"}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json()["url"], "http://127.0.0.1:10");
     let test = call(
         &app,
         "POST",
@@ -389,10 +411,63 @@ async fn api_targets_checks_intervals_links() {
     assert_eq!(res.status, StatusCode::NOT_FOUND);
 }
 
+/// Test connection shows what the status was, never what the other end
+/// wrote: pointed at a listener, an admin can't read its answers (WS-07).
+#[tokio::test]
+async fn vv_test_does_not_echo_answers() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 2048];
+                let _ = s.read(&mut buf).await;
+                let body = "internal-secret-body";
+                let _ = s
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    let app = App::new().await;
+    let admin = token(&app, "admin", "admin", TokenScope::Write).await;
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/vigilant-vole",
+        &admin,
+        json!({"url": format!("http://{addr}"), "token": "vv_topsecret"}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let test = call(
+        &app,
+        "POST",
+        "/api/v1/vigilant-vole/test",
+        &admin,
+        json!({}),
+    )
+    .await;
+    let v = test.json();
+    assert_eq!(v["ok"], false);
+    let message = v["message"].as_str().unwrap();
+    assert!(message.contains("500"), "{message}");
+    assert!(!test.body.contains("internal-secret-body"), "{}", test.body);
+}
+
 #[tokio::test]
 async fn api_notification_channels_redacted() {
     let app = App::new().await;
-    let editor = token(&app, "editor", "editor", TokenScope::Write).await;
+    let editor = token(&app, "admin", "admin", TokenScope::Write).await;
+    let weak = token(&app, "editor", "editor", TokenScope::Write).await;
     let viewer = token(&app, "viewer", "viewer", TokenScope::Read).await;
     let body = json!({"kind": "ntfy", "name": "Phone",
         "config": {"server": "https://ntfy.example.com", "topic": "wren", "access_token": "tk_secret123"}});
@@ -408,6 +483,29 @@ async fn api_notification_channels_redacted() {
         StatusCode::BAD_REQUEST,
         "unknown settings are refused"
     );
+    // Editors (even with a write token) have no access to channels: they
+    // make the server send requests to addresses of their choosing.
+    for (method, path) in [
+        ("GET", "/api/v1/notification-channels".to_string()),
+        ("GET", format!("/api/v1/notification-channels/{id}")),
+        ("GET", "/api/v1/notification-providers".to_string()),
+    ] {
+        assert_eq!(
+            bearer(&app, method, &path, &weak).await.status,
+            StatusCode::FORBIDDEN,
+            "{path}"
+        );
+    }
+    for (method, path) in [
+        ("POST", "/api/v1/notification-channels".to_string()),
+        ("POST", format!("/api/v1/notification-channels/{id}/update")),
+        ("POST", format!("/api/v1/notification-channels/{id}/active")),
+        ("POST", format!("/api/v1/notification-channels/{id}/test")),
+        ("DELETE", format!("/api/v1/notification-channels/{id}")),
+    ] {
+        let res = call(&app, method, &path, &weak, json!({"active": false})).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "{path}");
+    }
     let list = bearer(&app, "GET", "/api/v1/notification-channels", &editor).await;
     assert!(!list.body.contains("tk_secret123"), "{}", list.body);
     assert_eq!(
@@ -515,6 +613,37 @@ async fn mcp_tools_by_role() {
     );
     let a = tool_names(&app, &admin).await;
     assert!(a.contains(&"link_monitor".into()), "{a:?}");
+    // Every tool that changes something says so (clients ask before calling
+    // a destructive one); text from agents and registries is marked as data.
+    let listed = mcp(&app, &admin, "tools/list", json!({})).await;
+    for t in listed["result"]["tools"].as_array().unwrap() {
+        let name = t["name"].as_str().unwrap();
+        let write = t["annotations"]["readOnlyHint"] == false;
+        if write {
+            assert_eq!(t["annotations"]["destructiveHint"], true, "{name}");
+        }
+        if ["rollback_run", "approve_update", "set_mode", "cancel_run"].contains(&name) {
+            assert!(write, "{name}");
+        }
+        if ["get_run", "get_target", "list_targets", "list_runs"].contains(&name) {
+            assert!(
+                t["description"].as_str().unwrap().contains("untrusted"),
+                "{name}"
+            );
+        }
+    }
+    for must in ["rollback_run", "approve_update", "set_mode"] {
+        assert!(a.contains(&must.to_string()), "{must}");
+    }
+    let init = mcp(
+        &app,
+        &admin,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}),
+    )
+    .await;
+    let instructions = init["result"]["instructions"].as_str().unwrap_or_default();
+    assert!(instructions.contains("untrusted data"), "{init}");
     for secret_tool in ["add_server", "agent_token", "registries", "notification"] {
         assert!(!a.iter().any(|n| n.contains(secret_tool)), "{a:?}");
     }

@@ -117,7 +117,7 @@ site_name_placeholder = "Home lab updates…"
 tz_after = ". You can change this in Settings."
 
 [users]
-roles_help = "Viewers can look but not change anything. Editors manage notification channels. Admins can do everything, including servers, agent tokens and users."
+roles_help = "Viewers can look but not change anything. Editors approve and run updates. Admins can do everything, including servers, agent tokens and users."
 
 [tokens]
 sub = "Let scripts and AI assistants read your servers and their agents."

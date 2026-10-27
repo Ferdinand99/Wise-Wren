@@ -136,17 +136,17 @@ fn by_name<'a>(rows: &'a [Target], name: &str) -> &'a Target {
 fn lanbox(reg: &str) -> Value {
     json!({
         "containers": [
-            container("same", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111")], json!({})),
+            container("same", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111111111111111111111111111111111111111111111111111111111111111")], json!({})),
             container("old", &format!("{reg}/team/old:1"), &[&format!("{reg}/team/old@sha256:aaaa")],
                 json!({"org.opencontainers.image.source": "https://github.com/team/old"})),
             container("pinned", "redis@sha256:1009f15c", &["redis@sha256:1009f15c"], json!({})),
             container("built", "wren-local:1", &[], json!({})),
-            container("Newt", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111")], json!({})),
+            container("Newt", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111111111111111111111111111111111111111111111111111111111111111")], json!({})),
             container("pz-db", &format!("{reg}/team/old:1"), &[&format!("{reg}/team/old@sha256:aaaa")],
                 json!({"com.docker.compose.project": "postiz", "com.docker.compose.project.working_dir": "/boot/x/postiz"})),
-            container("pz-app", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111")],
+            container("pz-app", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111111111111111111111111111111111111111111111111111111111111111")],
                 json!({"com.docker.compose.project": "postiz"})),
-            container("stack-web", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111")],
+            container("stack-web", &format!("{reg}/team/same:1"), &[&format!("{reg}/team/same@sha256:1111111111111111111111111111111111111111111111111111111111111111")],
                 json!({"com.docker.compose.project": "ww-test-stack"})),
         ],
         "unraid_templates": ["Newt"],
@@ -160,8 +160,14 @@ fn lanbox(reg: &str) -> Value {
 async fn setup() -> (App, Fake, String, i64, String) {
     let app = App::new().await;
     let (fake, reg) = Fake::start().await;
-    fake.set_digest("team/same", "sha256:1111");
-    fake.set_digest("team/old", "sha256:2222");
+    fake.set_digest(
+        "team/same",
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    );
+    fake.set_digest(
+        "team/old",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    );
     fake.releases
         .lock()
         .unwrap()
@@ -282,7 +288,7 @@ async fn check_run_marks_updates() {
     assert_eq!(status("same"), "current");
     assert_eq!(status("Newt"), "current");
     assert_eq!(status("old"), "update");
-    assert_eq!(by_name(&rows, "old").available, "2222");
+    assert_eq!(by_name(&rows, "old").available, "222222222222");
     assert_eq!(status("pinned"), "unknown");
     assert_eq!(status("built"), "unknown");
     assert_eq!(status("postiz"), "update");
@@ -298,7 +304,9 @@ async fn check_run_marks_updates() {
 
     // The user updated "old": the next inventory says current at once.
     let mut updated = lanbox(&reg);
-    updated["containers"][1]["repo_digests"] = json!([format!("{reg}/team/old@sha256:2222")]);
+    updated["containers"][1]["repo_digests"] = json!([format!(
+        "{reg}/team/old@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    )]);
     inventory(&app, &token, updated).await;
     assert_eq!(by_name(&all(&app).await, "old").status, "current");
 }
@@ -421,7 +429,10 @@ async fn new_version_notifies_once() {
         .await;
     assert_eq!(checks::run_due(&app.wren).await.notifications, 0);
     // A newer version of "old": one more for each target running it.
-    fake.set_digest("team/old", "sha256:3333");
+    fake.set_digest(
+        "team/old",
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    );
     app.wren
         .core
         .with_conn(move |c| targets::request_check(c, id, None))
@@ -594,4 +605,111 @@ async fn api_and_mcp_list_targets() {
     let res = app.send(req).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert!(res.body.contains("ww-test-stack"), "{}", res.body);
+}
+
+/// A run that runs out of time leaves the rest for the next run: nothing is
+/// asked, nothing is marked checked (WS-02).
+#[tokio::test]
+async fn a_run_out_of_time_leaves_the_rest_for_the_next_run() {
+    let (app, fake, reg, _id, token) = setup().await;
+    inventory(&app, &token, lanbox(&reg)).await;
+    let report = checks::run_due_within(&app.wren, std::time::Duration::ZERO).await;
+    assert_eq!(report.registry_requests, 0);
+    assert_eq!(fake.count("HEAD"), 0);
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM targets WHERE last_checked_at IS NOT NULL")
+            .await,
+        // The targets without a registry lookup to do (pinned, local) are done.
+        2
+    );
+    let rows = all(&app).await;
+    assert_eq!(by_name(&rows, "same").status_detail, "not_checked");
+    // The next run does them.
+    let report = checks::run_due(&app.wren).await;
+    assert!(report.registry_requests > 0, "{report:?}");
+    assert_eq!(by_name(&all(&app).await, "old").status, "update");
+}
+
+/// Registry answers no target refers to any more are forgotten, and
+/// references that aren't well-formed or point into the network cause no
+/// request (WS-01, WS-02).
+#[tokio::test]
+async fn stale_answers_are_pruned_and_bad_references_cost_nothing() {
+    let (app, fake, reg, _id, token) = setup().await;
+    let mut inv = lanbox(&reg);
+    let digest = format!("sha256:{}", "a".repeat(64));
+    for (name, image) in [
+        ("traversal", "evil.example/../x:1".to_string()),
+        ("query", "evil.example/x?y=1:1".to_string()),
+        ("lan", "10.255.255.1:5000/team/x:1".to_string()),
+        ("metadata", "169.254.169.254/team/x:1".to_string()),
+    ] {
+        let repo = image.rsplit_once(':').map_or(image.as_str(), |(r, _)| r);
+        inv["containers"].as_array_mut().unwrap().push(container(
+            name,
+            &image,
+            &[&format!("{repo}@{digest}")],
+            json!({}),
+        ));
+    }
+    let res = inventory(&app, &token, inv).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    app.exec(
+        "INSERT INTO remote_digests (image, digest) VALUES ('evil.example/old:1', 'x')".into(),
+    )
+    .await;
+    checks::run_due(&app.wren).await;
+    // Only the fake registry was asked.
+    assert_eq!(fake.count("HEAD /v2/team/same"), 1);
+    assert_eq!(fake.count("HEAD /v2/team/old"), 1);
+    let rows = all(&app).await;
+    for name in ["traversal", "query"] {
+        assert_eq!(by_name(&rows, name).status, "unknown", "{name}");
+        assert_eq!(by_name(&rows, name).status_detail, "invalid", "{name}");
+    }
+    for name in ["lan", "metadata"] {
+        let t = by_name(&rows, name);
+        assert_eq!(t.status, "unknown", "{name}");
+        assert!(
+            t.status_detail.contains("private or local"),
+            "{name}: {}",
+            t.status_detail
+        );
+    }
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM remote_digests WHERE image = 'evil.example/old:1'")
+            .await,
+        0,
+        "pruned"
+    );
+    // Answers of images still in use stay.
+    assert!(
+        app.count("SELECT COUNT(*) FROM remote_digests WHERE image LIKE '%/team/same:1'")
+            .await
+            >= 1
+    );
+}
+
+/// An inventory over the limits is refused as a whole (WS-02).
+#[tokio::test]
+async fn oversized_inventories_are_refused() {
+    let (app, _fake, reg, _id, token) = setup().await;
+    assert_eq!(
+        inventory(&app, &token, lanbox(&reg)).await.status,
+        StatusCode::OK
+    );
+    let before = app.count("SELECT COUNT(*) FROM targets").await;
+    let mut inv = lanbox(&reg);
+    inv["containers"].as_array_mut().unwrap().truncate(1);
+    inv["containers"][0]["image"] = json!(format!("{reg}/{}", "a".repeat(600)));
+    let res = inventory(&app, &token, inv).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    assert!(res.body.contains("limits"), "{}", res.body);
+    let many: Vec<Value> = (0..2001)
+        .map(|i| container(&format!("c{i}"), "redis:7", &[], json!({})))
+        .collect();
+    let res = inventory(&app, &token, json!({ "containers": many })).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    // Nothing was cut down or replaced.
+    assert_eq!(app.count("SELECT COUNT(*) FROM targets").await, before);
 }

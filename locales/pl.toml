@@ -117,7 +117,7 @@ site_name_placeholder = "Aktualizacje domowego labu…"
 tz_after = ". Można to zmienić w Ustawieniach."
 
 [users]
-roles_help = "Obserwatorzy mogą oglądać, ale niczego nie zmieniają. Edytorzy zarządzają kanałami powiadomień. Adminowie mogą wszystko, także zarządzać serwerami, tokenami agentów i użytkownikami."
+roles_help = "Obserwatorzy mogą oglądać, ale niczego nie zmieniają. Edytorzy zatwierdzają i uruchamiają aktualizacje. Adminowie mogą wszystko, także zarządzać serwerami, tokenami agentów i użytkownikami."
 
 [tokens]
 sub = "Pozwól skryptom i asystentom AI odczytywać Twoje serwery i ich agenty."

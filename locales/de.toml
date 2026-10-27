@@ -117,7 +117,7 @@ site_name_placeholder = "Homelab-Updates …"
 tz_after = ". Das lässt sich in den Einstellungen ändern."
 
 [users]
-roles_help = "Betrachter können nur ansehen, aber nichts ändern. Bearbeiter verwalten Benachrichtigungskanäle. Admins können alles, auch Server, Agent-Tokens und Benutzer."
+roles_help = "Betrachter können nur ansehen, aber nichts ändern. Bearbeiter genehmigen und starten Updates. Admins können alles, auch Server, Agent-Tokens und Benutzer."
 
 [tokens]
 sub = "Lass Skripte und KI-Assistenten deine Server und ihre Agents lesen."

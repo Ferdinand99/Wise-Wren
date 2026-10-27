@@ -266,7 +266,11 @@ is (or its version source reports a newer version), else `current` when any part
   alone until its limit resets).
 - **Registries** (Settings → Registries, admins): user name and password or token per registry host (`docker.io`
   for Docker Hub). The secret is sealed with AES-256-GCM under a key derived from the instance's `session.key`,
-  never shown again, and kept when the field is left empty. Other registries stay anonymous.
+  never shown again, and kept when the field is left empty. Other registries stay anonymous. A registry on a
+  private, loopback or link-local address (a LAN registry) is only asked when it has an entry here (any login
+  will do for one that needs none); `localhost` and `127.0.0.1` need no entry. Image references are validated,
+  token services must belong to the registry, redirects are not followed, and a lookup has 20 seconds and a run
+  10 minutes (`registry.rs`, `checks.rs`; `docs/security.md`).
 - **Notifications:** one "new version available" per target and version (the version is marked as announced
   before sending, so it never repeats, also across restarts), through every active channel in its language. A
   channel with **One message per check** gets one digest per check run instead.
@@ -537,8 +541,8 @@ connection say "Vigilant Vole is too old to report results during maintenance; u
 
 REST v1 covers what the web UI does (design §9); the reference is generated from `api::DOCS` (`/api-docs`,
 `/api/v1/openapi.json`), and `tests/api.rs` fails when a served route is missing from it. Roles as on the pages:
-viewers read; editors approve, schedule, skip/snooze/resume, cancel, roll back, Check now, intervals and
-notification channels; admins add and delete servers and agent tokens, registries, the Vigilant Vole connection
+viewers read; editors approve, schedule, skip/snooze/resume, cancel, roll back, Check now and intervals;
+admins add and delete servers and agent tokens, registries, notification channels, the Vigilant Vole connection
 and monitor links, and turn automatic updates on. **Writes need an API token with write access**; a session cookie
 on an `/api/v1` write is refused (those paths skip the CSRF check). Secrets are write-only: an agent token appears
 only in the answer that made it, registry passwords, the VV token and channel secrets never come back (masked or

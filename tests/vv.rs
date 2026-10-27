@@ -363,6 +363,55 @@ async fn server_default_stays_approve_and_only_admins_turn_auto_on() {
     );
 }
 
+/// Explicit `auto` on a target is admin-only whatever the server does now,
+/// and goes when the server leaves `auto`, with a line in the log (WS-10).
+#[tokio::test]
+async fn explicit_auto_is_admin_only_and_goes_with_the_servers_auto() {
+    let (app, server, _) = setup().await;
+    let a = target(&app, "ww-test-a").await;
+    set_window(&app, server, "auto", -60, 60).await;
+    // The server is auto, so the target is too: an editor can't turn that
+    // into an explicit `auto` that would outlive the server's.
+    assert_eq!(
+        set_target_mode(&app, a.id, Some("auto"), false).await,
+        Err(runs::Refusal::AdminOnly)
+    );
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM targets WHERE mode = 'auto'")
+            .await,
+        0
+    );
+    assert_eq!(
+        set_target_mode(&app, a.id, Some("auto"), true).await,
+        Ok(())
+    );
+    // Saving the form again as an editor changes nothing about the mode.
+    assert_eq!(
+        set_target_mode(&app, a.id, Some("auto"), false).await,
+        Ok(())
+    );
+    // The server leaves auto: the explicit `auto` is cleared and logged.
+    set_window(&app, server, "approve", -60, 60).await;
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM targets WHERE mode = 'auto'")
+            .await,
+        0
+    );
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM actions WHERE action = 'auto_cleared'")
+            .await,
+        1
+    );
+    assert_eq!(target(&app, "ww-test-a").await.id, a.id);
+    let picked = app
+        .wren
+        .core
+        .with_conn(|c| schedule::pick_auto(c, Timestamp::now()))
+        .await
+        .unwrap();
+    assert!(picked.is_empty(), "{picked:?}");
+}
+
 #[tokio::test]
 async fn auto_runs_only_inside_the_window_and_skip_exclusions() {
     let (app, server, token) = setup().await;
@@ -591,6 +640,42 @@ async fn run_opens_and_closes_a_window() {
     // Nothing more to do.
     vv::sync(&app.wren).await;
     assert_eq!(writes(&fake).len(), 2);
+}
+
+/// An agent that reports "preflight ok" again (or several times at once)
+/// doesn't open more windows: they would stay open, as only the run's
+/// latest one is closed (WS-06).
+#[tokio::test]
+async fn a_repeated_preflight_opens_one_window() {
+    let (url, fake) = fake_vv(true).await;
+    let (app, _, token) = setup().await;
+    connect(&app, &url).await;
+    let a = target(&app, "ww-test-a").await;
+    link(&app, a.id, "tag", "ww-test").await;
+    let id = approve(&app, a.id, None).await.unwrap();
+    assert_eq!(poll_run(&app, &token).await, Some(id));
+    step(&app, &token, id, "preflight", "ok").await;
+    assert_eq!(writes(&fake).len(), 1);
+    for _ in 0..3 {
+        let ans = step(&app, &token, id, "preflight", "ok").await;
+        assert_eq!(ans["cancel"], false);
+    }
+    let (x, y, z) = tokio::join!(
+        step(&app, &token, id, "preflight", "ok"),
+        step(&app, &token, id, "preflight", "ok"),
+        step(&app, &token, id, "preflight", "ok"),
+    );
+    assert_eq!(
+        (
+            x["cancel"].clone(),
+            y["cancel"].clone(),
+            z["cancel"].clone()
+        ),
+        (json!(false), json!(false), json!(false))
+    );
+    let w = writes(&fake);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(run(&app, id).await.vv_window_id, Some(31));
 }
 
 #[tokio::test]

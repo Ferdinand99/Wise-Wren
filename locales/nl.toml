@@ -117,7 +117,7 @@ site_name_placeholder = "Updates van het homelab…"
 tz_after = ". Dit is aan te passen in Instellingen."
 
 [users]
-roles_help = "Kijkers kunnen alles zien maar niets wijzigen. Bewerkers beheren meldingskanalen. Beheerders kunnen alles, inclusief servers, agenttokens en gebruikers."
+roles_help = "Kijkers kunnen alles zien maar niets wijzigen. Bewerkers keuren updates goed en voeren ze uit. Beheerders kunnen alles, inclusief servers, agenttokens en gebruikers."
 
 [tokens]
 sub = "Laat scripts en AI-assistenten je servers en hun agents lezen."

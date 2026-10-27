@@ -436,7 +436,7 @@ async fn live_view_pushes_on_heartbeat() {
 #[tokio::test]
 async fn channel_add_edit_delete() {
     let app = App::new().await;
-    let mut web = Web::new(&app, "eddie", "editor").await;
+    let mut web = Web::new(&app, "ada", "admin").await;
     let form = web.get("/settings/notifications/form?kind=webhook").await;
     assert_eq!(form.status, StatusCode::OK);
     let res = web
@@ -511,7 +511,7 @@ async fn hook() -> (String, Arc<AtomicUsize>) {
 async fn channel_secrets_are_sealed_at_rest() {
     let app = App::new().await;
     let (url, got) = hook().await;
-    let mut web = Web::new(&app, "eddie", "editor").await;
+    let mut web = Web::new(&app, "ada", "admin").await;
     let fields = [
         ("kind", "webhook"),
         ("name", "Ops hook"),
@@ -586,6 +586,61 @@ async fn viewers_cannot_open_channels() {
     assert_eq!(
         web.get("/settings/notifications").await.status,
         StatusCode::FORBIDDEN
+    );
+}
+
+/// A channel makes the server send requests to an address of its own
+/// choosing, so only admins manage them: editors get nothing, not the list,
+/// the form, a test or a delete (WS-03).
+#[tokio::test]
+async fn editors_cannot_manage_channels() {
+    let app = App::new().await;
+    let mut admin = Web::new(&app, "ada", "admin").await;
+    let res = admin
+        .post_with(
+            "/settings/notifications",
+            &[
+                ("kind", "webhook"),
+                ("name", "Ops hook"),
+                ("c_url", "http://127.0.0.1:9/hook"),
+                ("c_method", "POST"),
+            ],
+            true,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let id = app.count("SELECT id FROM notification_channels").await;
+    let mut web = Web::new(&app, "eddie", "editor").await;
+    for path in [
+        "/settings/notifications".to_string(),
+        "/settings/notifications/form?kind=webhook".to_string(),
+        format!("/settings/notifications/{id}/edit"),
+    ] {
+        assert_eq!(web.get(&path).await.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    let res = web
+        .post_with(
+            "/settings/notifications",
+            &[
+                ("kind", "webhook"),
+                ("name", "Mine"),
+                ("c_url", "http://127.0.0.1:9/x"),
+                ("c_method", "POST"),
+            ],
+            true,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    let res = web
+        .post_with(&format!("/settings/notifications/{id}/test"), &[], true)
+        .await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    let res = web.delete(&format!("/settings/notifications/{id}")).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM notification_channels")
+            .await,
+        1
     );
 }
 

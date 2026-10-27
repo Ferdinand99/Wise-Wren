@@ -117,7 +117,7 @@ site_name_placeholder = "Oppdateringer i hjemmelabben…"
 tz_after = ". Dette kan endres i Innstillinger."
 
 [users]
-roles_help = "Lesere kan se, men ikke endre noe. Redaktører administrerer varslingskanaler. Administratorer kan gjøre alt, også servere, agenttokener og brukere."
+roles_help = "Lesere kan se, men ikke endre noe. Redaktører godkjenner og kjører oppdateringer. Administratorer kan gjøre alt, også servere, agenttokener og brukere."
 
 [tokens]
 sub = "La skript og KI-assistenter lese serverne dine og agentene deres."

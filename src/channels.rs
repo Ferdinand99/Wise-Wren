@@ -1,7 +1,9 @@
 //! `/settings/notifications`: the instance's notification channels (where
 //! Wren's notifications will go), with vole-kit's providers: the list, the add sheet (provider
 //! picker, then the provider's form, rendered from its schema), the edit
-//! page, test messages, pause and resume, delete. Editors and admins only.
+//! page, test messages, pause and resume, delete. Admins only: a channel makes
+//! the server send requests to an address of the admin's choosing, which is
+//! more than editors may do.
 //!
 //! Secrets never leave the server: saved secrets render as empty inputs
 //! with a "••••••" placeholder, an empty secret on save keeps the stored
@@ -45,7 +47,7 @@ pub const TAB: SettingsTab = SettingsTab {
     href: "/settings/notifications",
     label: "nav.notifications",
     icon: "bell",
-    access: TabAccess::Editors,
+    access: TabAccess::Admins,
 };
 
 pub fn router() -> Router<Core> {
@@ -293,7 +295,7 @@ async fn list_page(
     user: CurrentUser,
     jar: SignedCookieJar,
 ) -> ApiResult<impl IntoResponse> {
-    user.require_editor()?;
+    user.require_admin()?;
     let rows = list_rows(&core).await?;
     let (ctx, jar) = PageCtx::build(
         &core,
@@ -324,7 +326,7 @@ struct ProvidersQuery {
 }
 
 async fn providers(user: CurrentUser, Query(q): Query<ProvidersQuery>) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let groups = provider_groups(&q.q);
     Ok(if q.grid {
         HtmlTemplate(GridPartial { query: q.q, groups }).into_response()
@@ -340,7 +342,7 @@ struct KindQuery {
 }
 
 async fn new_form(user: CurrentUser, Query(q): Query<KindQuery>) -> ApiResult<impl IntoResponse> {
-    user.require_editor()?;
+    user.require_admin()?;
     let schema = schema_for(&q.kind)?;
     Ok(HtmlTemplate(FormPartial {
         form: blank_form(schema, &user_language()),
@@ -354,7 +356,7 @@ async fn create(
     jar: SignedCookieJar,
     body: Bytes,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let pairs = parse_pairs(&body);
     let schema = schema_for(pair(&pairs, "kind").unwrap_or_default())?;
     let name = pair(&pairs, "name").unwrap_or_default().trim().to_string();
@@ -416,7 +418,7 @@ async fn create(
 }
 
 async fn show(user: CurrentUser, Path(id): Path<i64>) -> ApiResult<Redirect> {
-    user.require_editor()?;
+    user.require_admin()?;
     Ok(Redirect::to(&format!("/settings/notifications/{id}/edit")))
 }
 
@@ -493,7 +495,7 @@ async fn edit_page(
     jar: SignedCookieJar,
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let channel = load_channel(&core, id).await?;
     let Some(schema) = vole_kit::notify::provider(&channel.kind) else {
         let jar = flash(
@@ -544,7 +546,7 @@ async fn update(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let channel = load_channel(&core, id).await?;
     let schema = schema_for(&channel.kind)?;
     let pairs = parse_pairs(&body);
@@ -593,7 +595,7 @@ async fn remove(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let channel = load_channel(&core, id).await?;
     core.with_conn(move |c| db::delete_channel(c, id)).await?;
     tracing::info!(user = %user.username, channel_id = id, "notification channel deleted");
@@ -620,7 +622,7 @@ async fn toggle_active(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let active = pair_flag(&parse_pairs(&body), "active");
     let channel = load_channel(&core, id).await?;
     core.with_conn(move |c| db::set_channel_active(c, id, active))
@@ -672,7 +674,7 @@ async fn test_unsaved(
     user: CurrentUser,
     body: Bytes,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let pairs = parse_pairs(&body);
     let schema = schema_for(pair(&pairs, "kind").unwrap_or_default())?;
     let parsed = schema::parse_form(schema, &pairs);
@@ -699,7 +701,7 @@ async fn test_saved(
     Path(id): Path<i64>,
     body: Bytes,
 ) -> ApiResult<Response> {
-    user.require_editor()?;
+    user.require_admin()?;
     let channel = load_channel(&core, id).await?;
     let label = format!("“{}”", channel.name);
     let pairs = parse_pairs(&body);

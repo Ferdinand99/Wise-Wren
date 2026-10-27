@@ -108,12 +108,28 @@ async fn resolve(url: &Url, allow: Allow) -> Result<SocketAddr, String> {
     };
     let first = *addrs.first().ok_or("the URL's host has no address")?;
     if addrs.iter().any(|a| !allow(a.ip())) {
-        return Err(
-            "the URL points to a private or local address; Wren only fetches public addresses"
-                .into(),
-        );
+        return Err(PRIVATE.into());
     }
     Ok(first)
+}
+
+/// Why a host was refused for its addresses.
+pub const PRIVATE: &str =
+    "the URL points to a private or local address; Wren only fetches public addresses";
+
+/// A client that connects only to the checked address of `url`'s host: no
+/// redirects, no proxy, DNS pinned (see the module header). For callers that
+/// send their own requests under these rules (registry checks).
+pub async fn pinned_client(url: &Url, allow: Allow) -> Result<reqwest::Client, String> {
+    let addr = resolve(url, allow).await?;
+    let mut builder = reqwest::Client::builder()
+        .user_agent(crate::product::USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy();
+    if let Some(url::Host::Domain(d)) = url.host() {
+        builder = builder.resolve(d, addr);
+    }
+    builder.build().map_err(|_| "no HTTP client".to_string())
 }
 
 /// `GET url` under the rules above: the first `max_body` bytes of a `2xx`
@@ -138,15 +154,7 @@ async fn get(raw: &str, allow: Allow, max_body: usize) -> Result<Vec<u8>, String
         if !url.username().is_empty() || url.password().is_some() {
             return Err("the URL must not carry a user name or password".into());
         }
-        let addr = resolve(&url, allow).await?;
-        let mut builder = reqwest::Client::builder()
-            .user_agent(crate::product::USER_AGENT)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy();
-        if let Some(url::Host::Domain(d)) = url.host() {
-            builder = builder.resolve(d, addr);
-        }
-        let client = builder.build().map_err(|_| "no HTTP client".to_string())?;
+        let client = pinned_client(&url, allow).await?;
         let mut res = client
             .get(url.clone())
             .send()
