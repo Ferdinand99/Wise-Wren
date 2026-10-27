@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.7.0...v0.7.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **deps:** ship vole-kit 0.6.0 security fixes ([#40](https://github.com/Ferdinand99/Wise-Wren/issues/40)) ([ecedf4e](https://github.com/Ferdinand99/Wise-Wren/commit/ecedf4e1496378699a33ae1360caa92c893ccf99))
+
 ## [0.7.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.6.0...v0.7.0) (2026-10-27)
 
 
