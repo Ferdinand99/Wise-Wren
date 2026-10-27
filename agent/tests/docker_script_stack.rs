@@ -95,7 +95,8 @@ async fn update(dir: &Path, check: &str, update: &str, rollback: &str) -> (Strin
          env = {{ COMPOSE_PROJECT_NAME = {PROJECT:?} }}\ntimeout = \"2m\"\n\n\
          [script_stack.check]\ncommand = {check:?}\n\n\
          [script_stack.update]\ncommand = {update:?}\n\n\
-         [script_stack.rollback]\ncommand = {rollback:?}\n",
+         [script_stack.rollback]\ncommand = {rollback:?}\n\n\
+         [updates]\nallow = [\"*\"]\nmin_health_seconds = 0\n",
         t = "a".repeat(43),
         root = std::env::temp_dir().display().to_string(),
         dir = dir.display().to_string(),

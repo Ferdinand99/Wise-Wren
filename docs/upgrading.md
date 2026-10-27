@@ -29,9 +29,36 @@ Notification channel secrets are sealed with the instance key (`session.key` in 
 start; the copy in `backups/wren-before-…` keeps them in plaintext for going back. A database copied without
 `session.key` loses the channel secrets: enter them again on each channel's edit page.
 
+### To 0.7
+
+Server and agent change together; recreate both. **Before you upgrade an agent**, add this to its `agent.toml`
+(`/mnt/user/appdata/wren-agent/agent.toml` on Unraid; create the file if you only used `WW_SERVER_URL` and
+`WW_AGENT_TOKEN`), or the upgraded agent refuses every update and rollback:
+
+```toml
+[updates]
+allow = ["*"]        # or a list of the names you want updated
+```
+
+Also check these, or the agent won't start or will refuse runs:
+
+- `server` must be `https://`, unless the host is on your own network (private or loopback address, a single-label
+  name like `tower`, a name ending in `.local`, `.lan`, `.home.arpa`, `.internal` or `.ts.net`, or a Tailscale address). `wren-agent --check` says
+  which.
+- The agent needs `/config` writable: it keeps `runs.json` there (its record of what it ran). Updates made before
+  the upgrade have no record, so Wren can't roll them back.
+- New optional `[updates] require_snapshot = true` makes every update need a snapshot (default `false`, as before).
+- A health period shorter than 30 s is raised to 30 s (`min_health_seconds`), and a script stack's update runs at
+  most once an hour (`min_interval` on the `[[script_stack]]`).
+
+An older agent works with the new server, and a new agent with an older server; the new refusals just show in
+English there. On a server in `auto` mode, targets Wren has never seen start on `approve` until an admin allows
+automatic updates for them (Targets card → **Allow automatic updates**).
+
 ## Agents
 
-Recreate each agent with the new image (Unraid: "Check for updates" on the agent's container). The agent reports
+Recreate each agent
+ with the new image (Unraid: "Check for updates" on the agent's container). The agent reports
 its version with every heartbeat; the server's page shows it. Keep the agents on the same version as the server.
 
 ## Pinning

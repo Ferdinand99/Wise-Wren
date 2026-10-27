@@ -23,8 +23,19 @@ pub const NOT_CHECKED: &str = "not_checked";
 /// The registry failed (the error follows after ": ").
 pub const REGISTRY: &str = "registry";
 
+/// How long the settings of a target that left an inventory are kept for its
+/// return (`target_memory`).
+pub const MEMORY_DAYS: i64 = 30;
+
 /// Replaces a server's targets with an inventory's, keeping what Wren
 /// learned about the ones that stay, and refreshes their status.
+///
+/// A target that is missing isn't forgotten at once: its settings (mode,
+/// health period, the requirements, skip and snooze, the monitor links) go
+/// to `target_memory` for [`MEMORY_DAYS`] days and come back with it if the
+/// same (server, kind, name) returns. A target never seen before on a server
+/// in `auto` mode starts as `approve` with `auto_pending` until an admin
+/// allows automatic updates for it ([`crate::runs::allow_auto`]).
 pub fn apply(
     c: &mut Connection,
     server_id: i64,
@@ -42,8 +53,23 @@ pub fn apply(
     if !error.is_empty() {
         return tx.commit();
     }
+    tx.execute(
+        "DELETE FROM target_memory WHERE gone_at < datetime('now', ?1)",
+        [format!("-{MEMORY_DAYS} days")],
+    )?;
+    let server_mode: String = tx
+        .query_row("SELECT mode FROM servers WHERE id = ?1", [server_id], |r| {
+            r.get(0)
+        })
+        .optional()?
+        .unwrap_or_default();
     let mut keep = Vec::new();
     for p in planned {
+        let known: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM targets WHERE server_id = ?1 AND kind = ?2 AND name = ?3)",
+            params![server_id, p.kind, p.name],
+            |r| r.get(0),
+        )?;
         tx.execute(
             "INSERT INTO targets (server_id, kind, name, working_dir, files_reachable, source_url,
                  version_source, installed_version, version_error)
@@ -70,6 +96,9 @@ pub fn apply(
             params![server_id, p.kind, p.name],
             |r| r.get(0),
         )?;
+        if !known {
+            settle_new(&tx, id, &server_mode)?;
+        }
         // The agent's latest_command result; GitHub and URL sources are
         // looked up by the checks.
         if !p.reported_latest.is_empty() {
@@ -110,15 +139,108 @@ pub fn apply(
         .join(",");
     // A target being updated stays, even when an inventory taken mid-run
     // missed it (its container is being recreated).
+    let vanished = format!(
+        "FROM targets WHERE server_id = ?1 AND id NOT IN ({keep})
+           AND id NOT IN (SELECT target_id FROM runs
+                          WHERE status IN ('queued', 'running') AND target_id IS NOT NULL)"
+    );
+    // The settings wait for the target's return.
     tx.execute(
         &format!(
-            "DELETE FROM targets WHERE server_id = ?1 AND id NOT IN ({keep})
-               AND id NOT IN (SELECT target_id FROM runs
-                              WHERE status IN ('queued', 'running') AND target_id IS NOT NULL)"
+            "INSERT OR REPLACE INTO target_memory (server_id, kind, name, mode, health_seconds,
+                 require_vv, require_snapshot, check_interval_hours, skipped_key, snoozed_until,
+                 auto_pending, monitors)
+             SELECT server_id, kind, name, mode, health_seconds, require_vv, require_snapshot,
+                 check_interval_hours, skipped_key, snoozed_until, auto_pending,
+                 (SELECT json_group_array(json_object('kind', m.kind, 'ref', m.ref, 'label', m.label))
+                  FROM target_monitors m WHERE m.target_id = targets.id)
+             {vanished}"
         ),
         [server_id],
     )?;
+    tx.execute(&format!("DELETE {vanished}"), [server_id])?;
     tx.commit()
+}
+
+/// The settings a target had when it left an inventory.
+type Memory = (
+    Option<String>,
+    Option<i64>,
+    bool,
+    bool,
+    Option<i64>,
+    String,
+    Option<String>,
+    bool,
+    String,
+);
+
+/// A target this inventory created: its remembered settings come back (same
+/// server, kind and name, gone for less than [`MEMORY_DAYS`] days), else on
+/// an `auto` server it waits for an admin's say-so before it updates
+/// automatically.
+fn settle_new(tx: &Connection, id: i64, server_mode: &str) -> rusqlite::Result<()> {
+    let remembered: Option<(i64, Memory)> = tx
+        .query_row(
+            "SELECT m.rowid, m.mode, m.health_seconds, m.require_vv, m.require_snapshot,
+                    m.check_interval_hours, m.skipped_key, m.snoozed_until, m.auto_pending, m.monitors
+             FROM target_memory m JOIN targets t
+               ON t.server_id = m.server_id AND t.kind = m.kind AND t.name = m.name
+             WHERE t.id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    (
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                    ),
+                ))
+            },
+        )
+        .optional()?;
+    let Some((rowid, (mode, health, vv, snapshot, interval, skipped, snoozed, pending, monitors))) =
+        remembered
+    else {
+        if server_mode == crate::runs::AUTO {
+            tx.execute(
+                "UPDATE targets SET mode = ?2, auto_pending = 1 WHERE id = ?1",
+                params![id, crate::runs::APPROVE],
+            )?;
+        }
+        return Ok(());
+    };
+    tx.execute(
+        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4, require_snapshot = ?5,
+             check_interval_hours = ?6, skipped_key = ?7, snoozed_until = ?8, auto_pending = ?9
+         WHERE id = ?1",
+        params![
+            id, mode, health, vv, snapshot, interval, skipped, snoozed, pending
+        ],
+    )?;
+    let links: Vec<serde_json::Value> = serde_json::from_str(&monitors).unwrap_or_default();
+    for l in links {
+        let field = |k: &str| {
+            l.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO target_monitors (target_id, kind, ref, label)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, field("kind"), field("ref"), field("label")],
+        )?;
+    }
+    tx.execute("DELETE FROM target_memory WHERE rowid = ?1", [rowid])?;
+    Ok(())
 }
 
 /// One image's status: `(status, detail, remote digest)`.
@@ -346,6 +468,9 @@ pub struct Target {
     pub image_count: i64,
     /// Why the server's agent would refuse to update it ([`crate::policy`]).
     pub blocked: Option<crate::policy::Blocked>,
+    /// New on an `auto` server: `approve` until an admin allows automatic
+    /// updates for it.
+    pub auto_pending: bool,
 }
 
 const COLUMNS: &str = "t.id, t.server_id, s.name, t.kind, t.name, t.working_dir, t.files_reachable,
@@ -354,7 +479,7 @@ const COLUMNS: &str = "t.id, t.server_id, s.name, t.kind, t.name, t.working_dir,
     s.check_interval_hours, t.check_requested, t.last_checked_at, t.notes_url, t.notes_title,
     t.notified_key,
     COALESCE((SELECT image FROM target_images i WHERE i.target_id = t.id ORDER BY container LIMIT 1), ''),
-    (SELECT COUNT(*) FROM target_images i WHERE i.target_id = t.id), s.policy";
+    (SELECT COUNT(*) FROM target_images i WHERE i.target_id = t.id), s.policy, t.auto_pending";
 
 fn row(r: &Row<'_>) -> rusqlite::Result<Target> {
     let policy = crate::policy::AgentPolicy::parse(r.get::<_, Option<String>>(26)?.as_deref());
@@ -394,6 +519,7 @@ fn row(r: &Row<'_>) -> rusqlite::Result<Target> {
         notified_key: r.get(23)?,
         image: r.get(24)?,
         image_count: r.get(25)?,
+        auto_pending: r.get(27)?,
     })
 }
 

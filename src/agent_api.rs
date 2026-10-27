@@ -242,7 +242,10 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
         ""
     };
     format!(
-        "# Without [updates] in agent.toml, every target may be updated once approved in Wren.\n{roots}{}",
+        "# agent.toml needs an [updates] allow list: without one the agent refuses every update and\n\
+         # rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):\n\
+         #   [updates]\n\
+         #   allow = [\"*\"]\n{roots}{}",
         lines.join(" \\\n  ")
     )
 }
@@ -276,6 +279,8 @@ mod tests {
             assert!(run.contains(part), "{part} missing in\n{run}");
         }
         assert!(run.contains("/boot/config/plugins/compose.manager/projects"));
+        // The agent refuses everything without an [updates] allow list.
+        assert!(run.contains("#   [updates]\n#   allow = [\"*\"]"), "{run}");
         for never in ["--privileged", "--cap-add", "--pid"] {
             assert!(!run.contains(never));
         }

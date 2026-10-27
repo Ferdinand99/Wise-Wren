@@ -22,6 +22,14 @@
   {%- else if !target.blocked.is_empty() %}
   {{ m::callout("warning", tr1("blocked.help", "why", target.blocked), tr("blocked.badge")) }}
   {%- endif %}
+  {%- if target.awaiting_auto %}
+  {{ m::callout("info", tr("targets.awaiting_help"), tr("targets.awaiting_badge")) }}
+  {%- if is_admin %}
+  <form method="post" action="/targets/{{ target.id }}/allow-auto">
+    <button type="submit" class="btn btn-secondary btn-sm">{{ tr("targets.allow_auto") }}</button>
+  </form>
+  {%- endif %}
+  {%- endif %}
   {%- if row.own %}
   {{ m::callout("info", tr("runs.own_help"), tr("runs.own")) }}
   {%- else if row.auto %}

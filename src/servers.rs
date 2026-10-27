@@ -208,6 +208,13 @@ struct DetailPage {
     tz: String,
 }
 
+impl DetailPage {
+    /// New targets waiting for an admin to allow automatic updates.
+    pub fn awaiting_auto(&self) -> usize {
+        self.targets.iter().filter(|t| t.awaiting_auto).count()
+    }
+}
+
 #[derive(Template)]
 #[template(path = "partials/agent_card.html")]
 struct AgentPartial {

@@ -13,6 +13,7 @@ pub mod discover;
 pub mod docker;
 pub mod heartbeat;
 pub mod jobs;
+pub mod ledger;
 pub mod process;
 pub mod run;
 pub mod snapshot;
@@ -91,10 +92,14 @@ pub async fn run(
         boot = %boot.id,
         "wren-agent started"
     );
-    if config::plain_http_beyond_lan(&config.server) {
+    // Said at start, so a missing or damaged ledger isn't a surprise when a
+    // rollback is refused later.
+    if let (_, Some(warning)) = ledger::Ledger::load(&config.ledger) {
+        tracing::warn!("{warning}");
+    }
+    if !config.updates.configured() {
         tracing::warn!(
-            server = %config.server,
-            "the server address is plain http:// to a host outside the local network: the token and every job travel unencrypted; use https://"
+            "agent.toml has no [updates] allow list: every update and rollback is refused; add [updates] allow = [\"*\"] (or a list of target names)"
         );
     }
     tokio::pin!(stop);
