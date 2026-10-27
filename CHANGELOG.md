@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.7.1...v0.8.0) (2026-10-27)
+
+
+### Features
+
+* manage agent settings from Wren ([#43](https://github.com/Ferdinand99/Wise-Wren/issues/43)) ([b37921b](https://github.com/Ferdinand99/Wise-Wren/commit/b37921bd7bccaab09c545d1ad49ec5c74ac576b9))
+
 ## [0.7.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.7.0...v0.7.1) (2026-10-27)
 
 
