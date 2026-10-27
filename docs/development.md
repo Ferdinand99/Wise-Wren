@@ -139,7 +139,10 @@ Authorization: Bearer wwa_…
 The `docker run` line on the server's page, for Unraid:
 
 ```bash
-# Without [updates] in agent.toml, every target may be updated once approved in Wren.
+# agent.toml needs an [updates] allow list: without one the agent refuses every update and
+# rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):
+#   [updates]
+#   allow = ["*"]
 docker run -d --name wren-agent --restart unless-stopped \
   -e WW_SERVER_URL=http://10.0.3.26:3003 \
   -e WW_AGENT_TOKEN=wwa_… \
@@ -160,11 +163,14 @@ host.** Every folder Wren may touch is mounted at the **same path** inside the a
 on the host); an Unraid share is also mounted at its pool path (`/mnt/cache/appdata`) so snapshots can be reflink
 copies on the real filesystem. The Unraid mounts let the agent run Unraid's own `update_container` for template
 containers. On other Linux hosts the page's second line drops them. The line starts with a reminder: **without
-`[updates]` in `agent.toml`, every target may be updated once someone approves it in Wren.**
+an `[updates]` allow list in `agent.toml` (`allow = ["*"]` to start), the agent refuses every update and rollback.**
+
 
 ### agent.toml
 
-Optional while `WW_SERVER_URL` and `WW_AGENT_TOKEN` are set (they override the file). Its place:
+`WW_SERVER_URL` and `WW_AGENT_TOKEN` override the file's `server` and `token`, but `[updates]` is required (the agent
+refuses every update without an allow list). Its place:
+
 `--config PATH`, else `WW_AGENT_CONFIG`, else `/config/agent.toml`. `wren-agent --check` checks it and exits.
 
 ```toml
@@ -195,22 +201,43 @@ curl -fsSLO https://fluxer.dev/install.sh && curl -fsSLO https://fluxer.dev/inst
 command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\""
 ```
 
-The agent refuses to start (exit code 2) and names the field for: a missing or malformed server or token,
+The agent refuses to start (exit code 2) and names the field for: a missing or malformed server or token (plain `http://` is accepted only for loopback, private, link-local
+and `.local`/`.lan`/`.home.arpa`/`.internal` hosts or single-label names),
 relative paths or `..` in roots and `working_dir`, `/` as a root, a `working_dir` outside the roots, a script
 stack without a name (or a name used twice), without `update.command` or without a valid `timeout`, an
-environment name that isn't a variable name, a bad `[updates]` glob, and any unknown key.
+environment name that isn't a variable name, a bad `[updates]` glob or `min_health_seconds`, a bad `min_interval`, and any
+unknown key. A missing `[updates]` allow list is not a start error: the agent runs, reports and refuses every job.
 
 ```toml
-# Optional: which targets Wren may update, as globs on the target's name (* and ?).
-# Without this section every target may be updated once someone approves it in Wren.
+# Required: which targets Wren may update, as globs on the target's name (* and ?).
+# Without an allow list the agent refuses every update and rollback.
 [updates]
 allow = ["ww-test-*", "nextcloud"]
 deny = ["ww-test-keep*"]          # wins over allow
+min_health_seconds = 30           # optional: a job never gets a shorter health period
+require_snapshot = true           # optional: default true when roots are set
 ```
 
 A job for a target outside `allow` (or inside `deny`) is refused with "refused by agent config" before the agent
-even reads Docker; `wren-agent --check` prints what the section allows, and hints when
+even reads Docker, and every job is refused (`refused.updates_required`) when there is no allow list;
+`wren-agent --check` prints what the section allows, the minimums and the run ledger's state, and hints when
 `/boot/config/plugins/compose.manager/projects` exists outside `roots`.
+
+**The run ledger** (`agent/src/ledger.rs`, `runs.json` beside `agent.toml`, mode 0600, written to a temp file and
+renamed) records per target the last 20 runs this agent started (`run_id`, kind, outcome, start time, whether the
+update's rollback was used). After the allow-list and `jobs::check` and before `execute`, `run::admit` asks it:
+a run id must exceed every recorded one (`refused.run_old`), a rollback must name the newest succeeded update and
+only once (`refused.rollback_unknown`, `refused.rollback_used`), a script stack waits `min_interval`
+(`refused.too_soon`), and a ledger that can't be written refuses the job (`refused.ledger_write`). The effective
+health period and snapshot requirement (`[updates] min_health_seconds`, `require_snapshot`) are applied in
+`jobs::check` and listed at the top of the preflight step's log. A restore keeps the replaced data as
+`<name>.wren-aside-<run>` until the target's next preflight (`snapshot::clear_asides`).
+
+**Target lifecycle on the server** (`targets::apply`, migration 0008): a target missing from an inventory is
+copied to `target_memory` (settings and monitor links as JSON) for 30 days and restored by `settle_new` when
+the same server, kind and name returns; a target never seen on an `auto` server gets `mode = 'approve'` and
+`auto_pending = 1` until `runs::allow_auto` (admin; per target or `allow_auto_new` for the server) or a saved
+policy clears it.
 
 ```toml
 # Optional: rollback points kept per target.

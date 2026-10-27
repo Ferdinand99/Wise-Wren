@@ -15,12 +15,23 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   at the digest Wren saw, and the new one is a digest of the **same repository**. It never pulls an image a target
   doesn't already run, and it only touches folders under its `roots` (no `..`, never `/`).
 - `[updates] allow` / `deny` in `agent.toml` decides which targets may be updated at all, whatever Wren asks
-  (a script stack's Compose project counts too, and a plain Compose job can't go round a script stack).
+  (a script stack's Compose project counts too, and a plain Compose job can't go round a script stack). The list
+  is **required**: an agent without an `allow` list refuses every update and rollback.
+- The agent keeps its own record of what it ran (the run ledger, `runs.json` beside `agent.toml`). A run id must
+  be newer than any it already ran for the target, a rollback is accepted only once and only for the newest
+  successful update **this agent** ran, and a script stack's update runs at most once per `min_interval`
+  (default an hour). A compromised Wren can't replay old runs, roll back an update that never happened or start
+  a vendor installer in a loop.
+- Wren can ask for more safety, never less: the agent raises a job's health period to `min_health_seconds`
+  (default 30 s) and requires a snapshot whenever `require_snapshot` is on (the default once `roots` are set).
+- After a restore, the data it replaced is kept next to it (`<folder>.wren-aside-<run>`) until the target's next
+  run, so a wrong rollback can be undone.
 - The agent never updates its own container, and a rollback job's digests must be digests.
 - The agent connects out; the host opens no ports. It doesn't follow redirects, reads at most 64 to 256 KiB of any
   answer from Wren, and starts none of its child processes (scripts, Docker, `cp`) with its token or Wren's
-  address in their environment, so a vendor installer a script stack downloads can't take them. Prefer `https://`
-  for the server address; the agent warns about plain `http://` beyond the local network.
+  address in their environment, so a vendor installer a script stack downloads can't take them. The server
+  address must be `https://` unless the host is on your own network (loopback, private or link-local address,
+  a single-label name, or `.local`, `.lan`, `.home.arpa`, `.internal`): the agent refuses to start otherwise.
 
 ## Tokens and secrets
 
@@ -71,7 +82,14 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   as a whole (HTTP 400), not cut down. A registry lookup has 20 seconds; a check run spends at most 10 minutes
   on lookups and leaves the rest for the next run (a host that timed out is skipped for the rest of the run).
   Registry answers no target refers to are forgotten after each run.
-- Agents are limited to 20 heartbeats, 6 inventories and 120 job requests a minute per server.
+- **A target's settings outlive an inventory that misses it.** A target that drops out of an inventory (a
+  container re-created, a wrong scan, a compromised agent leaving one out and adding it back) keeps its mode,
+  health period, requirements, skip and snooze and Vigilant Vole links for 30 days; they return with it. A target
+  **never seen before** on a server in `auto` mode starts on `approve` and shows a "New: approve first" badge until
+  an admin chooses **Allow automatic updates** for it (or for all new targets of the server), so a new container
+  doesn't update itself unreviewed.
+- Agents are limited to 20 heartbeats
+, 6 inventories and 120 job requests a minute per server.
 - Keep Wren off the open internet when you can. When agents must reach it from elsewhere, use HTTPS, set
   `WW_TRUST_PROXY=1` only behind your own proxy, use `WW_SETUP_TOKEN` until the first admin exists, and turn on
   two-factor sign-in.

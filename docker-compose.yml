@@ -41,4 +41,4 @@ services:
   #     - WW_AGENT_TOKEN=wwa_…
   #   volumes:
   #     - /var/run/docker.sock:/var/run/docker.sock
-  #     - ./agent:/config      # agent.toml (optional)
+  #     - ./agent:/config      # agent.toml, needed: [updates] allow = ["*"] (or a list), else the agent refuses every update

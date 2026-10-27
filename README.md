@@ -63,7 +63,11 @@ monitoring, take a snapshot first, check health afterwards and roll back.
 With automatic updates off, which is the default for every server and target, Wren updates nothing on its own.
 Automatic updates only run inside a window you set, and any container or stack can be excluded. An approval is
 for one version: if a newer one appears before it runs, Wren asks again. Scripts are defined on each server,
-and Wren can only ask for them by name, so it can never become a remote shell.
+and Wren can only ask for them by name, so it can never become a remote shell. The agent decides last: it updates
+only what its own `agent.toml` `[updates]` allows (no allow list, no updates), keeps its own record of the runs it
+did (a rollback only undoes the newest update it ran, once), never accepts a shorter health check or fewer snapshots
+than it requires, and talks to Wren over `https://` unless Wren is on your own network.
+
 
 ## Install
 
@@ -84,7 +88,8 @@ for that host. On **Unraid**, install **Wise Wren** and **Wise Wren Agent** from
 **The agent has the Docker socket, which is root on its host.** Read the guides before the first update:
 
 - [Installing the server](docs/install.md)
-- [Adding an agent](docs/agent.md): `agent.toml`, the same-path rule, `[updates] allow/deny`, script stacks
+- [Adding an agent](docs/agent.md): `agent.toml`, the same-path rule, the required `[updates] allow/deny`, the run ledger,
+  script stacks
 - [Updates, approvals and schedules](docs/updates.md): modes, approvals, scheduled updates, auto windows
 - [Snapshots and rollback](docs/snapshots.md): **snapshots are not backups**
 - [Vigilant Vole](docs/vigilant-vole.md): maintenance windows and monitor health (VV 0.9.0 or later)

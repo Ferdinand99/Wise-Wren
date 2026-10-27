@@ -15,6 +15,16 @@
   {%- if !inventory_error.is_empty() %}
   <div class="card-pad">{{ m::callout("warning", tr1("targets.scan_error", "error", inventory_error)) }}</div>
   {%- endif %}
+  {%- if awaiting_auto() > 0 %}
+  <div class="card-pad">
+    {{ m::callout("info", tr("targets.awaiting_help"), tr("targets.awaiting_badge")) }}
+    {%- if is_admin %}
+    <form method="post" action="/servers/{{ server.id }}/allow-auto" class="toolbar">
+      <button type="submit" class="btn btn-secondary btn-sm">{{ tr("targets.allow_auto_all") }}</button>
+    </form>
+    {%- endif %}
+  </div>
+  {%- endif %}
   {%- if targets.is_empty() %}
   <div class="card-pad"><p class="help">{{ tr("targets.empty") }}</p></div>
   {%- else %}
@@ -24,7 +34,7 @@
       <tbody>
         {%- for t in targets %}
         <tr data-status="{{ t.status }}">
-          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if !t.blocked.is_empty() %} <span class="badge badge-blocked" title="{{ t.blocked }}" data-blocked="1">{{ tr("blocked.badge") }}</span>{% endif %}{% if t.own %} <span class="badge" title="{{ tr("runs.own_help") }}" data-own="1">{{ tr("runs.own") }}</span>{% else if t.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}" data-auto="1">{{ tr("runs.auto_badge") }}</span>{% endif %}</td>
+          <td class="td-primary"><a href="/targets/{{ t.id }}">{{ t.name }}</a>{% if !t.blocked.is_empty() %} <span class="badge badge-blocked" title="{{ t.blocked }}" data-blocked="1">{{ tr("blocked.badge") }}</span>{% endif %}{% if t.awaiting_auto %} <span class="badge" title="{{ tr("targets.awaiting_help") }}" data-awaiting-auto="1">{{ tr("targets.awaiting_badge") }}</span>{% endif %}{% if t.own %} <span class="badge" title="{{ tr("runs.own_help") }}" data-own="1">{{ tr("runs.own") }}</span>{% else if t.auto %} <span class="badge badge-auto" title="{{ tr("runs.auto_title") }}" data-auto="1">{{ tr("runs.auto_badge") }}</span>{% endif %}</td>
           <td data-label="{{ tr("targets.col_kind") }}">{{ t.kind_label }}</td>
           <td data-label="{{ tr("targets.col_current") }}" class="mono break">{{ t.current }}</td>
           <td data-label="{{ tr("targets.col_available") }}" class="mono break">{% if t.is_update() %}{{ t.available }}{% if !t.notes_url.is_empty() %} · <a href="{{ t.notes_url }}" target="_blank" rel="noopener noreferrer">{{ tr("targets.notes") }}</a>{% endif %}{% else %}–{% endif %}</td>

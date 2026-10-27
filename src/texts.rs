@@ -24,6 +24,12 @@ pub const MAX_PARAM: usize = 500;
 pub fn key(code: &str) -> Option<&'static str> {
     Some(match code {
         "refused.not_allowed" => "agent_msg.refused_not_allowed",
+        "refused.updates_required" => "agent_msg.refused_updates_required",
+        "refused.run_old" => "agent_msg.refused_run_old",
+        "refused.rollback_unknown" => "agent_msg.refused_rollback_unknown",
+        "refused.rollback_used" => "agent_msg.refused_rollback_used",
+        "refused.too_soon" => "agent_msg.refused_too_soon",
+        "refused.ledger_write" => "agent_msg.refused_ledger_write",
         "refused.not_under_roots" => "agent_msg.refused_not_under_roots",
         "refused.not_mounted" => "agent_msg.refused_not_mounted",
         "refused.file_outside_roots" => "agent_msg.refused_file_outside_roots",
@@ -44,8 +50,9 @@ pub fn key(code: &str) -> Option<&'static str> {
 
 /// Refusals that come from the agent's own `agent.toml`: the run shows on
 /// its page, but no notification goes out (Wren blocks these approvals).
-pub const CONFIG_REFUSALS: [&str; 5] = [
+pub const CONFIG_REFUSALS: [&str; 6] = [
     "refused.not_allowed",
+    "refused.updates_required",
     "refused.not_under_roots",
     "refused.not_mounted",
     "refused.file_outside_roots",

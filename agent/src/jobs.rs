@@ -127,8 +127,26 @@ impl fmt::Display for Note {
 /// every language).
 fn english(code: &str) -> Option<&'static str> {
     Some(match code {
+        "refused.updates_required" => {
+            "refused by agent config: agent.toml has no [updates] allow list, so every update and rollback is refused; add [updates] allow = [\"*\"] (or a list of target names) and restart the agent"
+        }
         "refused.not_allowed" => {
             "refused by agent config: {target} is not allowed by [updates] in agent.toml"
+        }
+        "refused.run_old" => {
+            "refused: run {run} of {target} is not newer than run {newest}, which this agent already ran (was Wren's database restored from a backup?)"
+        }
+        "refused.rollback_unknown" => {
+            "refused: this agent has no record of a successful update of {target} as run {run} that is its newest; only the newest update this agent ran can be rolled back"
+        }
+        "refused.rollback_used" => {
+            "refused: the rollback of run {run} of {target} was already used; a rollback runs once"
+        }
+        "refused.too_soon" => {
+            "refused: the script stack {target} was updated recently; its next update may start in about {minutes} min (min_interval in agent.toml)"
+        }
+        "refused.ledger_write" => {
+            "refused: the agent can't write its run ledger, so it won't start a run it can't record: {error}"
         }
         "refused.not_under_roots" => {
             "refused: the stack's folder {folder} is not under the agent's roots"
@@ -328,6 +346,10 @@ pub struct Plan {
     pub data: Vec<(PathBuf, PathBuf)>,
     /// What was left out of the snapshot, and why.
     pub notes: Vec<Note>,
+    /// The safety nets the run really has, after the agent's own minimums
+    /// (`[updates]`) were applied to what Wren asked: English lines for the
+    /// preflight step's log.
+    pub effective: Vec<String>,
 }
 
 impl Plan {
@@ -375,6 +397,18 @@ pub fn uses(other: &Path, path: &Path) -> bool {
     other.starts_with(path)
 }
 
+/// Whether `[updates]` lets a target with this name be updated (the first
+/// thing the agent asks, before it reads Docker).
+pub fn allowed(config: &Config, name: &str) -> Result<(), Note> {
+    if !config.updates.configured() {
+        return Err(Note::new("refused.updates_required", &[]));
+    }
+    if !config.updates.allows(name) {
+        return Err(Note::new("refused.not_allowed", &[("target", name)]));
+    }
+    Ok(())
+}
+
 /// Checks a job against what runs here (`all`: every container) and
 /// `agent.toml`. `self_id` is the agent's own container id (or its start),
 /// left out of the "also used by" rule. The refusal says why; nothing has
@@ -387,9 +421,7 @@ pub fn check(
     self_id: &str,
 ) -> Result<Plan, Note> {
     let name = job.target.name.as_str();
-    if !config.updates.allows(name) {
-        return Err(Note::new("refused.not_allowed", &[("target", name)]));
-    }
+    allowed(config, name)?;
     if job.health_seconds > MAX_HEALTH_SECONDS || job.keep_snapshots == 0 {
         return Err(Note::plain(
             "refused: the job's health period or snapshot count is out of range",
@@ -611,7 +643,32 @@ pub fn check(
         }
     }
     plan.kind = Some(kind);
-    plan.job = Some(job.clone());
+    // The agent's own minimums: Wren can ask for more, never less.
+    let mut effective = job.clone();
+    let asked = job.health_seconds;
+    effective.health_seconds = asked.max(config.updates.min_health_seconds);
+    plan.effective.push(if effective.health_seconds > asked {
+        format!(
+            "health period {} s (Wren asked {asked} s; the agent's minimum is {} s)",
+            effective.health_seconds, config.updates.min_health_seconds
+        )
+    } else {
+        format!("health period {asked} s")
+    });
+    if job.kind == JobKind::Update {
+        let wren = job.require_snapshot;
+        effective.require_snapshot = wren || config.updates.require_snapshot;
+        plan.effective.push(
+            match (wren, config.updates.require_snapshot) {
+                (_, true) if !wren => "snapshot required (the agent's policy; Wren didn't ask)",
+                (_, true) => "snapshot required (the agent's policy, as Wren asked)",
+                (true, false) => "snapshot required (as Wren asked)",
+                (false, false) => "snapshot not required",
+            }
+            .to_string(),
+        );
+    }
+    plan.job = Some(effective);
     Ok(plan)
 }
 
@@ -845,10 +902,21 @@ mod tests {
     const A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
+    /// Every job needs an `[updates]` allow list: one that allows all, unless
+    /// the test brings its own.
+    fn with_allow(extra: &str) -> String {
+        if extra.contains("[updates]") {
+            extra.to_string()
+        } else {
+            format!("{extra}\n[updates]\nallow = [\"*\"]\n")
+        }
+    }
+
     fn config(extra: &str) -> Config {
         Config::from_parts(
             Some(&format!(
-                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata/ww-test\"]\n{extra}"
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata/ww-test\"]\n{}",
+                with_allow(extra)
             )),
             |_| None,
         )
@@ -910,23 +978,95 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.code, "refused.not_allowed");
         assert!(err.text().starts_with("refused by agent config"), "{err}");
-        // Allowed by default (no section).
+        // Allowed by `allow = ["*"]`.
         let c = config("");
-        assert!(
-            check(
-                &job(
-                    "container",
-                    "postiz",
-                    "postiz",
-                    "ghcr.io/gitroomhq/postiz-app:latest"
-                ),
-                &c,
-                &all,
-                &[],
-                ""
-            )
-            .is_ok()
+        let postiz = job(
+            "container",
+            "postiz",
+            "postiz",
+            "ghcr.io/gitroomhq/postiz-app:latest",
         );
+        assert!(check(&postiz, &c, &all, &[], "").is_ok());
+    }
+
+    #[test]
+    fn without_an_allow_list_nothing_is_allowed() {
+        let all = vec![ctr("postiz", "ghcr.io/gitroomhq/postiz-app:latest", &[])];
+        let postiz = job(
+            "container",
+            "postiz",
+            "postiz",
+            "ghcr.io/gitroomhq/postiz-app:latest",
+        );
+        // No section, only a deny list, or an empty list.
+        let no_section = Config::from_parts(
+            Some(&format!(
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata/ww-test\"]\n"
+            )),
+            |_| None,
+        )
+        .unwrap();
+        for c in [
+            no_section,
+            config("[updates]\ndeny = [\"x\"]\n"),
+            config("[updates]\nallow = []\n"),
+        ] {
+            let err = check(&postiz, &c, &all, &[], "").unwrap_err();
+            assert_eq!(err.code, "refused.updates_required");
+            let text = err.text();
+            assert!(
+                text.contains("allow = [\"*\"]") && text.contains("agent.toml"),
+                "{text}"
+            );
+            assert!(allowed(&c, "postiz").is_err());
+        }
+    }
+
+    #[test]
+    fn the_agent_raises_the_safety_nets_a_job_asks_for() {
+        let all = vec![ctr("ww-test-c", "a/b:1", &[])];
+        // Wren asks for 5 s and no snapshot; the roots make the agent require one.
+        let j = job("container", "ww-test-c", "ww-test-c", "a/b:1");
+        assert_eq!((j.health_seconds, j.require_snapshot), (5, false));
+        let plan = check(&j, &config(""), &all, &[], "").unwrap();
+        assert_eq!(plan.job().health_seconds, 30);
+        assert!(plan.job().require_snapshot);
+        assert!(
+            plan.effective[0].contains("asked 5 s")
+                && plan.effective[0].contains("minimum is 30 s")
+        );
+        assert!(
+            plan.effective[1].contains("agent's policy"),
+            "{:?}",
+            plan.effective
+        );
+        // More than the minimum stays; so does a stricter Wren.
+        let mut long = j.clone();
+        long.health_seconds = 600;
+        long.require_snapshot = true;
+        let plan = check(&long, &config(""), &all, &[], "").unwrap();
+        assert_eq!(
+            (plan.job().health_seconds, plan.job().require_snapshot),
+            (600, true)
+        );
+        // The agent can relax its own minimums; Wren's requests still count.
+        let relaxed = config(
+            "[updates]\nallow = [\"*\"]\nmin_health_seconds = 0\nrequire_snapshot = false\n",
+        );
+        let plan = check(&j, &relaxed, &all, &[], "").unwrap();
+        assert_eq!(
+            (plan.job().health_seconds, plan.job().require_snapshot),
+            (5, false)
+        );
+        assert_eq!(plan.effective[1], "snapshot not required");
+        let plan = check(&long, &relaxed, &all, &[], "").unwrap();
+        assert!(plan.job().require_snapshot);
+        // A rollback gets the health minimum too.
+        let mut back = j;
+        back.kind = JobKind::Rollback;
+        back.rollback_of = Some(2);
+        let plan = check(&back, &config(""), &all, &[], "").unwrap();
+        assert_eq!(plan.job().health_seconds, 30);
     }
 
     #[test]
@@ -1004,8 +1144,9 @@ mod tests {
     fn config_in(root: &Path, extra: &str) -> Config {
         Config::from_parts(
             Some(&format!(
-                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"{}\"]\n{extra}",
-                root.display()
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"{}\"]\n{}",
+                root.display(),
+                with_allow(extra)
             )),
             |_| None,
         )
@@ -1179,7 +1320,7 @@ mod tests {
     fn only_the_same_folder_or_one_inside_it_counts_as_shared() {
         let c = Config::from_parts(
             Some(&format!(
-                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata\", \"/mnt/cache/appdata\"]\n"
+                "server = \"http://x\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata\", \"/mnt/cache/appdata\"]\n[updates]\nallow = [\"*\"]\n"
             )),
             |_| None,
         )

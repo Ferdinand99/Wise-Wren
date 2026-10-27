@@ -378,8 +378,10 @@ pub async fn remove(path: &Path) {
 }
 
 /// Puts the snapshot at `snap` back at `p.real`: the live copy is moved
-/// aside first and deleted only once the copy is back; on failure it is
-/// moved back.
+/// aside first; on failure it is moved back. After a good restore the aside
+/// copy stays (as `<name>.wren-aside-<run>`) until the target's next run
+/// ([`clear_asides`]), so a rollback that turns out to be wrong can still be
+/// undone by hand.
 pub async fn restore(p: &DataPath, snap: &Path, run: i64) -> Result<String, String> {
     if !snap.exists() {
         return Err(format!("no snapshot at {}", snap.display()));
@@ -412,10 +414,15 @@ pub async fn restore(p: &DataPath, snap: &Path, run: i64) -> Result<String, Stri
         exec("cp", &["-a", "--reflink=auto", &src, &dst], COPY_TIMEOUT).await
     };
     match copied {
-        Ok(_) => {
-            remove(&aside).await;
-            Ok(format!("restored {}", p.path.display()))
-        }
+        Ok(_) => Ok(if had_live {
+            format!(
+                "restored {} (the data it replaced is kept as {} until the next run of this target)",
+                p.path.display(),
+                aside.display()
+            )
+        } else {
+            format!("restored {}", p.path.display())
+        }),
         Err(err) => {
             remove(&p.real).await;
             if had_live {
@@ -424,6 +431,32 @@ pub async fn restore(p: &DataPath, snap: &Path, run: i64) -> Result<String, Stri
             Err(format!("can't restore {}: {err}", p.path.display()))
         }
     }
+}
+
+/// Removes the copies earlier restores set aside next to the data at `real`
+/// (`<name>.wren-aside-<run>`); the paths removed. Called when the target
+/// runs again.
+pub async fn clear_asides(real: &Path) -> Vec<PathBuf> {
+    let (Some(dir), Some(name)) = (real.parent(), real.file_name()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}.wren-aside-", name.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut gone = Vec::new();
+    for e in entries.flatten() {
+        let file = e.file_name().to_string_lossy().to_string();
+        // Only what a restore makes: the prefix and a run number.
+        if file
+            .strip_prefix(&prefix)
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        {
+            remove(&e.path()).await;
+            gone.push(e.path());
+        }
+    }
+    gone
 }
 
 /// Keeps the newest `keep` run snapshots of `target` under `root`, deletes
@@ -498,9 +531,25 @@ mod tests {
             std::fs::metadata(data.join("a-link.txt")).unwrap(),
         );
         assert_eq!(a.ino(), l.ino(), "hard link kept");
-        assert!(!root.join("app/data.wren-aside-7").exists());
+        // The data the restore replaced stays beside it, so a wrong rollback
+        // can be undone, until the target runs again.
+        let aside = root.join("app/data.wren-aside-7");
+        assert_eq!(
+            std::fs::read_to_string(aside.join("a.txt")).unwrap(),
+            "broken"
+        );
+        assert!(aside.join("new.txt").exists());
         // The snapshot stays for a later rollback.
         assert!(dest.join("a.txt").exists());
+        // Only what a restore set aside is cleared; the next run does it.
+        std::fs::create_dir_all(root.join("app/data.wren-aside-x")).unwrap();
+        std::fs::create_dir_all(root.join("app/data2.wren-aside-3")).unwrap();
+        let gone = clear_asides(&data).await;
+        assert_eq!(gone, std::slice::from_ref(&aside));
+        assert!(!aside.exists());
+        assert!(root.join("app/data.wren-aside-x").exists());
+        assert!(root.join("app/data2.wren-aside-3").exists());
+        assert!(data.join("a.txt").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

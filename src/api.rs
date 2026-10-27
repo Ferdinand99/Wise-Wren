@@ -80,7 +80,7 @@ pub static DOCS: DocsSpec = DocsSpec {
         r("GET", "/api/v1/targets", "viewer", "Targets", "List what Wren watches on every server (or `?server_id=`): containers, Unraid template containers, Compose stacks and script stacks, with the current and available version and the status `current`, `update` or `unknown`.")
             .res(TARGETS_EXAMPLE),
         r("GET", "/api/v1/targets/{id}", "viewer", "Targets", "One target with its mode (`mode`: its own, or `null` for the server's; `effective_mode`), health period, `require_vv`, skip and snooze, whether Wren never updates it (its own and Vigilant Vole's images) and its linked Vigilant Vole monitors.")
-            .res(r#"{"id": 7, "name": "ww-test-container", "status": "update", "version_key": "ww-test-container=sha256:4f90…", "mode": null, "effective_mode": "approve", "updates_itself": false, "health_seconds": null, "require_vv": false, "require_snapshot": false, "skipped": false, "snoozed_until": null, "wren_never_updates": false, "monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
+            .res(r#"{"id": 7, "name": "ww-test-container", "status": "update", "version_key": "ww-test-container=sha256:4f90…", "mode": null, "effective_mode": "approve", "updates_itself": false, "health_seconds": null, "require_vv": false, "require_snapshot": false, "skipped": false, "snoozed_until": null, "wren_never_updates": false, "awaiting_auto_confirmation": false, "monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
         r("POST", "/api/v1/targets/{id}/check", "editor", "Targets", "Check now for one target (its server's agent sends a fresh inventory first).")
             .res(r#"{"checking": true}"#),
         r("POST", "/api/v1/targets/{id}/interval", "editor", "Targets", "Override the target's check interval: `hours` 1–168, or `null` for the server's.")
@@ -1141,6 +1141,8 @@ pub async fn target_detail(core: &Core, id: i64) -> ApiResult<Value> {
     v["skipped"] = json!(p.skipped);
     v["snoozed_until"] = json!(p.snoozed_until);
     v["wren_never_updates"] = json!(p.own);
+    // New on an auto server: on approve until an admin sets its mode again.
+    v["awaiting_auto_confirmation"] = json!(p.auto_pending);
     v["monitors"] = crate::api_settings::monitors_of(core, id).await?["monitors"].take();
     Ok(v)
 }

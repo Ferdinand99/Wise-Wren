@@ -19,6 +19,10 @@ Install **Wise Wren Agent** from Community Applications (template `wise-wren-age
 and `WW_AGENT_TOKEN`, and keep the paths as they are. Or run the line from Wren's server page:
 
 ```bash
+# agent.toml needs an [updates] allow list: without one the agent refuses every update and
+# rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):
+#   [updates]
+#   allow = ["*"]
 docker run -d --name wren-agent --restart unless-stopped \
   -e WW_SERVER_URL=http://10.0.3.26:3003 \
   -e WW_AGENT_TOKEN=wwa_… \
@@ -35,6 +39,8 @@ docker run -d --name wren-agent --restart unless-stopped \
 
 The Unraid mounts let the agent run Unraid's own `update_container` for template containers, so the Docker tab
 stays in sync. If your appdata pool isn't called `cache`, mount it at its own path too (`/mnt/<pool>/appdata`).
+Then create `/mnt/user/appdata/wren-agent/agent.toml` with at least `[updates] allow = ["*"]` (see
+[agent.toml](#agenttoml)) and restart the agent: until it has an allow list the agent refuses every update.
 Stacks from the **Compose Manager** plugin live in `/boot/config/plugins/compose.manager/projects/<name>`: the
 `/boot/config` mount reaches them, and `roots` must include that folder (below), or Wren can't update them.
 
@@ -51,7 +57,8 @@ docker run -d --name wren-agent --restart unless-stopped \
 ```
 
 Add one `-v <folder>:<same folder>` for every folder your containers and Compose stacks keep their files and data
-in. Snapshots fall back to plain copies on ext4 and other filesystems without reflinks.
+in. Snapshots fall back to plain copies on ext4 and other filesystems without reflinks. Create
+`/etc/wren-agent/agent.toml` with at least `[updates] allow = ["*"]` and `roots` listing those folders.
 
 ## The same-path rule
 
@@ -62,7 +69,8 @@ isn't mounted shows as "files not reachable: mount <working_dir> into the agent"
 
 ## agent.toml
 
-Optional while `WW_SERVER_URL` and `WW_AGENT_TOKEN` are set (they win over the file). The agent reads
+`WW_SERVER_URL` and `WW_AGENT_TOKEN` can replace the `server` and `token` lines (they win over the file), but the
+file itself is needed for `[updates]`: without an allow list the agent refuses every update. The agent reads
 `/config/agent.toml` (or `--config PATH`, or `WW_AGENT_CONFIG`). `docker exec wren-agent wren-agent --check` checks
 it and says what it allows. The agent refuses to start (exit code 2) and names the field for any mistake, including
 unknown keys.
@@ -84,10 +92,12 @@ roots = [
 # scan_interval = "30m"            # how often the agent sends an inventory (1m–24h)
 
 # Which targets Wren may update at all, as globs on the target's name (* and ?).
-# Without this section, every target may be updated once someone approves it.
+# Required: without an allow list the agent refuses every update and rollback.
 [updates]
-allow = ["nextcloud", "immich", "media-*"]
+allow = ["nextcloud", "immich", "media-*"]   # or ["*"] to get started
 deny = ["media-db*"]               # deny wins over allow
+# min_health_seconds = 30          # a job never gets a shorter health period
+# require_snapshot = true          # default: true when roots are set
 
 # How many rollback points stay per target (optional).
 [retention]
@@ -101,12 +111,42 @@ snapshots = 2                      # data snapshots (1-10)
 | `roots` | Absolute folders, no `..`, not `/`. Without roots the agent can still update single containers, but takes no snapshots and refuses Compose and script stacks. |
 | `docker_socket` | Default `/var/run/docker.sock`. |
 | `scan_interval` | Default `30m`. "Check now" in Wren asks for an inventory at once. |
-| `[updates] allow` / `deny` | Globs on target names. A job outside `allow` or inside `deny` ends as **refused by agent config** before the agent even reads Docker. Wren still shows those targets and their new versions. |
+| `[updates] allow` / `deny` | **Required.** Globs on target names. Without an `allow` list (no `[updates]` section, only `deny`, or `allow = []`) the agent refuses every update and rollback. A job outside `allow` or inside `deny` ends as **refused by agent config** before the agent even reads Docker. Wren still shows those targets and their new versions. |
+| `[updates] min_health_seconds` | Default `30`, at most `3600`. A job's health period is raised to this; Wren can ask for more, never less. |
+| `[updates] require_snapshot` | Default `true` when `roots` are set, else `false`. When true, an update whose target has no data folder the agent can snapshot stops before anything is touched, whatever Wren asks. Set `false` for hosts where most targets keep no data under `roots`. |
+| `[[script_stack]] min_interval` | Default `1h`, at most `24h`. The shortest time between two updates of a script stack. |
 | `[retention]` | `rollback_images` (default 1): after a successful update the old images of the newest N updates stay tagged `wren-rollback/…`, older ones go. `snapshots` (default: Wren's 2). See [Snapshots](snapshots.md). |
 | `[[script_stack]]` | A Compose stack that updates with its own script (below). |
 
-**`[updates]` is your last word.** Whatever happens to the Wren server, the agent only touches what this file
-allows. Use it on production servers.
+**`[updates]` is your last word, and it is required.** Whatever happens to the Wren server, the agent only touches
+what this file allows. A new agent with no `[updates]` allow list starts, reports its inventory and refuses every
+update and rollback ("refused by agent config: agent.toml has no [updates] allow list"); `--check` says so, and
+Wren shows every target as **Blocked**. Start with `allow = ["*"]` and narrow it to a list of the names you want
+updated when you know them. The wizard text on the server's page (the **agent.toml helper**, and the comment above
+the `docker run` line) starts with `allow = ["*"]` for the same reason.
+
+The server can ask for more safety than the agent requires, never less: the health period of a job is raised to
+`min_health_seconds`, and `require_snapshot` from Wren is treated as true when the agent requires it. The preflight
+step's log shows the values the run really used ("health period 30 s (Wren asked 5 s; the agent's minimum is
+30 s)").
+
+### The run ledger
+
+The agent keeps a small record of what **it** ran in `runs.json` beside `agent.toml` (so mount `/config` from the
+host; the file is root-owned, mode 0600, written whole and renamed into place, and holds the last 20 runs of each
+target). Wren decides what to ask for, but the agent checks it against this record:
+
+- An update's run id must be greater than every run id the agent already ran for that target. A Wren database
+  restored from a backup (its ids start again) is refused until its ids pass the agent's.
+- A rollback is accepted only for the **newest successful update this agent ran** for that target, and only once.
+  A rollback of an update from before the agent had a ledger (or one that ran on another agent) is refused.
+- A script stack's update runs at most once per `min_interval`, whatever Wren asks.
+- A run that can't be recorded (the config folder isn't writable) isn't started.
+
+A missing ledger starts a new one with a warning in the log; a corrupt one is moved to `runs.json.bad` first.
+`--check` shows its state. After a restore, the data the restore replaced stays beside it as
+`<folder>.wren-aside-<run>` until the target's next run, so a rollback that turns out wrong can still be undone
+by hand; the next run removes it.
 
 For a script stack the globs are checked against both names, the stack's `name` and its `compose_project`: a `deny`
 on either refuses the job, and an `allow` on the stack's name is enough. A Compose job for a project that a
@@ -114,10 +154,11 @@ on either refuses the job, and an `allow` on the stack's name is enough. A Compo
 stack's script. The agent also never updates **itself**: a job whose target includes the agent's own container
 (alone, or in the same Compose project) is refused with "Wren never updates its own agent".
 
-**Use `https://` for the server address** when the agent doesn't reach Wren over a trusted local network. Plain
-`http://` still works, because many homelabs run Wren on the LAN, but the token and every job then travel
-unencrypted. The agent logs a warning at start when the address is `http://` and the host isn't loopback, a private
-or link-local address, a single-label name or one ending in `.local`, `.lan` or `.home.arpa`. Addresses with a
+**The server address must be `https://`, except on your own network.** Plain `http://` is accepted only when the
+host is a loopback, private (RFC 1918), link-local or unique-local IPv6 address, a single-label name (`tower`), or
+a name ending in `.local`, `.lan`, `.home.arpa` or `.internal`. Any other `http://` address is a configuration
+error (the agent won't start; `--check` says why), because the token and every job would travel unencrypted. Put
+Wren behind a reverse proxy with a certificate for agents that reach it from elsewhere. Addresses with a
 `user:password@` part are refused, and the agent doesn't follow redirects.
 
 The agent reports its `[updates]` globs and its `roots` (never its token or scripts) to Wren, so Wren knows ahead what
@@ -150,6 +191,7 @@ working_dir = "/mnt/cache/appdata/fluxer"     # under one of roots, mounted at t
 handles_own_backup = true                     # the script stops and backs up itself: Wren skips its stop and snapshot
 env = { COMPOSE_PROJECT_NAME = "fluxer" }
 timeout = "20m"                               # 90s, 20m, 1h; at most 24h
+min_interval = "1h"                           # shortest time between two updates (default 1h)
 
 [script_stack.check]                          # optional: can the update run now?
 command = "curl -fsSL -o /dev/null https://fluxer.dev/rexctl/release.json"

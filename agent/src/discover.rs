@@ -40,7 +40,8 @@ pub struct Inventory {
 /// The parts of `agent.toml` Wren may show: never the token or scripts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Policy {
-    /// `None`: no `allow` list, every name is allowed.
+    /// The `allow` list; empty when `[updates]` allows nothing (an agent before
+    /// 0.7.0 sent `None` for "no list: every name is allowed").
     pub allow: Option<Vec<String>>,
     pub deny: Vec<String>,
     pub roots: Vec<String>,
@@ -49,7 +50,7 @@ pub struct Policy {
 impl Policy {
     pub fn of(config: &Config) -> Policy {
         Policy {
-            allow: config.updates.allow.clone(),
+            allow: Some(config.updates.allow.clone().unwrap_or_default()),
             deny: config.updates.deny.clone(),
             roots: config
                 .roots
@@ -480,7 +481,7 @@ installed_command = "cat VERSION"
         assert_eq!(
             inv.policy,
             Policy {
-                allow: None,
+                allow: Some(Vec::new()),
                 deny: Vec::new(),
                 roots: vec!["/srv".into()]
             }

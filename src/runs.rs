@@ -1246,6 +1246,9 @@ pub struct Policy {
     pub window: Option<(String, String)>,
     /// One of Wren's or VV's own images: never updated by Wren.
     pub own: bool,
+    /// New on an `auto` server and not yet confirmed by an admin: it stays on
+    /// `approve` until then ([`allow_auto`]).
+    pub auto_pending: bool,
 }
 
 impl Policy {
@@ -1266,7 +1269,7 @@ pub fn policy(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Policy>
             "SELECT t.mode, s.mode, t.health_seconds,
                 t.skipped_key != '' AND t.skipped_key = t.available_key,
                 CASE WHEN t.snoozed_until > datetime('now') THEN t.snoozed_until END,
-                t.require_vv, s.auto_start, s.auto_end, t.require_snapshot
+                t.require_vv, s.auto_start, s.auto_end, t.require_snapshot, t.auto_pending
          FROM targets t JOIN servers s ON s.id = t.server_id WHERE t.id = ?1",
             [target_id],
             |r| {
@@ -1282,6 +1285,7 @@ pub fn policy(c: &Connection, target_id: i64) -> rusqlite::Result<Option<Policy>
                     require_snapshot: r.get(8)?,
                     window: start.zip(end),
                     own: false,
+                    auto_pending: r.get(9)?,
                 })
             },
         )
@@ -1337,7 +1341,8 @@ pub fn set_target_policy(
         }
     }
     c.execute(
-        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4, require_snapshot = ?5
+        "UPDATE targets SET mode = ?2, health_seconds = ?3, require_vv = ?4, require_snapshot = ?5,
+             auto_pending = 0
          WHERE id = ?1",
         params![
             target_id,
@@ -1359,6 +1364,63 @@ pub fn set_target_policy(
         tracing::warn!(user, target_id, from = old.effective(), to = %new_mode, "update mode changed");
     }
     Ok(Ok(()))
+}
+
+/// An admin's say-so that a new target of an `auto` server may update
+/// automatically: it follows the server's mode from now on. Needs the
+/// server's auto window; logged.
+pub fn allow_auto(
+    c: &Connection,
+    target_id: i64,
+    user: &str,
+    is_admin: bool,
+) -> rusqlite::Result<Result<(), Refusal>> {
+    if !is_admin {
+        return Ok(Err(Refusal::AdminOnly));
+    }
+    let Some(p) = policy(c, target_id)? else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if p.window.is_none() {
+        return Ok(Err(Refusal::NoWindow));
+    }
+    if p.auto_pending {
+        c.execute(
+            "UPDATE targets SET mode = NULL, auto_pending = 0 WHERE id = ?1",
+            [target_id],
+        )?;
+        log_action(c, user, "allow_auto", Some(target_id), None, "new target")?;
+        tracing::warn!(
+            user,
+            target_id,
+            "automatic updates allowed for a new target"
+        );
+    }
+    Ok(Ok(()))
+}
+
+/// [`allow_auto`] for every unconfirmed target of a server; how many.
+pub fn allow_auto_new(
+    c: &Connection,
+    server_id: i64,
+    user: &str,
+    is_admin: bool,
+) -> rusqlite::Result<Result<usize, Refusal>> {
+    if !is_admin {
+        return Ok(Err(Refusal::AdminOnly));
+    }
+    let ids: Vec<i64> = c
+        .prepare("SELECT id FROM targets WHERE server_id = ?1 AND auto_pending = 1")?
+        .query_map([server_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut done = 0;
+    for id in ids {
+        match allow_auto(c, id, user, is_admin)? {
+            Ok(()) => done += 1,
+            Err(r) => return Ok(Err(r)),
+        }
+    }
+    Ok(Ok(done))
 }
 
 /// Sets a server's mode and auto window (`HH:MM` each, both or neither).

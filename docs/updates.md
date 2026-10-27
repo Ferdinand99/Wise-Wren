@@ -29,6 +29,19 @@ Each server has a mode, and each target can override it (target page):
 
 A target set to `approve` or `notify` on an `auto` server is **excluded** from automatic updates.
 
+**New targets on an `auto` server wait for an admin.** A target Wren has never seen before (a new container, a new
+stack) starts with the explicit mode `approve` and a **New: approve first** badge on the server's Targets card and
+its page, so nothing new updates itself unreviewed. An admin chooses **Allow automatic updates** for the target, or
+**Allow automatic updates for all new targets** on the server's card; the target then follows the server's mode.
+Saving the target's settings by hand ends the wait too (without turning automatic updates on). The REST API shows
+`awaiting_auto_confirmation` on a target.
+
+**Settings outlive a missing target.** When an inventory leaves a target out (it was removed, re-created, or the
+scan was wrong), Wren keeps its settings (mode, health period, "require" switches, skip and snooze, Vigilant Vole
+links) for 30 days. If the same name and kind returns within that time, everything comes back with it, including a
+mode an admin had confirmed. After 30 days it is a new target again.
+
+
 ## Approving
 
 Updates page, target page, `POST /api/v1/targets/{id}/approve` or the MCP tool `approve_update`:

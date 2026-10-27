@@ -78,6 +78,9 @@ pub struct TargetView {
     /// wouldn't): not allowed by `[updates]`, a folder outside its roots,
     /// files it can't reach.
     pub blocked: String,
+    /// New on an auto server and waiting for an admin to allow automatic
+    /// updates (it is on approve until then).
+    pub awaiting_auto: bool,
 }
 
 /// The status's design-system class and label.
@@ -152,6 +155,7 @@ impl TargetView {
             server_interval: t.server_interval_hours,
             auto: false,
             own: false,
+            awaiting_auto: t.auto_pending,
         }
     }
 

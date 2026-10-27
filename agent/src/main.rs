@@ -12,6 +12,7 @@ use std::process::ExitCode;
 
 use tracing_subscriber::EnvFilter;
 use wren_agent::config::{self, Config};
+use wren_agent::ledger::Ledger;
 
 const USAGE: &str = "usage: wren-agent [--config PATH] [--check] [--version]";
 
@@ -53,9 +54,18 @@ fn main() -> ExitCode {
         }
     };
     if check {
-        let updates = match &config.updates.allow {
-            None => "every target may be updated once approved in Wren".to_string(),
-            Some(allow) => format!("updates only for {}", allow.join(", ")),
+        let updates = if config.updates.configured() {
+            format!(
+                "updates only for {}",
+                config
+                    .updates
+                    .allow
+                    .as_deref()
+                    .unwrap_or_default()
+                    .join(", ")
+            )
+        } else {
+            "NO [updates] ALLOW LIST: the agent refuses every update and rollback until agent.toml has [updates] allow = [\"*\"] (or a list of target names)".to_string()
         };
         println!(
             "{}: OK ({} roots, {} script stacks; {updates}{}; old images of the last {} update(s) kept per target)",
@@ -68,6 +78,20 @@ fn main() -> ExitCode {
                 format!(", never for {}", config.updates.deny.join(", "))
             },
             config.retention.rollback_images
+        );
+        println!(
+            "health period at least {} s; snapshot {}",
+            config.updates.min_health_seconds,
+            if config.updates.require_snapshot {
+                "required for every update (an update with no data folder to snapshot stops before anything is touched)"
+            } else {
+                "required only when Wren asks"
+            }
+        );
+        println!(
+            "run ledger {}: {}",
+            config.ledger.display(),
+            Ledger::status(&config.ledger)
         );
         let exists = std::path::Path::new(config::COMPOSE_MANAGER).is_dir();
         if let Some(hint) = config.compose_manager_hint(exists) {

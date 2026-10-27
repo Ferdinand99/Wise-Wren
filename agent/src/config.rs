@@ -39,13 +39,19 @@
 //! inventory on its own.
 //!
 //! ```toml
-//! # Optional: which targets Wren may update (globs on the target's name).
-//! # Without this section every target may be updated once someone approves
-//! # it in Wren; a name matching `deny` is refused even when `allow` matches.
+//! # Required: which targets Wren may update (globs on the target's name).
+//! # Without an `allow` list the agent refuses every update and rollback;
+//! # a name matching `deny` is refused even when `allow` matches.
 //! [updates]
 //! allow = ["ww-*"]
 //! deny = ["ww-keep-*"]
+//! min_health_seconds = 30   # a job never gets a shorter health period
+//! require_snapshot = true   # default: true when roots are set
 //! ```
+//!
+//! A script stack's update runs at most once per `min_interval` (default
+//! `"1h"`; set it in the `[[script_stack]]` table); the agent's run ledger
+//! (`runs.json` beside `agent.toml`) keeps count.
 //!
 //! ```toml
 //! # Optional: how many rollback points the agent keeps per target.
@@ -66,6 +72,8 @@ use serde::Deserialize;
 
 /// Where the agent looks for its config without `--config`/`WW_AGENT_CONFIG`.
 pub const DEFAULT_PATH: &str = "/config/agent.toml";
+/// The run ledger without a config folder to put it in (tests, `from_parts`).
+pub const DEFAULT_LEDGER: &str = "/config/runs.json";
 /// Prefix of agent tokens.
 pub const TOKEN_PREFIX: &str = "wwa_";
 /// Characters after the prefix (the server's tokens: 43 base62).
@@ -105,6 +113,8 @@ pub struct Config {
     pub updates: UpdatePolicy,
     /// How many rollback points stay per target (`[retention]`).
     pub retention: Retention,
+    /// The run ledger (`runs.json`), beside `agent.toml`.
+    pub ledger: PathBuf,
 }
 
 /// `[retention]`: the old images of the newest `rollback_images` updates
@@ -128,24 +138,50 @@ impl Default for Retention {
 /// The most rollback points of either kind kept per target.
 pub const MAX_RETENTION: usize = 10;
 
-/// `[updates]`: globs on target names. `allow: None` (no section, or no
-/// `allow` key) allows every name; `deny` always wins.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// `[updates]`: globs on target names, required. `allow: None` (no section,
+/// or no `allow` key) or an empty list allows nothing ([`Self::configured`]);
+/// `deny` always wins. The two minimums are the agent's last word on a
+/// job's safety nets: Wren can ask for more, never less.
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpdatePolicy {
     pub allow: Option<Vec<String>>,
     pub deny: Vec<String>,
+    /// A job's health period is raised to at least this many seconds.
+    pub min_health_seconds: u64,
+    /// Every update requires a snapshot, whatever Wren asks.
+    pub require_snapshot: bool,
+}
+
+/// The shortest health period unless `[updates] min_health_seconds` says
+/// otherwise.
+pub const MIN_HEALTH_SECONDS: u64 = 30;
+
+impl Default for UpdatePolicy {
+    fn default() -> UpdatePolicy {
+        UpdatePolicy {
+            allow: None,
+            deny: Vec::new(),
+            min_health_seconds: MIN_HEALTH_SECONDS,
+            require_snapshot: false,
+        }
+    }
 }
 
 impl UpdatePolicy {
+    /// Whether `[updates]` names at least one target glob. Without it the
+    /// agent refuses every update and rollback (add `allow = ["*"]`).
+    pub fn configured(&self) -> bool {
+        self.allow.as_ref().is_some_and(|a| !a.is_empty())
+    }
+
     /// Whether a target with this name may be updated.
     pub fn allows(&self, name: &str) -> bool {
         if self.denies(name) {
             return false;
         }
-        match &self.allow {
-            None => true,
-            Some(allow) => allow.iter().any(|g| glob(g, name)),
-        }
+        self.allow
+            .as_ref()
+            .is_some_and(|allow| allow.iter().any(|g| glob(g, name)))
     }
 
     /// Whether `deny` names this one (it wins over `allow`).
@@ -215,7 +251,13 @@ pub struct ScriptStack {
     pub update: String,
     pub rollback: Option<String>,
     pub version: Option<VersionConfig>,
+    /// The shortest time between two updates of the stack (the run ledger
+    /// counts), whatever Wren asks.
+    pub min_interval: Duration,
 }
+
+/// Default shortest time between two updates of a script stack.
+pub const MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -245,6 +287,8 @@ struct RawUpdates {
     allow: Option<Vec<String>>,
     #[serde(default)]
     deny: Vec<String>,
+    min_health_seconds: Option<i64>,
+    require_snapshot: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +401,7 @@ struct RawStack {
     update: Option<RawScript>,
     rollback: Option<RawScript>,
     version: Option<RawVersion>,
+    min_interval: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -428,6 +473,14 @@ fn check_server(raw: &str) -> Result<String, String> {
     if url.query().is_some() || url.fragment().is_some() {
         return Err("server: leave out queries and fragments".into());
     }
+    // The token and every job would cross the open internet unprotected.
+    if plain_http_beyond_lan(url.as_str()) {
+        return Err(format!(
+            "server: plain http:// is only for hosts on your own network (a private or loopback address, a single-label name, or one ending in .local, .lan, .home.arpa or .internal); \
+             use https:// for {}, for example behind a reverse proxy with a certificate",
+            url.host_str().unwrap_or_default()
+        ));
+    }
     // The address ends up in error messages and logs.
     if !url.username().is_empty() || url.password().is_some() {
         return Err("server: leave out user:password@ (the token authenticates the agent)".into());
@@ -438,8 +491,8 @@ fn check_server(raw: &str) -> Result<String, String> {
 /// Whether the server address is plain `http://` to a host that isn't on a
 /// private network: loopback, RFC 1918, link-local or unique-local
 /// addresses, `localhost`, a single-label name or one ending in `.local`,
-/// `.lan` or `.home.arpa`. The token and every job then cross the open
-/// internet unprotected; the agent warns once at start.
+/// `.lan`, `.home.arpa` or `.internal`. The token and every job then cross the open
+/// internet unprotected; [`check_server`] refuses such an address.
 pub fn plain_http_beyond_lan(server: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(server.trim()) else {
         return false;
@@ -462,7 +515,7 @@ pub fn plain_http_beyond_lan(server: &str) -> bool {
         }
         Err(_) => {
             let host = host.trim_end_matches('.').to_ascii_lowercase();
-            let local = ["localhost", "local", "lan", "home.arpa"]
+            let local = ["localhost", "local", "lan", "home.arpa", "internal"]
                 .iter()
                 .any(|s| host == *s || host.ends_with(&format!(".{s}")));
             !(local || !host.contains('.'))
@@ -611,6 +664,15 @@ impl Config {
                 }
             }
             let version = s.version.and_then(|v| check_version(v, &at, &mut problems));
+            let min_interval = match s.min_interval.as_deref() {
+                None => MIN_INTERVAL,
+                Some(t) => parse_duration(t).unwrap_or_else(|| {
+                    problems.push(format!(
+                        "{at}: min_interval \"{t}\" must be like \"30m\" or \"6h\" (at most 24h)"
+                    ));
+                    MIN_INTERVAL
+                }),
+            };
             if problems.len() == before {
                 script_stacks.push(ScriptStack {
                     compose_project: set(s.compose_project).unwrap_or_else(|| name.clone()),
@@ -623,6 +685,7 @@ impl Config {
                     update: update.unwrap_or_default(),
                     rollback,
                     version,
+                    min_interval,
                 });
             }
         }
@@ -654,9 +717,26 @@ impl Config {
             globs(allow, "allow");
         }
         globs(&raw_updates.deny, "deny");
+        let min_health_seconds = match raw_updates.min_health_seconds {
+            None => MIN_HEALTH_SECONDS,
+            Some(n) => match u64::try_from(n) {
+                Ok(n) if n <= crate::jobs::MAX_HEALTH_SECONDS => n,
+                _ => {
+                    problems.push(format!(
+                        "updates.min_health_seconds = {n}: use a whole number from 0 to {}",
+                        crate::jobs::MAX_HEALTH_SECONDS
+                    ));
+                    MIN_HEALTH_SECONDS
+                }
+            },
+        };
         let updates = UpdatePolicy {
             allow: raw_updates.allow,
             deny: raw_updates.deny,
+            min_health_seconds,
+            // Snapshots are the safety net of every update that has data to
+            // protect: required as soon as the agent has roots to take them in.
+            require_snapshot: raw_updates.require_snapshot.unwrap_or(!roots.is_empty()),
         };
 
         let raw_retention = raw.retention.unwrap_or_default();
@@ -687,6 +767,7 @@ impl Config {
                 script_stacks,
                 docker_socket,
                 scan_interval,
+                ledger: PathBuf::from(DEFAULT_LEDGER),
             })
         } else {
             Err(ConfigError(problems))
@@ -718,14 +799,22 @@ impl Config {
                 )]));
             }
         };
-        Config::from_parts(text.as_deref(), |k| std::env::var(k).ok()).map_err(|e| {
-            let file = if text.is_some() {
-                path.display().to_string()
-            } else {
-                "the environment".to_string()
-            };
-            ConfigError(e.0.into_iter().map(|p| format!("{file}: {p}")).collect())
-        })
+        let mut config =
+            Config::from_parts(text.as_deref(), |k| std::env::var(k).ok()).map_err(|e| {
+                let file = if text.is_some() {
+                    path.display().to_string()
+                } else {
+                    "the environment".to_string()
+                };
+                ConfigError(e.0.into_iter().map(|p| format!("{file}: {p}")).collect())
+            })?;
+        // The ledger lives in the config folder (mounted from the host, so
+        // it outlives the container).
+        config.ledger = path.parent().map_or_else(
+            || PathBuf::from(DEFAULT_LEDGER),
+            |dir| dir.join("runs.json"),
+        );
+        Ok(config)
     }
 }
 
@@ -910,7 +999,7 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
     }
 
     #[test]
-    fn plain_http_warning_is_for_hosts_beyond_the_lan() {
+    fn plain_http_is_only_for_hosts_on_the_lan() {
         for beyond in [
             "http://wren.example.com",
             "http://wren.example.com:3003",
@@ -938,10 +1027,42 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
             "http://Wren.LAN",
             "http://wren.home.arpa/",
             "http://wren.lan.",
+            "http://wren.internal:3003",
         ] {
             assert!(!plain_http_beyond_lan(fine), "{fine}");
         }
         assert!(!plain_http_beyond_lan("not a url"));
+    }
+
+    #[test]
+    fn plain_http_beyond_the_lan_is_refused() {
+        for bad in [
+            "http://wren.example.com",
+            "http://8.8.8.8:3003",
+            "http://[2001:db8::1]",
+        ] {
+            let err = check_server(bad).unwrap_err();
+            assert!(err.starts_with("server: plain http://"), "{err}");
+            assert!(err.contains("use https://"), "{err}");
+        }
+        for ok in [
+            "https://wren.example.com",
+            "http://10.0.3.26:3003",
+            "http://tower:3003",
+            "http://wren.internal",
+        ] {
+            assert!(check_server(ok).is_ok(), "{ok}");
+        }
+        let err = Config::from_parts(
+            Some(&format!(
+                "server = \"http://wren.example.com\"
+token = \"{TOKEN}\"
+"
+            )),
+            no_env,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("plain http://"), "{err}");
     }
 
     #[test]
@@ -1010,7 +1131,10 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
     #[test]
     fn update_allowlist_globs_and_deny_wins() {
         let c = Config::from_parts(Some(&base()), no_env).unwrap();
-        assert!(c.updates.allows("postiz"), "no section allows all");
+        assert!(
+            !c.updates.allows("postiz") && !c.updates.configured(),
+            "no section allows nothing"
+        );
         let text = format!(
             "{}[updates]\nallow = [\"ww-test-*\", \"exact\"]\ndeny = [\"ww-test-keep?\"]\n",
             base()
@@ -1027,6 +1151,109 @@ command = "sh install.sh --rollback --allow-root --non-interactive --dir \"$PWD\
         let c = Config::from_parts(Some(&text), no_env).unwrap();
         assert!(!c.updates.allows("anything"));
         assert!(glob("a*b*c", "aXXbYc") && !glob("a*b", "ab_") && glob("*", ""));
+    }
+
+    #[test]
+    fn updates_section_is_required_and_has_minimums() {
+        // Nothing allows: no section, only deny, or an empty list.
+        for extra in [
+            "",
+            "[updates]
+deny = [\"x\"]
+",
+            "[updates]
+allow = []
+",
+        ] {
+            let c = Config::from_parts(Some(&format!("{}{extra}", base())), no_env).unwrap();
+            assert!(!c.updates.configured(), "{extra:?}");
+            assert!(!c.updates.allows("anything"), "{extra:?}");
+        }
+        let c = Config::from_parts(
+            Some(&format!(
+                "{}[updates]
+allow = [\"*\"]
+",
+                base()
+            )),
+            no_env,
+        )
+        .unwrap();
+        assert!(c.updates.configured() && c.updates.allows("anything"));
+        // Roots are set in base(): snapshots are required unless said otherwise.
+        assert_eq!(
+            (c.updates.min_health_seconds, c.updates.require_snapshot),
+            (30, true)
+        );
+        let text = format!(
+            "{}[updates]
+allow = [\"*\"]
+min_health_seconds = 5
+require_snapshot = false
+",
+            base()
+        );
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert_eq!(
+            (c.updates.min_health_seconds, c.updates.require_snapshot),
+            (5, false)
+        );
+        // Without roots there is nothing to snapshot into.
+        let no_roots = format!(
+            "server = \"http://10.0.3.26:3003\"
+token = \"{TOKEN}\"
+"
+        );
+        let c = Config::from_parts(Some(&no_roots), no_env).unwrap();
+        assert!(!c.updates.require_snapshot);
+        for bad in ["-1", "3601"] {
+            let text = format!(
+                "{}[updates]
+allow = [\"*\"]
+min_health_seconds = {bad}
+",
+                base()
+            );
+            let err = Config::from_parts(Some(&text), no_env)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("updates.min_health_seconds"), "{err}");
+        }
+    }
+
+    #[test]
+    fn script_stack_min_interval_defaults_to_an_hour() {
+        let stack = "[[script_stack]]
+name = \"a\"
+working_dir = \"/mnt/user/appdata/a\"
+timeout = \"1m\"
+update = { command = \"x\" }
+";
+        let c = Config::from_parts(Some(&format!("{}{stack}", base())), no_env).unwrap();
+        assert_eq!(c.script_stacks[0].min_interval, MIN_INTERVAL);
+        let text = format!(
+            "{}{stack}min_interval = \"15m\"
+",
+            base()
+        );
+        // min_interval belongs above the [script_stack.update] table.
+        let text = text.replace(
+            "update = { command = \"x\" }
+min_interval = \"15m\"
+",
+            "min_interval = \"15m\"
+update = { command = \"x\" }
+",
+        );
+        let c = Config::from_parts(Some(&text), no_env).unwrap();
+        assert_eq!(c.script_stacks[0].min_interval, Duration::from_secs(900));
+        let bad = stack.replace(
+            "timeout",
+            "min_interval = \"0\"
+timeout",
+        );
+        let err = Config::from_parts(Some(&format!("{}{bad}", base())), no_env).unwrap_err();
+        assert!(err.to_string().contains("min_interval \"0\""), "{err}");
     }
 
     #[test]

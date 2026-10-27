@@ -178,11 +178,18 @@ pub fn render(server: &str, choice: &Choice) -> String {
         .collect();
     out.push(format!("roots = {}", list(&roots)));
     out.push(String::new());
-    out.push("# Which targets Wren may update (deny wins over allow).".into());
+    out.push(
+        "# Which targets Wren may update (deny wins over allow). Required: without an allow list the agent refuses every update and rollback."
+            .into(),
+    );
     out.push("[updates]".into());
     let names =
         |v: &[String]| -> Vec<String> { v.iter().filter(|n| glob_ok(n)).cloned().collect() };
     if choice.all {
+        out.push(
+            "# Every target, to get started. A list of just the names you want updated is safer."
+                .into(),
+        );
         out.push("allow = [\"*\"]".into());
         out.push(format!("deny = {}", list(&names(&choice.deny))));
     } else {
@@ -335,10 +342,12 @@ async fn page(
     let all = if submitted {
         field("updates") == "all"
     } else {
-        policy.as_ref().is_some_and(|p| {
+        // Every target is pre-filled (an agent.toml needs an allow list); an
+        // explicit list the agent reports is kept.
+        policy.as_ref().is_none_or(|p| {
             p.allow
                 .as_deref()
-                .is_none_or(|a| a.iter().any(|g| g == "*"))
+                .is_none_or(|a| a.is_empty() || a.iter().any(|g| g == "*"))
         })
     };
     let picks: Vec<Pick> = targets
@@ -511,6 +520,24 @@ mod tests {
             },
         );
         assert!(text.contains("allow = [\"sonarr\"]"), "{text}");
+    }
+
+    #[test]
+    fn the_text_has_an_updates_section_with_every_target_to_start_with() {
+        let text = render(
+            "Tower",
+            &Choice {
+                all: true,
+                ..Choice::default()
+            },
+        );
+        assert!(text.contains("\n[updates]\n"), "{text}");
+        assert!(text.contains("allow = [\"*\"]"), "{text}");
+        assert!(
+            text.contains("safer"),
+            "the comment recommends a list: {text}"
+        );
+        assert!(text.contains("without an allow list the agent refuses every update"));
     }
 
     #[test]

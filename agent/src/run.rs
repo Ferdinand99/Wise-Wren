@@ -17,6 +17,7 @@ use serde_json::{Map, Value, json};
 use crate::config::Config;
 use crate::docker::{cli, get_json, post_json};
 use crate::jobs::{self, Ctr, Job, JobClient, JobKind, Kind, Note, Plan, StepReport, repo_of};
+use crate::ledger::{self, Ledger};
 use crate::snapshot::{self, DataPath, Method, exec, tail};
 
 /// Step time limits; the update of a script stack uses its own `timeout`.
@@ -231,6 +232,7 @@ pub async fn execute<H: Host, R: Report>(host: &H, report: &R, plan: &Plan) -> &
     if !manual && job.require_snapshot && !plan.own_backup() && plan.data.is_empty() {
         let note = Note::new("failed.no_snapshot", &[]);
         let mut log = vec![note.text()];
+        log.extend(plan.effective.iter().cloned());
         log.extend(plan.notes.iter().map(Note::text));
         let _ = report
             .step("preflight", "failed", &log.join("\n"), 0, &plan.notes)
@@ -981,7 +983,19 @@ impl Host for DockerHost<'_> {
     async fn preflight(&self, p: &Plan, st: &mut State) -> StepResult {
         let job = p.job();
         let target = job.target.name.clone();
-        let mut log: Vec<String> = Vec::new();
+        // The safety nets this run really has, after the agent's minimums.
+        let mut log: Vec<String> = p.effective.clone();
+        // What an earlier restore of this target set aside has had its time:
+        // this is the target's next run.
+        for (path, root) in &p.data {
+            let dp = snapshot::resolve(path, root).await;
+            for gone in snapshot::clear_asides(&dp.real).await {
+                log.push(format!(
+                    "removed {}, set aside by an earlier restore",
+                    gone.display()
+                ));
+            }
+        }
         if job.kind == JobKind::Rollback {
             let of = job.rollback_of.unwrap_or_default();
             for c in &p.ctrs {
@@ -1434,6 +1448,21 @@ impl Report for ClientReport<'_> {
     }
 }
 
+/// The run ledger's say on a job: checked against what this agent itself ran
+/// and, when it passes, recorded as started. A ledger that can't be written
+/// refuses the job (a run the agent can't record would escape the rules).
+pub fn admit(
+    ledger: &mut Ledger,
+    job: &Job,
+    min_interval: Option<Duration>,
+    now: u64,
+) -> Result<(), Note> {
+    ledger.check(job, min_interval, now)?;
+    ledger
+        .begin(job, now)
+        .map_err(|error| Note::new("refused.ledger_write", &[("error", &error)]))
+}
+
 /// Checks and runs one job from Wren.
 pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     let run = job.run_id;
@@ -1442,8 +1471,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     // terminal codes can't forge log lines.
     tracing::info!(run, target = ?job.target.name, kind = ?job.kind, "job received");
     // The allowlist first: a target it leaves out isn't even looked at.
-    if !config.updates.allows(&job.target.name) {
-        let why = Note::new("refused.not_allowed", &[("target", &job.target.name)]);
+    if let Err(why) = jobs::allowed(config, &job.target.name) {
         tracing::warn!(run, reason = ?why.text(), "job refused");
         report.finish("refused", &why).await;
         return;
@@ -1475,7 +1503,22 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
         report.finish("succeeded", &why).await;
         return;
     }
+    // What this agent itself ran: run ids only grow, a rollback undoes the
+    // newest successful update once, a script stack keeps its distance.
+    let (mut ledger, warning) = Ledger::load(&config.ledger);
+    if let Some(warning) = warning {
+        tracing::warn!("{warning}");
+    }
+    let min_interval = plan.stack.as_ref().map(|s| s.min_interval);
+    if let Err(why) = admit(&mut ledger, &job, min_interval, ledger::now()) {
+        tracing::warn!(run, reason = ?why.text(), "job refused");
+        report.finish("refused", &why).await;
+        return;
+    }
     let outcome = execute(&DockerHost { config }, &report, &plan).await;
+    if let Err(error) = ledger.finish(&job, outcome) {
+        tracing::warn!(run, "{error}");
+    }
     tracing::info!(run, outcome, "run finished");
 }
 
@@ -1630,6 +1673,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_ledger_gates_a_job_and_a_broken_ledger_refuses_it() {
+        let dir = std::env::temp_dir().join(format!("wren-admit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = |run_id: i64, kind: JobKind, of: Option<i64>| -> Job {
+            serde_json::from_value(json!({
+                "run_id": run_id, "kind": kind, "rollback_of": of,
+                "target": {"kind": "container", "name": "app"}
+            }))
+            .unwrap()
+        };
+        let (mut ledger, _) = Ledger::load(&dir.join("runs.json"));
+        // A first update is admitted and recorded; the same run id again is not.
+        admit(&mut ledger, &job(4, JobKind::Update, None), None, 10).unwrap();
+        let why = admit(&mut ledger, &job(4, JobKind::Update, None), None, 11).unwrap_err();
+        assert_eq!(why.code, "refused.run_old");
+        // A rollback of an update that never succeeded is refused.
+        let why = admit(&mut ledger, &job(5, JobKind::Rollback, Some(4)), None, 12).unwrap_err();
+        assert_eq!(why.code, "refused.rollback_unknown");
+        ledger
+            .finish(&job(4, JobKind::Update, None), "succeeded")
+            .unwrap();
+        admit(&mut ledger, &job(5, JobKind::Rollback, Some(4)), None, 13).unwrap();
+        // The record is on disk: a new process sees it.
+        let (again, warning) = Ledger::load(&dir.join("runs.json"));
+        assert!(warning.is_none());
+        assert_eq!(again.entries("container", "app").len(), 2);
+
+        // A ledger that can't be written refuses the job before it starts.
+        let (mut broken, _) = Ledger::load(&dir.join("runs.json").join("x").join("runs.json"));
+        let why = admit(&mut broken, &job(1, JobKind::Update, None), None, 1).unwrap_err();
+        assert_eq!(why.code, "refused.ledger_write");
+        assert!(why.text().contains("can't write its run ledger"), "{why}");
+    }
+
     fn plan(kind: JobKind, own_backup: bool) -> Plan {
         let job: Job = serde_json::from_value(json!({
             "run_id": 9, "kind": kind, "target": {"kind": "script", "name": "ww-test-stack"},
@@ -1650,6 +1729,7 @@ mod tests {
                 update: "true".into(),
                 rollback: None,
                 version: None,
+                min_interval: Duration::from_secs(3600),
             }),
             ..Plan::default()
         }

@@ -41,6 +41,8 @@ pub fn router() -> Router<Core> {
         .route("/targets/{id}/resume", post(resume))
         .route("/targets/{id}/policy", post(target_policy))
         .route("/servers/{id}/mode", post(server_mode))
+        .route("/targets/{id}/allow-auto", post(allow_auto))
+        .route("/servers/{id}/allow-auto", post(allow_auto_new))
         .route("/runs/{id}", get(run_page))
         .route("/runs/{id}/live", get(run_live))
         .route("/runs/{id}/cancel", post(cancel))
@@ -638,6 +640,52 @@ async fn target_policy(
         Err(r) => refused(jar, r)?,
     };
     Ok((jar, to).into_response())
+}
+
+/// An admin allows automatic updates for a new target.
+async fn allow_auto(
+    Extension(wren): Extension<Wren>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+    Path(id): Path<i64>,
+) -> ApiResult<Response> {
+    user.require_admin()?;
+    let who = user.username.clone();
+    let res = wren
+        .core
+        .with_conn(move |c| runs::allow_auto(c, id, &who, true))
+        .await?;
+    let jar = match res {
+        Ok(()) => {
+            changed(&wren);
+            flash(jar, "success", i18n::t("runs.policy_saved"))
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, Redirect::to(&format!("/targets/{id}"))).into_response())
+}
+
+/// An admin allows automatic updates for every new target of a server.
+async fn allow_auto_new(
+    Extension(wren): Extension<Wren>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+    Path(id): Path<i64>,
+) -> ApiResult<Response> {
+    user.require_admin()?;
+    let who = user.username.clone();
+    let res = wren
+        .core
+        .with_conn(move |c| runs::allow_auto_new(c, id, &who, true))
+        .await?;
+    let jar = match res {
+        Ok(_) => {
+            changed(&wren);
+            flash(jar, "success", i18n::t("runs.policy_saved"))
+        }
+        Err(r) => refused(jar, r)?,
+    };
+    Ok((jar, Redirect::to(&format!("/servers/{id}"))).into_response())
 }
 
 async fn server_mode(

@@ -82,6 +82,8 @@ pub fn glob(pattern: &str, name: &str) -> bool {
 pub enum Blocked {
     /// Outside `[updates] allow`, or inside `deny`.
     NotAllowed,
+    /// agent.toml has no `[updates] allow` list: the agent refuses every update.
+    NoUpdates,
     /// A stack whose folder isn't under the agent's roots.
     NotUnderRoots(String),
     /// A stack whose folder isn't mounted in the agent.
@@ -93,6 +95,7 @@ impl Blocked {
     pub fn message(&self) -> String {
         match self {
             Blocked::NotAllowed => i18n::t("blocked.not_allowed").to_string(),
+            Blocked::NoUpdates => i18n::t("blocked.no_updates").to_string(),
             Blocked::NotUnderRoots(f) => i18n::tf("blocked.roots", &[("folder", f)]),
             Blocked::FilesNotReachable => i18n::t("targets.files_missing").to_string(),
         }
@@ -102,6 +105,7 @@ impl Blocked {
     pub fn english(&self) -> String {
         match self {
             Blocked::NotAllowed => "not allowed by [updates] in agent.toml".to_string(),
+            Blocked::NoUpdates => "agent.toml has no [updates] allow list".to_string(),
             Blocked::NotUnderRoots(f) => format!("folder {f} not under the agent's roots"),
             Blocked::FilesNotReachable => "files not reachable".to_string(),
         }
@@ -121,7 +125,13 @@ pub fn blocked(
     let stack = kind == COMPOSE || kind == SCRIPT;
     if let Some(p) = policy {
         if !p.allows(name) {
-            return Some(Blocked::NotAllowed);
+            // An agent from 0.7.0 on reports an empty list when agent.toml
+            // has none: it refuses everything until one is added.
+            return Some(if p.allow.as_ref().is_some_and(Vec::is_empty) {
+                Blocked::NoUpdates
+            } else {
+                Blocked::NotAllowed
+            });
         }
         if stack && !p.under_roots(working_dir) {
             return Some(Blocked::NotUnderRoots(working_dir.to_string()));
