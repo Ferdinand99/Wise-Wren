@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.6.0...v0.7.0) (2026-10-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* an agent.toml without [updates] allow = [...] now refuses every update and rollback, and a plain http:// server address outside the local network is a configuration error. With roots set, every update now requires a snapshot (set [updates] require_snapshot = false to keep the old behaviour). Updates run before this version have no ledger entry and can't be rolled back from Wren.
+
+### Features
+
+* agent-side safety policy and target settings lifecycle ([#36](https://github.com/Ferdinand99/Wise-Wren/issues/36)) ([40ac3d9](https://github.com/Ferdinand99/Wise-Wren/commit/40ac3d94eec746887fa747ea285c1dca7fb4e895))
+
+
+### Bug Fixes
+
+* **agent:** security hardening from the October review ([#33](https://github.com/Ferdinand99/Wise-Wren/issues/33)) ([ff6f294](https://github.com/Ferdinand99/Wise-Wren/commit/ff6f294e8f647932b83fa0e345fc0e70d53db18c))
+* server security hardening from the October review ([#35](https://github.com/Ferdinand99/Wise-Wren/issues/35)) ([b4e3084](https://github.com/Ferdinand99/Wise-Wren/commit/b4e308430e09910c76d100dbe601e64b95f4db47))
+
 ## [0.6.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.5.0...v0.6.0) (2026-10-24)
 
 
