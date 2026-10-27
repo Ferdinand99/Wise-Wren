@@ -55,6 +55,25 @@ An older agent works with the new server, and a new agent with an older server; 
 English there. On a server in `auto` mode, targets Wren has never seen start on `approve` until an admin allows
 automatic updates for them (Targets card → **Allow automatic updates**).
 
+### To 0.8
+
+Server and agent change together; recreate both. **Agent settings are now managed in Wren** (server page → **Agent
+settings**, see [Managed settings](agent.md#managed-settings)):
+
+- The first time an upgraded agent connects, Wren imports its `agent.toml` as version 1 of the settings and offers the
+  same values back: nothing changes on the agent, nothing is lost. From then on the page, not the file, decides the
+  agent's `[updates]`, `roots`, `[retention]` and Fluxer-like script stacks. Script stacks with commands of their own,
+  `server` and `token` stay in `agent.toml`.
+- Roots must be inside folders mounted into the agent (the same-path rule), and the agent reports its mounts. Roots
+  already in `agent.toml` stay valid; new ones are chosen from the mounts.
+- To keep deciding on the host, set `WW_AGENT_LOCKED=1` on the agent **before** you upgrade it (or right after: a
+  locked agent ignores the settings and a `managed.json`). The agent then behaves exactly as in 0.7.
+- Wren shows an agent before 0.8 as "can't take settings from Wren" and keeps the agent.toml helper for it. An older
+  agent works with the new server, and a new agent with an older server (it just never gets settings).
+- The Fluxer preset downloads the installer into a temporary folder inside the stack's folder instead of leaving
+  `install.sh` there. A stack in `agent.toml` with the commands from the 0.7 docs is recognised as the preset when
+  imported and keeps working.
+
 ## Agents
 
 Recreate each agent

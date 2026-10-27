@@ -356,13 +356,15 @@ fn record(
 /// reports, so a restored Wren database still moves forward), with its
 /// history entry.
 pub fn save_settings(
-    c: &Connection,
+    c: &mut Connection,
     id: i64,
     mut new: Settings,
     by: &str,
     agent_version: Option<i64>,
 ) -> rusqlite::Result<Saved> {
-    let old = current(c, id)?;
+    // Two admins saving at once get two versions, not one over the other.
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let old = current(&tx, id)?;
     let changes = diff(&old.clone().unwrap_or_default(), &new);
     if old.is_some() && changes.is_empty() {
         return Ok(Saved::Nothing);
@@ -372,7 +374,8 @@ pub fn save_settings(
         .map_or(0, |o| o.version)
         .max(agent_version.unwrap_or(0))
         + 1;
-    let widening = record(c, id, &new, by, "user", &changes)?;
+    let widening = record(&tx, id, &new, by, "user", &changes)?;
+    tx.commit()?;
     Ok(Saved::Changed {
         version: new.version,
         changes,

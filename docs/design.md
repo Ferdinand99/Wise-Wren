@@ -231,6 +231,11 @@ server can update agents (one at a time, never both).
   directory, environment and timeout. The Wren server can only ask an agent to run a script **by
   name**; it can never send a command line. The same goes for data paths: the agent only touches paths
   under roots allowed in its local config.
+- **Managed settings (0.8):** an admin can set an agent's `[updates]`, roots, retention and script stacks from
+  presets compiled into the agent in Wren's UI. Wren sends them as data in the heartbeat answer; the agent
+  validates them against hard limits of its own (roots inside its mounts and outside system folders, presets only,
+  bounded numbers, no replay), stores them in `managed.json` and reports the version in force. `WW_AGENT_LOCKED=1`
+  makes the agent ignore them and use `agent.toml` alone. See docs/agent.md and docs/security.md.
 - **Docker socket access is root-equivalent;** the docs say so plainly, and the agent image is minimal.
 - **Registry credentials and the VV API token** are stored encrypted with the instance key; masked
   in the UI and API like vole-kit's notification secrets.

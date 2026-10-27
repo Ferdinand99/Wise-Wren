@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::config::ScriptStack;
+use crate::config::{ScriptStack, valid_name};
 
 /// The Fluxer preset.
 pub const FLUXER: &str = "fluxer";
@@ -99,7 +99,9 @@ fn flat(command: &str) -> String {
 /// Such a stack is imported into Wren's settings as the preset; any other
 /// stack stays "custom" and only `agent.toml` can change it.
 pub fn identify(stack: &ScriptStack) -> Option<&'static str> {
-    if stack.version.is_some() || stack.preset.is_some() {
+    // A stack the managed settings couldn't take (a Compose project name
+    // they'd refuse) stays custom.
+    if stack.version.is_some() || stack.preset.is_some() || !valid_name(&stack.compose_project) {
         return None;
     }
     let env = BTreeMap::from([(
@@ -450,6 +452,11 @@ mod tests {
         let mut nocheck = own.clone();
         nocheck.check = None;
         assert_eq!(identify(&nocheck), None);
+        // A Compose project the managed settings would refuse keeps the stack custom.
+        let mut odd = own.clone();
+        odd.compose_project = "My Project".into();
+        odd.env = BTreeMap::from([("COMPOSE_PROJECT_NAME".to_string(), "My Project".to_string())]);
+        assert_eq!(identify(&odd), None);
         // A stack that is already a preset isn't "identified" again.
         assert_eq!(identify(&fluxer()), None);
     }

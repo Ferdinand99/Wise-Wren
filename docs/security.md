@@ -7,14 +7,39 @@ who controls the agent can start a privileged container. The agent also runs as 
 must, to restore snapshots with their owners and to run Unraid's own scripts). It is not privileged and has no
 added capabilities, but treat it as root anyway, and treat its token like a root password.
 
+Who decides what the agent may touch depends on one switch:
+
+- **Unlocked (the default, since 0.8):** Wren's admins decide, through the settings page, **within hard limits the
+  agent enforces itself** (below). The agent applies what Wren sends only after it passed those limits and keeps
+  the result in `managed.json`.
+- **Locked (`WW_AGENT_LOCKED=1`):** only the agent's local `agent.toml` decides, as before 0.8. The agent ignores
+  managed settings completely, also a `managed.json` it finds, and tells Wren that it is locked. Choose this where the
+  people with access to the host must be the ones who decide, not whoever can sign in to Wren as an admin.
+
+The trade-off, in plain words: with managed settings, **an attacker who controls Wren (or an admin account) can widen
+what an unlocked agent may do**, up to the hard limits: allow every target, lower the safety minimums, add a root
+under any folder mounted into the agent, or start a preset script stack. They still can't make the agent run a command
+of their choosing, touch system folders, update itself or reach a folder that isn't mounted into it. Wren makes this
+visible (every change is in the history, and changes that widen access notify all notification channels), and
+locking removes the exposure. Mount only the folders Wren really needs into the agent: the mounts are the outer limit.
+
 What limits the damage if the **Wren server** is compromised (design: Wren must never become a remote shell):
 
 - Wren can't send a command line. A job is data: a target's kind and name, version keys and image digests. Script
-  stacks' commands live only in the agent's own `agent.toml`, and Wren can only ask for them by name.
+  stacks' commands live only in the agent (compiled-in presets, or its own `agent.toml`), and Wren can only ask for
+  them by name. Managed settings are data too: a closed set of fields, and a field the agent doesn't know makes it
+  refuse the whole update.
+- **Hard limits on managed settings.** The agent refuses a whole update (and keeps what it had) when a root isn't
+  inside a folder mounted into the agent, is `/`, is under `/boot` (but Unraid's Compose Manager folder), `/etc`,
+  `/proc`, `/sys`, `/dev`, `/var/lib/docker`, `/var/run`, `/run`, `/usr`, `/bin`, `/sbin`, `/lib*` or `/root`, or is
+  the agent's config folder; when a script stack names a preset it doesn't have, or a folder outside the roots; when a
+  number is out of the bounds `agent.toml` has; or when the version is older than the one in force. A compromised
+  server can't send a command line, can't make the agent touch system paths, and can't make it update itself.
 - The agent re-checks every job against Docker: the target exists, each image is the one that container runs now,
   at the digest Wren saw, and the new one is a digest of the **same repository**. It never pulls an image a target
   doesn't already run, and it only touches folders under its `roots` (no `..`, never `/`).
-- `[updates] allow` / `deny` in `agent.toml` decides which targets may be updated at all, whatever Wren asks
+- `[updates] allow` / `deny` (in `agent.toml`, or the managed settings of an unlocked agent) decides which targets
+  may be updated at all, whatever a job asks
   (a script stack's Compose project counts too, and a plain Compose job can't go round a script stack). The list
   is **required**: an agent without an `allow` list refuses every update and rollback.
 - The agent keeps its own record of what it ran (the run ledger, `runs.json` beside `agent.toml`). A run id must
@@ -58,7 +83,7 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
 
 - Sign-in with roles (viewer, editor, admin), two-factor sign-in, CSRF protection on every form, a strict Content
   Security Policy and the usual security headers, and limits on failed sign-ins (from the family kit, shared with
-  Vigilant Vole). Only editors and admins approve or run updates; only admins add agents, change registries,
+  Vigilant Vole). Only editors and admins approve or run updates; only admins add agents, **change an agent's settings**, change registries,
   manage **notification channels** (a channel makes the server send requests to an address of its own choosing,
   which editors may not do) and the
   VV connection, and turn on automatic updates. Every action is logged with who did it.
