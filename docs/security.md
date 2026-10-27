@@ -92,7 +92,7 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
 - Agents are limited to 20 heartbeats
 , 6 inventories and 120 job requests a minute per server.
 - Keep Wren off the open internet when you can. When agents must reach it from elsewhere, use HTTPS, set
-  `WW_TRUST_PROXY=1` only behind your own proxy, use `WW_SETUP_TOKEN` until the first admin exists, and turn on
+  `WW_TRUST_PROXY=1` only behind your own proxy, use the setup token (`WW_SETUP_TOKEN`, or the random one logged at the first start; `WW_SETUP_OPEN=1` turns it off) until the first admin exists, and turn on
   two-factor sign-in.
 
 Found a security problem? Please report it privately to the maintainer rather than in a public issue.

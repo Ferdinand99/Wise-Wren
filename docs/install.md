@@ -17,8 +17,11 @@ curl -fsSLO https://raw.githubusercontent.com/Ferdinand99/Wise-Wren/main/docker-
 docker compose up -d
 ```
 
-Open `http://<host>:3003/setup` and create the first admin. Everything lives in `./data` (`wren.sqlite`, the
-session key that also seals registry passwords and the Vigilant Vole token, and pre-migration backups).
+Open `http://<host>:3003/setup` and create the first admin. Until the first admin exists, `/setup` asks for a setup
+token: set `WW_SETUP_TOKEN`, or read the one Wren makes up and logs once at the first start
+(`docker compose logs wise-wren`, a line with `/setup?token=…`). The locked page also has a field for it. Everything
+lives in `./data` (`wren.sqlite`, the session key that also seals registry passwords, the Vigilant Vole token and
+your users' two-factor secrets, and pre-migration backups).
 
 ## Unraid
 
@@ -45,7 +48,8 @@ docker run -d --name wise-wren --restart unless-stopped \
 |---|---|---|
 | `WW_PUBLIC_URL` | (none) | The address agents and people use. Stored as Settings → General → public URL at every start; it goes into the agents' `docker run` lines and notification links. |
 | `WW_TRUST_PROXY` | off | `1` behind a reverse proxy that sets `X-Forwarded-*` (Caddy, Traefik, nginx, SWAG, Pangolin). |
-| `WW_SETUP_TOKEN` | (none) | `/setup` only opens with `?token=<value>`, so nobody else can create the first admin. |
+| `WW_SETUP_TOKEN` | (random, logged at the first start) | `/setup` only opens with `?token=<value>` until the first admin exists, so nobody else can create it. |
+| `WW_SETUP_OPEN` | off | `1`: `/setup` needs no token (scripted installs). |
 | `WW_ALLOW_PRIVATE_VERSION_URLS` | off | `1` lets script stacks' `url` version sources reach private and local addresses (a version file on your LAN). See [the agent guide](agent.md). |
 | `PUID` / `PGID` | 1000 / 1000 | The user the app runs as (Unraid: 99 / 100). The data folder is handed to it at start. |
 | `TZ` | UTC | Time zone of log timestamps (pages use Settings → General → time zone). |
@@ -71,3 +75,15 @@ a VPN when you can. If agents must reach it over the internet, put it behind HTT
 
 The REST API and MCP: Settings → API tokens, and the API reference linked there (`/api-docs`, OpenAPI at
 `/api/v1/openapi.json`, MCP at `/mcp`).
+
+## Upgrading from Wren 0.7.0 (vole-kit 0.6)
+
+- The first start seals your users' two-factor secrets in the database with the instance key (`session.key`),
+  after taking a copy of the database in `backups/` (with a `.plaintext-secrets` marker next to it). That copy is
+  deleted automatically once the database holds no plaintext secret, or after 7 days. The previous release can't
+  open a database the new one has started on: **to go back, restore that copy**. Keep `session.key` with your
+  backups, or the secrets can't be read.
+- Creating a write or never-expiring API token, adding or promoting an admin, an admin's password or two-factor
+  reset and deleting a passkey ask for your password. New API tokens default to 90 days.
+- Changing your password or an admin's password reset offers "Also revoke API tokens" (on by default).
+- A fresh instance asks for a setup token at `/setup` (see above). Instances that already have users are unchanged.

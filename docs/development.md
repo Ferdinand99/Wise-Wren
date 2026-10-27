@@ -4,7 +4,7 @@ Wise Wren is a Cargo workspace with two crates:
 
 - **`wise-wren`** (the root, binary `wise-wren`): the server, built on
   [vole-kit](https://github.com/Ferdinand99/Vigilant-Vole/blob/main/docs/vole-kit.md), the shared kit in the
-  Vigilant Vole repository (tag `vole-kit-v0.3.0`). The kit brings sign-in, setup, users and roles, API tokens,
+  Vigilant Vole repository (tag `vole-kit-v0.6.0`). The kit brings sign-in, setup, users and roles, API tokens,
   2FA, Security, General settings, the API reference, i18n in 26 languages, the database plumbing, request
   budgets, live updates, the notification providers and the design system. Wren adds servers and their agents,
   targets and version checks, registry credentials, notifications for new versions, the notification channels
@@ -79,7 +79,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-The first start opens `/setup`, which creates the admin account.
+The first start opens `/setup`, which creates the admin account. It needs a setup token (vole-kit 0.5.1): set
+`WW_SETUP_TOKEN`, or take the random one that is logged once at the first start (`/setup?token=…`).
+`WW_SETUP_OPEN=1` keeps the page open without a token, for scripted installs and end-to-end runs. The in-process
+tests need no variable: they build with vole-kit's `test-support` feature (a `[dev-dependencies]` entry), which
+opens `/setup` by default.
 
 | Flag | Variable | Default | What |
 |---|---|---|---|
@@ -88,7 +92,8 @@ The first start opens `/setup`, which creates the admin account.
 | `--port` | `WW_PORT` | `3003` | port to listen on |
 | `--public-url` | `WW_PUBLIC_URL` | (none) | the address agents and people use; stored as the General page's public URL |
 | | `WW_TRUST_PROXY` | off | honour `X-Forwarded-*` from a reverse proxy (read by vole-kit) |
-| | `WW_SETUP_TOKEN` | (none) | `/setup` only opens with `?token=<value>` (read by vole-kit) |
+| | `WW_SETUP_TOKEN` | (random, logged at the first start) | `/setup` only opens with `?token=<value>` until the first user exists (read by vole-kit) |
+| | `WW_SETUP_OPEN` | off | `1`: `/setup` needs no token (read by vole-kit) |
 
 To work against a local checkout of the kit, create `.cargo/config.toml` (git-ignored):
 
