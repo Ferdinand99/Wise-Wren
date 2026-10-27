@@ -99,4 +99,7 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   `WW_TRUST_PROXY=1` only behind your own proxy, use the setup token (`WW_SETUP_TOKEN`, or the random one logged at the first start; `WW_SETUP_OPEN=1` turns it off) until the first admin exists, and turn on
   two-factor sign-in.
 
+A record of the October 2026 security review (what was found, what was fixed, what is still open) is in
+[security-review-2026-10.md](security-review-2026-10.md).
+
 Found a security problem? Please report it privately to the maintainer rather than in a public issue.
