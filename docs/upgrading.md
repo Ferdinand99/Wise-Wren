@@ -81,6 +81,10 @@ The server records `kit/0006_push.sql`: three new, empty tables (`push_devices`,
 copy first. The release before it refuses a database this one has started on; to go back, restore that copy. Agents
 are not affected.
 
+The same release renames Wren's internal slug from `wren` to `wise-wren` (the push relay knows the products by their full
+names). It shows up as the MCP server name, the API reference download names and the source or tag Keep, ClickSend and
+Opsgenie receive: update a rule that matched `wren`.
+
 ## Agents
 
 Recreate each agent
