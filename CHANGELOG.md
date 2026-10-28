@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.8.0...v0.9.0) (2026-10-28)
+
+
+### Features
+
+* push to the Hedgerow app through Postal Pigeon ([#45](https://github.com/Ferdinand99/Wise-Wren/issues/45)) ([097001f](https://github.com/Ferdinand99/Wise-Wren/commit/097001fba33bab5f5e4ef5a433245516a3b01b2c))
+
 ## [0.8.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.7.1...v0.8.0) (2026-10-27)
 
 
