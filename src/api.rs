@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{Map, Value, json};
 use vole_kit::auth::CurrentUser;
-use vole_kit::docs::{BearerScheme, Credential, DocsSpec, ErrorCode, RATE_LIMITED, RouteDoc, r};
+use vole_kit::docs::{BearerScheme, Credential, DocsSpec, ErrorCode, RouteDoc, r};
 use vole_kit::http::ApiResult;
 use vole_kit::mcp::{Handler, RpcResult};
 use vole_kit::state::Core;
@@ -207,9 +207,15 @@ const fn all_routes() -> [RouteDoc; ROUTE_COUNT] {
 
 static ALL_ROUTES: [RouteDoc; ROUTE_COUNT] = all_routes();
 
-/// The codes of the Hedgerow app's routes, next to the kit's `rate_limited`.
+/// The codes of the Hedgerow app's routes, and the kit's `rate_limited` row
+/// with the push meaning added.
 const ERROR_CODES: &[ErrorCode] = &[
-    RATE_LIMITED,
+    ErrorCode {
+        code: "rate_limited",
+        status: 429,
+        when: "too many requests (wait `Retry-After` seconds), or more than 4 new Hedgerow app devices registered in an hour",
+        on_page: false,
+    },
     ErrorCode {
         code: "push_disabled",
         status: 409,

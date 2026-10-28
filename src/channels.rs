@@ -619,8 +619,12 @@ async fn update(
     let saved = core
         .with_conn(move |c| {
             let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            // Only a channel that becomes active needs the check: two active
+            // ones can already exist (config as code, an import), and then
+            // the rest of an edit must still go through.
             if kind == db::HEDGEROW
                 && active
+                && !db::channel_active(&tx, id)?
                 && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
             {
                 return Ok(Err(other));
@@ -695,8 +699,12 @@ async fn toggle_active(
     let refused = core
         .with_conn(move |c| {
             let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            // Only a channel that becomes active needs the check: two active
+            // ones can already exist (config as code, an import), and then
+            // the rest of an edit must still go through.
             if active
                 && hedgerow
+                && !db::channel_active(&tx, id)?
                 && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
             {
                 return Ok(Some(other));
@@ -992,10 +1000,17 @@ pub async fn api_save(core: &Core, id: Option<i64>, body: &Value, who: &str) -> 
     let saved = core
         .with_conn(move |c| {
             let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            // Only one Hedgerow app channel can be active.
-            // (A new channel is always active.)
+            // Only one Hedgerow app channel can be active, so the check runs
+            // when a channel becomes active: a new one is always active, an
+            // edited one only if it was paused. Two active ones can exist
+            // already (config as code, an import), and then the rest of an
+            // edit must still go through.
+            let becomes_active = match id {
+                None => true,
+                Some(id) => active && !db::channel_active(&tx, id)?,
+            };
             if kind == db::HEDGEROW
-                && (active || id.is_none())
+                && becomes_active
                 && let Some(other) = db::other_active_hedgerow(&tx, id)?
             {
                 return Ok(Err(other));
@@ -1035,6 +1050,7 @@ pub async fn api_active(core: &Core, id: i64, active: bool) -> ApiResult<Value> 
             let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             if active
                 && hedgerow
+                && !db::channel_active(&tx, id)?
                 && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
             {
                 return Ok(Some(other));
@@ -1146,6 +1162,18 @@ mod db {
     /// reaches every device registered with the server, so a second one
     /// would push the same notification twice.
     pub const HEDGEROW: &str = "hedgerow";
+
+    /// Whether the channel is active now. `false` when it doesn't exist.
+    /// Read it inside the transaction that then changes the channel.
+    pub fn channel_active(c: &Connection, id: i64) -> rusqlite::Result<bool> {
+        Ok(c.query_row(
+            "SELECT active FROM notification_channels WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+    }
 
     /// The name of an active `hedgerow` channel other than `except`, if
     /// there is one.
