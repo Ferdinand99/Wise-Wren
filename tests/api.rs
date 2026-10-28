@@ -693,6 +693,47 @@ async fn api_edits_an_active_hedgerow_channel_when_two_are_active() {
     assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
 }
 
+/// The push routes keep the API's boundaries: a session needs the same
+/// origin for a write, and an agent token is not an API token.
+#[tokio::test]
+async fn the_push_routes_refuse_cross_site_sessions_and_agent_tokens() {
+    let app = App::new().await;
+    let mut web = Web::new(&app, "vera", "viewer").await;
+    let body =
+        json!({"handle": "hrh_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}).to_string();
+    // No Origin, a simple content type: what a cross-site form sends.
+    let req = Request::post("/api/v1/push/devices")
+        .header(header::CONTENT_TYPE, "text/plain")
+        .body(Body::from(body.clone()))
+        .unwrap();
+    let res = web.send(req).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+
+    // An agent token is refused on all three routes.
+    let (_, agent) = app.add_server("Tower").await;
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/push/devices",
+        &agent,
+        json!({"handle": "hrh_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED, "{}", res.body);
+    assert_eq!(
+        bearer(&app, "GET", "/api/v1/push/events/abc", &agent)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        bearer(&app, "DELETE", "/api/v1/push/devices/1", &agent)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 async fn mcp(app: &App, token: &str, method: &str, params: Value) -> Value {
     let req = Request::post("/mcp")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
