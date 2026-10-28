@@ -62,6 +62,7 @@ deleted = "Törölve: „{name}”."
 added = "Hozzáadva: „{name}”. Most indítsa el az ügynökét."
 
 [channels]
+hedgerow_second = "Egyszerre csak egy Hedgerow-alkalmazáscsatorna lehet aktív, és a(z) „{name}” már az. Előbb szüneteltesd vagy töröld."
 sub = "Ahová a Wren értesítéseket küld: új verziók, frissítések eredményei és offline állapotba került ügynökök."
 empty_text = "Adjon hozzá egy csatornát, például ntfy-t, Slacket vagy e-mailt. A Wren akkor kezd küldeni, amikor beérkeznek a frissítésellenőrzések."
 foot = "A mentett titkos adatok soha többé nem jelennek meg. Ha egy csatorna szerkesztésekor üresen hagyja őket, megmaradnak."

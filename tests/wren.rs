@@ -579,6 +579,104 @@ async fn channel_secrets_are_sealed_at_rest() {
     assert_eq!(got.load(Ordering::SeqCst), 3);
 }
 
+/// The Hedgerow app channel has no fields, and only one can be active: the
+/// forms and the switch refuse a second one and name the first.
+#[tokio::test]
+async fn only_one_hedgerow_channel_can_be_active() {
+    let app = App::new().await;
+    let mut web = Web::new(&app, "ada", "admin").await;
+    let form = web.get("/settings/notifications/form?kind=hedgerow").await;
+    assert_eq!(form.status, StatusCode::OK, "{}", form.body);
+    assert!(form.body.contains("Hedgerow app"), "{}", form.body);
+    let picker = web.get("/settings/notifications/providers").await;
+    assert!(picker.body.contains("provider-hedgerow"), "{}", picker.body);
+
+    let add = |name: &'static str| [("kind", "hedgerow"), ("name", name)];
+    let res = web
+        .post_with("/settings/notifications", &add("Phones"), true)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let first = app
+        .count("SELECT id FROM notification_channels WHERE name = 'Phones'")
+        .await;
+    // The edit page works without a card of provider fields.
+    let edit = web
+        .get(&format!("/settings/notifications/{first}/edit"))
+        .await;
+    assert_eq!(edit.status, StatusCode::OK, "{}", edit.body);
+
+    // Another one: the sheet comes back with the reason, nothing saved.
+    let res = web
+        .post_with("/settings/notifications", &add("More"), true)
+        .await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert!(res.body.contains("channel-form"), "{}", res.body);
+    assert!(res.body.contains("Phones"), "{}", res.body);
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM notification_channels")
+            .await,
+        1
+    );
+
+    // A paused one can exist; switching it on is refused and the list
+    // comes back so the switch shows what is stored.
+    app.exec(
+        "INSERT INTO notification_channels (name, kind, config, active) VALUES ('Spare', 'hedgerow', '{}', 0)"
+            .into(),
+    )
+    .await;
+    let second = app
+        .count("SELECT id FROM notification_channels WHERE name = 'Spare'")
+        .await;
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{second}/active"),
+            &[("active", "true")],
+            true,
+        )
+        .await;
+    assert_eq!(res.header("hx-retarget"), "#channels");
+    assert!(res.header("hx-trigger").contains("Phones"));
+    assert_eq!(
+        app.count("SELECT active FROM notification_channels WHERE name = 'Spare'")
+            .await,
+        0
+    );
+    // The edit form refuses it too.
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{second}"),
+            &[("name", "Spare"), ("active", "on")],
+            false,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    assert!(res.body.contains("Phones"), "{}", res.body);
+
+    // Once the first is paused, the second can take over.
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{first}/active"),
+            &[("active", "false")],
+            true,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK);
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{second}/active"),
+            &[("active", "true")],
+            true,
+        )
+        .await;
+    assert!(res.headers.get("hx-retarget").is_none());
+    assert_eq!(
+        app.count("SELECT active FROM notification_channels WHERE name = 'Spare'")
+            .await,
+        1
+    );
+}
+
 #[tokio::test]
 async fn viewers_cannot_open_channels() {
     let app = App::new().await;
@@ -682,7 +780,7 @@ async fn openapi_and_mcp_say_wren() {
         .unwrap();
     let res = app.send(req).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert!(res.body.contains("\"name\":\"wren\""), "{}", res.body);
+    assert!(res.body.contains("\"name\":\"wise-wren\""), "{}", res.body);
     assert!(!res.body.contains("Vole"));
 }
 

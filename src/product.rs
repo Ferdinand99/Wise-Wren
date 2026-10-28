@@ -43,7 +43,7 @@ pub fn static_file(path: &str) -> Option<StaticFile> {
 
 pub static KIT: KitConfig = KitConfig {
     product: NAME,
-    slug: "wren",
+    slug: "wise-wren",
     short_name: "Wren",
     session_cookie: SESSION_COOKIE,
     pending_2fa_cookie: "ww_2fa",

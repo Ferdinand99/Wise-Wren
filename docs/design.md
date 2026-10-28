@@ -111,7 +111,7 @@ him, and updates. He stops the daily manual check and stops using the Unraid but
   The image also carries `docker-cli` + Compose ≥ 2.24.4, `sh`, `bash`, `curl`, `openssl` and GNU
   coreutils (`cp --reflink`). `CAP_SYS_ADMIN` is an opt-in, needed only to delete btrfs subvolume
   snapshots.
-- **Identifiers:** product "Wise Wren", short name "Wren", slug `wren`, cookies `ww_session` etc.,
+- **Identifiers:** product "Wise Wren", short name "Wren", slug `wise-wren` (`wren` before the Hedgerow app channel), cookies `ww_session` etc.,
   token prefix `ww_`, agent token prefix `wwa_`, env prefix `WW`, user agent `WiseWren/<version>`,
   default port 3003.
 

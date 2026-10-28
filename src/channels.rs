@@ -251,6 +251,11 @@ fn blank_form(schema: &'static ProviderSchema, language: &str) -> ChannelForm {
     }
 }
 
+/// What the page says when a second Hedgerow app channel would be active.
+fn hedgerow_second(other: &str) -> String {
+    i18n::tf("channels.hedgerow_second", &[("name", other)])
+}
+
 fn validate_name(name: &str) -> Option<String> {
     if name.is_empty() {
         Some(i18n::t("notif.err_name").into())
@@ -388,8 +393,37 @@ async fn create(
     let kind = schema.kind;
     let saved_name = name.clone();
     let digest = pair_flag(&pairs, "digest");
-    core.with_conn(move |c| db::insert_channel(c, &saved_name, kind, &config, &language, digest))
+    let saved_language = language.clone();
+    let created = core
+        .with_conn(move |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if kind == db::HEDGEROW
+                && let Some(other) = db::other_active_hedgerow(&tx, None)?
+            {
+                return Ok(Err(other));
+            }
+            db::insert_channel(&tx, &saved_name, kind, &config, &saved_language, digest)?;
+            tx.commit()?;
+            Ok(Ok(()))
+        })
         .await?;
+    if let Err(other) = created {
+        // Only one Hedgerow app channel can be active.
+        let message = hedgerow_second(&other);
+        if !is_htmx(&headers) {
+            return Ok((
+                flash(jar, "error", message),
+                Redirect::to("/settings/notifications"),
+            )
+                .into_response());
+        }
+        let mut form = blank_form(schema, &language);
+        form.name = name;
+        form.name_error = message;
+        form.digest = digest;
+        form.fields = field_views(schema, &parsed.config, &Value::Null, &[], false);
+        return Ok(HtmlTemplate(FormPartial { form }).into_response());
+    }
     tracing::info!(user = %user.username, kind, "notification channel created");
 
     let message = i18n::tf("notif.added", &[("name", &name)]);
@@ -580,10 +614,42 @@ async fn update(
     let config = sealed::seal_config(&core.session_key, schema.kind, &config).to_string();
     let saved_name = name.clone();
     let digest = pair_flag(&pairs, "digest");
-    core.with_conn(move |c| {
-        db::update_channel(c, id, &saved_name, &config, active, &language, digest)
-    })
-    .await?;
+    let kind = schema.kind;
+    let saved_language = language.clone();
+    let saved = core
+        .with_conn(move |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if kind == db::HEDGEROW
+                && active
+                && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
+            {
+                return Ok(Err(other));
+            }
+            db::update_channel(
+                &tx,
+                id,
+                &saved_name,
+                &config,
+                active,
+                &saved_language,
+                digest,
+            )?;
+            tx.commit()?;
+            Ok(Ok(()))
+        })
+        .await?;
+    if let Err(other) = saved {
+        let mut form = edit_form(&channel, schema, &opened);
+        form.name = name;
+        form.name_error = hedgerow_second(&other);
+        form.active = active;
+        form.digest = digest;
+        form.languages = language_options(&language);
+        form.language = language;
+        form.fields = field_views(schema, &parsed.config, stored, &[], false);
+        let (jar, page) = render_edit(&core, &user, &jar, form).await;
+        return Ok((StatusCode::UNPROCESSABLE_ENTITY, jar, page).into_response());
+    }
     tracing::info!(user = %user.username, channel_id = id, "notification channel updated");
     let jar = flash(jar, "success", i18n::tf("notif.saved", &[("name", &name)]));
     Ok((jar, Redirect::to("/settings/notifications")).into_response())
@@ -625,8 +691,37 @@ async fn toggle_active(
     user.require_admin()?;
     let active = pair_flag(&parse_pairs(&body), "active");
     let channel = load_channel(&core, id).await?;
-    core.with_conn(move |c| db::set_channel_active(c, id, active))
+    let hedgerow = channel.kind == db::HEDGEROW;
+    let refused = core
+        .with_conn(move |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if active
+                && hedgerow
+                && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
+            {
+                return Ok(Some(other));
+            }
+            db::set_channel_active(&tx, id, active)?;
+            tx.commit()?;
+            Ok(None)
+        })
         .await?;
+    if let Some(other) = refused {
+        // Show the list again, so the switch goes back to what is stored.
+        let rows = list_rows(&core).await?;
+        let headers = [
+            (
+                HeaderName::from_static("hx-retarget"),
+                HeaderValue::from_static("#channels"),
+            ),
+            (
+                HeaderName::from_static("hx-reswap"),
+                HeaderValue::from_static("outerHTML"),
+            ),
+            toast(&hedgerow_second(&other), "error"),
+        ];
+        return Ok((headers, HtmlTemplate(ListPartial { rows })).into_response());
+    }
     let message = if active {
         i18n::tf("notif.resumed", &[("name", &channel.name)])
     } else {
@@ -894,31 +989,66 @@ pub async fn api_save(core: &Core, id: Option<i64>, body: &Value, who: &str) -> 
         }
     };
     let kind = schema.kind;
-    let id = match id {
-        Some(id) => {
-            core.with_conn(move |c| {
-                db::update_channel(c, id, &name, &config, active, &language, digest)
-            })
-            .await?;
-            tracing::info!(user = who, channel_id = id, "notification channel updated");
-            id
-        }
-        None => {
-            let id = core
-                .with_conn(move |c| db::insert_channel(c, &name, kind, &config, &language, digest))
-                .await?;
-            tracing::info!(user = who, kind, "notification channel created");
-            id
+    let saved = core
+        .with_conn(move |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            // Only one Hedgerow app channel can be active.
+            // (A new channel is always active.)
+            if kind == db::HEDGEROW
+                && (active || id.is_none())
+                && let Some(other) = db::other_active_hedgerow(&tx, id)?
+            {
+                return Ok(Err(other));
+            }
+            let saved = match id {
+                Some(id) => {
+                    db::update_channel(&tx, id, &name, &config, active, &language, digest)?;
+                    id
+                }
+                None => db::insert_channel(&tx, &name, kind, &config, &language, digest)?,
+            };
+            tx.commit()?;
+            Ok(Ok(saved))
+        })
+        .await?;
+    let id = match saved {
+        Ok(id) => id,
+        Err(other) => {
+            return Err(ApiError::bad_request(format!(
+                "Only one Hedgerow app channel can be active, and “{other}” is. Pause or delete it first."
+            )));
         }
     };
+    match old {
+        Some(_) => tracing::info!(user = who, channel_id = id, "notification channel updated"),
+        None => tracing::info!(user = who, kind, "notification channel created"),
+    }
     api_get(core, id).await
 }
 
 /// Pauses or resumes a channel.
 pub async fn api_active(core: &Core, id: i64, active: bool) -> ApiResult<Value> {
-    load_channel(core, id).await?;
-    core.with_conn(move |c| db::set_channel_active(c, id, active))
+    let channel = load_channel(core, id).await?;
+    let hedgerow = channel.kind == db::HEDGEROW;
+    let refused = core
+        .with_conn(move |c| {
+            let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if active
+                && hedgerow
+                && let Some(other) = db::other_active_hedgerow(&tx, Some(id))?
+            {
+                return Ok(Some(other));
+            }
+            db::set_channel_active(&tx, id, active)?;
+            tx.commit()?;
+            Ok(None)
+        })
         .await?;
+    if let Some(other) = refused {
+        return Err(ApiError::bad_request(format!(
+            "Only one Hedgerow app channel can be active, and “{other}” is. Pause or delete it first."
+        )));
+    }
     api_get(core, id).await
 }
 
@@ -1010,6 +1140,27 @@ mod db {
             params![name, kind, config, language, digest],
         )?;
         Ok(c.last_insert_rowid())
+    }
+
+    /// The kind of the Hedgerow app channel. Only one can be active: it
+    /// reaches every device registered with the server, so a second one
+    /// would push the same notification twice.
+    pub const HEDGEROW: &str = "hedgerow";
+
+    /// The name of an active `hedgerow` channel other than `except`, if
+    /// there is one.
+    pub fn other_active_hedgerow(
+        c: &Connection,
+        except: Option<i64>,
+    ) -> rusqlite::Result<Option<String>> {
+        c.query_row(
+            "SELECT name FROM notification_channels
+             WHERE kind = ?1 AND active = 1 AND id IS NOT ?2
+             ORDER BY id LIMIT 1",
+            params![HEDGEROW, except],
+            |r| r.get(0),
+        )
+        .optional()
     }
 
     pub fn update_channel(

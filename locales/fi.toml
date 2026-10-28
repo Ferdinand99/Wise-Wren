@@ -62,6 +62,7 @@ deleted = "”{name}” on poistettu."
 added = "”{name}” on lisätty. Käynnistä sen agentti nyt."
 
 [channels]
+hedgerow_second = "Vain yksi Hedgerow-sovelluskanava voi olla käytössä, ja ”{name}” on jo. Keskeytä tai poista se ensin."
 sub = "Mihin Wren lähettää ilmoitukset: uudet versiot, päivitysten tulokset ja agentit, joiden yhteys katkeaa."
 empty_text = "Lisää kanava, esimerkiksi ntfy, Slack tai sähköposti. Wren alkaa lähettää, kun päivitystarkistuksia alkaa tulla."
 foot = "Tallennettuja salaisuuksia ei näytetä enää koskaan. Jätä ne tyhjiksi kanavaa muokatessasi, niin ne säilyvät."

@@ -62,6 +62,7 @@ deleted = "已删除“{name}”。"
 added = "已添加“{name}”。现在启动它的探针吧。"
 
 [channels]
+hedgerow_second = "只能启用一个 Hedgerow 应用渠道，而“{name}”已启用。请先暂停或删除它。"
 sub = "Wren发送通知的去处：新版本、更新结果以及离线的探针。"
 empty_text = "添加一个渠道，例如ntfy、Slack或电子邮件。一旦收到更新检查结果，Wren就会开始发送。"
 foot = "已保存的机密信息不会再次显示。编辑渠道时留空即可保留原值。"
