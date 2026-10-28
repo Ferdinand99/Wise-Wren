@@ -62,6 +62,7 @@ deleted = "Server „{name}“ je smazán."
 added = "Server „{name}“ je přidán. Teď spusťte jeho agenta."
 
 [channels]
+hedgerow_second = "Aktivní může být jen jeden kanál aplikace Hedgerow a „{name}“ už aktivní je. Nejdřív ho pozastav nebo smaž."
 sub = "Kam Wren posílá oznámení: nové verze, výsledky aktualizací a agenti, kteří se odpojí."
 empty_text = "Přidejte kanál, například ntfy, Slack nebo e-mail. Wren začne posílat, jakmile začnou přicházet kontroly aktualizací."
 foot = "Uložené tajné údaje se už nikdy nezobrazí. Při úpravě kanálu je nechte prázdné a zůstanou zachovány."

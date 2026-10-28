@@ -62,6 +62,7 @@ deleted = "»{name}« er slettet."
 added = "»{name}« er tilføjet. Start dens agent nu."
 
 [channels]
+hedgerow_second = "Kun én Hedgerow-appkanal kan være aktiv, og “{name}” er det allerede. Sæt den på pause eller slet den først."
 sub = "Hvor Wren sender notifikationer: nye versioner, opdateringsresultater og agenter, der går offline."
 empty_text = "Tilføj en kanal, f.eks. ntfy, Slack eller e-mail. Wren begynder at sende, når opdateringstjek kommer ind."
 foot = "Gemte hemmeligheder vises aldrig igen. Lad dem stå tomme, når du redigerer en kanal, for at beholde dem."

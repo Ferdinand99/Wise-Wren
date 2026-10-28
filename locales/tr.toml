@@ -62,6 +62,7 @@ deleted = "“{name}” silindi."
 added = "“{name}” eklendi. Şimdi ajanını başlatın."
 
 [channels]
+hedgerow_second = "Aynı anda yalnızca bir Hedgerow uygulaması kanalı etkin olabilir ve “{name}” zaten etkin. Önce onu duraklat ya da sil."
 sub = "Wren’in bildirim gönderdiği yerler: yeni sürümler, güncelleme sonuçları ve çevrimdışı olan ajanlar."
 empty_text = "ntfy, Slack veya e-posta gibi bir kanal ekleyin. Güncelleme denetimleri gelmeye başlayınca Wren gönderime başlar."
 foot = "Kaydedilen gizli bilgiler bir daha gösterilmez. Bir kanalı düzenlerken bunları korumak için boş bırakın."

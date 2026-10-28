@@ -26,9 +26,11 @@
     {%- else %}
     <p class="form-section-sub">{{ form.description }}</p>
     {%- endif %}
+    {%- if !form.fields.is_empty() %}
     <div class="card">
       {% include "kit/partials/notification_fields.html" %}
     </div>
+    {%- endif %}
   </section>
 
   <div class="form-actions">

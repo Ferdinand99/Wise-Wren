@@ -74,6 +74,13 @@ settings**, see [Managed settings](agent.md#managed-settings)):
   `install.sh` there. A stack in `agent.toml` with the commands from the 0.7 docs is recognised as the preset when
   imported and keeps working.
 
+### The release that adds the Hedgerow app channel
+
+The server records `kit/0006_push.sql`: three new, empty tables (`push_devices`, `push_events`,
+`push_registrations`), and nothing is pushed until an admin adds the Hedgerow app channel. The upgrade takes the usual
+copy first. The release before it refuses a database this one has started on; to go back, restore that copy. Agents
+are not affected.
+
 ## Agents
 
 Recreate each agent

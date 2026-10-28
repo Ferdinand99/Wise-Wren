@@ -46,7 +46,7 @@ monitoring, take a snapshot first, check health afterwards and roll back.
   6. a health check: the containers are healthy and the linked monitors stay up;
   7. on failure, an automatic rollback of the image or Compose files and the data;
   8. the window closes and you get the result.
-- **Notifications** through the same ~40 channels as Vigilant Vole, from ntfy on your phone to email and
+- **Notifications** through the same ~40 channels as Vigilant Vole, from ntfy on your phone and the Hedgerow app to email and
   Discord. One per new version, with a digest option.
 - **One Wren, several servers**, through a small agent on each.
 
@@ -73,6 +73,32 @@ limits of its own (folders only inside what is mounted into it, never system fol
 presets) before it applies it, and widening changes notify your channels. Lock an agent with `WW_AGENT_LOCKED=1` and
 only its local `agent.toml` counts.
 
+
+## Notifications in the Hedgerow app
+
+The Hedgerow app on your iPhone can show Wren's notifications as push notifications, with no account and no other
+service to run.
+
+1. Under **Settings → Notifications**, add a channel of the kind **Hedgerow app**. It has no settings. It gets what
+   every channel gets: new versions (one by one, or as a digest), the result of every update run and agents that go
+   offline or come back. Only one Hedgerow app channel can be active at a time.
+2. In the Hedgerow app, open the connection to your server and turn on **Varsler** (notifications). The app
+   registers itself with your server, and nothing is pushed to it before that.
+
+Push is off until an admin adds the channel: with no active Hedgerow app channel the server refuses to register
+devices. A read-only API token is enough for the app. **Send test** on the channel shows an error until at least one
+device has registered. Like for the other channels, a notification that could not be sent is logged and not sent
+again.
+
+What leaves your server is only a random reference. Wren keeps the text of each notification (“nextcloud on Tower is
+updated”) for 24 hours and sends the Hedgerow push relay (`pigeon.hedgerow.tools`, or the one in
+`KIT_PUSH_RELAY_URL` / the `push_relay_url` setting if you run your own) a push that carries that reference and the
+app's device handles, nothing else. The relay and Apple therefore never see server names, containers or versions. When
+the push arrives, the app fetches the text from your own server (`GET /api/v1/push/events/{ref}`) with its token and
+shows it. The server registers itself with the relay the first time the channel fires, so it needs outbound HTTPS to
+the relay. The upgrade to the release that adds the channel creates three empty tables (`push_devices`,
+`push_events`, `push_registrations`) after the usual copy in `backups/`; the release before it refuses a database this
+one has started on, so restore that copy to go back.
 
 ## Install
 

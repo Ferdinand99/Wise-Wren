@@ -571,6 +571,89 @@ async fn api_notification_channels_redacted() {
     assert_eq!(res.status, StatusCode::OK);
 }
 
+/// Only one Hedgerow app channel can be active; the rest of the API is the
+/// same as for every channel.
+#[tokio::test]
+async fn api_allows_one_active_hedgerow_channel() {
+    let app = App::new().await;
+    let admin = token(&app, "admin", "admin", TokenScope::Write).await;
+    let add = |name: &'static str| json!({"kind": "hedgerow", "name": name, "config": {}});
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/notification-channels",
+        &admin,
+        add("Phones"),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let first = res.json()["id"].as_i64().unwrap();
+    assert_eq!(res.json()["kind"], "hedgerow");
+    let providers = bearer(&app, "GET", "/api/v1/notification-providers", &admin).await;
+    assert!(
+        providers.body.contains("\"hedgerow\""),
+        "{}",
+        providers.body
+    );
+
+    // A second active one is refused and the message names the first.
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/notification-channels",
+        &admin,
+        add("More"),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    assert!(res.body.contains("Phones"), "{}", res.body);
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM notification_channels")
+            .await,
+        1
+    );
+
+    // Pausing the first makes room; the second then can't be switched on
+    // together with the first.
+    let paused = format!("/api/v1/notification-channels/{first}/active");
+    let res = call(&app, "POST", &paused, &admin, json!({"active": false})).await;
+    assert_eq!(res.json()["active"], false, "{}", res.body);
+    let res = call(
+        &app,
+        "POST",
+        "/api/v1/notification-channels",
+        &admin,
+        add("More"),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let res = call(&app, "POST", &paused, &admin, json!({"active": true})).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    assert!(res.body.contains("More"), "{}", res.body);
+    let res = call(
+        &app,
+        "POST",
+        &format!("/api/v1/notification-channels/{first}/update"),
+        &admin,
+        json!({"active": true}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+    // Editing the active one keeps working.
+    let second = app
+        .count("SELECT id FROM notification_channels WHERE name = 'More'")
+        .await;
+    let res = call(
+        &app,
+        "POST",
+        &format!("/api/v1/notification-channels/{second}/update"),
+        &admin,
+        json!({"name": "Our phones"}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+}
+
 async fn mcp(app: &App, token: &str, method: &str, params: Value) -> Value {
     let req = Request::post("/mcp")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -729,6 +812,10 @@ fn every_route_is_documented() {
         ("POST", "/api/v1/notification-channels/{id}/update"),
         ("POST", "/api/v1/notification-channels/{id}/active"),
         ("POST", "/api/v1/notification-channels/{id}/test"),
+        // The Hedgerow app's routes, served by the kit.
+        ("POST", "/api/v1/push/devices"),
+        ("DELETE", "/api/v1/push/devices/{id}"),
+        ("GET", "/api/v1/push/events/{ref}"),
     ];
     let documented: Vec<(&str, &str)> = wise_wren::api::DOCS
         .routes

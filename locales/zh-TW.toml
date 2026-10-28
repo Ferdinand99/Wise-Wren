@@ -62,6 +62,7 @@ deleted = "已刪除「{name}」。"
 added = "已新增「{name}」。現在請啟動它的代理程式。"
 
 [channels]
+hedgerow_second = "只能啟用一個 Hedgerow 應用程式管道，而「{name}」已啟用。請先暫停或刪除它。"
 sub = "Wren 傳送通知的去處：新版本、更新結果，以及離線的代理程式。"
 empty_text = "新增一個管道，例如 ntfy、Slack 或電子郵件。收到更新檢查結果後，Wren 就會開始傳送。"
 foot = "已儲存的機密資料不會再次顯示。編輯管道時留空即可保留。"

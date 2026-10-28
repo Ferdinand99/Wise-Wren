@@ -62,6 +62,7 @@ deleted = "“{name}” foi excluído."
 added = "“{name}” foi adicionado. Inicie o agente dele agora."
 
 [channels]
+hedgerow_second = "Só um canal do app Hedgerow pode estar ativo, e “{name}” já está. Pause ou exclua esse canal primeiro."
 sub = "Para onde o Wren envia notificações: novas versões, resultados de atualizações e agentes que ficam offline."
 empty_text = "Adicione um canal, como ntfy, Slack ou e-mail. O Wren começa a enviar assim que chegarem verificações de atualização."
 foot = "Segredos salvos nunca são mostrados de novo. Deixe-os vazios ao editar um canal para mantê-los."

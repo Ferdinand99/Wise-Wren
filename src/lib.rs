@@ -143,6 +143,9 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         core.with_conn(move |c| settings::set(c, settings::BASE_URL, &url))
             .await?;
     }
+    // The Hedgerow app channel's push client: once per process, before any
+    // notification can go out. (The product's slug names it to the relay.)
+    vole_kit::push::install(&core);
     Ok(Wren {
         core,
         changes: broadcast::channel(64).0,

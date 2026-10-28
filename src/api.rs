@@ -14,7 +14,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{Map, Value, json};
 use vole_kit::auth::CurrentUser;
-use vole_kit::docs::{BearerScheme, Credential, DocsSpec, RATE_LIMITED, r};
+use vole_kit::docs::{BearerScheme, Credential, DocsSpec, ErrorCode, RATE_LIMITED, RouteDoc, r};
 use vole_kit::http::ApiResult;
 use vole_kit::mcp::{Handler, RpcResult};
 use vole_kit::state::Core;
@@ -47,8 +47,10 @@ const SCHEDULES_EXAMPLE: &str = r#"{"time_zone": "Europe/Oslo", "scheduled": [{"
 
 const INVENTORY_EXAMPLE: &str = r#"{"containers": [{"name": "temporal-postgresql", "image": "postgres:16", "image_id": "sha256:066167ff39c2…", "repo_digests": ["postgres@sha256:a902560563d3…"], "state": "running", "labels": {"com.docker.compose.project": "postiz"}}], "unraid_templates": ["Newt"], "compose_projects": [{"name": "postiz", "working_dir": "/boot/config/plugins/compose.manager/projects/postiz", "config_files": "…/compose.yaml", "files_reachable": true}], "script_stacks": [], "error": ""}"#;
 
-fn no_param(_: &vole_kit::docs::RouteDoc, _: &str) -> Option<String> {
-    None
+/// The push text's reference in `curl` examples (the other parameters are
+/// integers the kit fills in).
+fn curl_param(_: &vole_kit::docs::RouteDoc, segment: &str) -> Option<String> {
+    (segment == "{ref}").then(|| "$PUSH_REF".to_string())
 }
 
 fn intro(out: &mut String, base: &str) {
@@ -59,8 +61,8 @@ fn intro(out: &mut String, base: &str) {
 
 fn nothing(_: &mut String) {}
 
-pub static DOCS: DocsSpec = DocsSpec {
-    routes: &[
+/// Wren's own documented endpoints, in display order.
+const OWN_ROUTES: &[RouteDoc] = &[
         r("GET", "/api/v1/servers", "viewer", "Servers", "List the servers with their agents' status (online, offline, waiting for the agent, no token) and what each agent last reported.")
             .res(SERVERS_EXAMPLE),
         r("POST", "/api/v1/servers", "admin", "Servers", "Add a server. The answer has its agent token (`wwa_…`) and the `docker run` lines that start the agent (Unraid and other Linux); the token is shown only here, Wren keeps its SHA-256. Needs an API token with write access.")
@@ -181,7 +183,55 @@ pub static DOCS: DocsSpec = DocsSpec {
         r("POST", "/api/agent/v1/inventory", "agent token", "Agents", "An agent reports its server's containers (with `.Config.Image`, `RepoDigests` and labels), the Unraid template names, the Compose projects and its script stacks with what their version commands printed. Wren replaces the server's targets with it. 429 with `Retry-After` above 6 a minute.")
             .req(INVENTORY_EXAMPLE)
             .res(r#"{"targets": 12}"#),
-    ],
+];
+
+/// The three routes of the Hedgerow app, from the kit.
+const PUSH_ROUTES: [RouteDoc; 3] = vole_kit::push::api::ROUTE_DOCS;
+
+const ROUTE_COUNT: usize = OWN_ROUTES.len() + PUSH_ROUTES.len();
+
+/// Our routes, then the kit's push routes (the "Push" group comes last).
+const fn all_routes() -> [RouteDoc; ROUTE_COUNT] {
+    let mut all = [OWN_ROUTES[0]; ROUTE_COUNT];
+    let mut i = 0;
+    while i < ROUTE_COUNT {
+        all[i] = if i < OWN_ROUTES.len() {
+            OWN_ROUTES[i]
+        } else {
+            PUSH_ROUTES[i - OWN_ROUTES.len()]
+        };
+        i += 1;
+    }
+    all
+}
+
+static ALL_ROUTES: [RouteDoc; ROUTE_COUNT] = all_routes();
+
+/// The codes of the Hedgerow app's routes, next to the kit's `rate_limited`.
+const ERROR_CODES: &[ErrorCode] = &[
+    RATE_LIMITED,
+    ErrorCode {
+        code: "push_disabled",
+        status: 409,
+        when: "registering a Hedgerow app device while no active Hedgerow app notification channel exists",
+        on_page: true,
+    },
+    ErrorCode {
+        code: "too_many_devices",
+        status: 409,
+        when: "registering a Hedgerow app device when the user (16) or the server (256) has the most allowed",
+        on_page: false,
+    },
+    ErrorCode {
+        code: "too_many_pending",
+        status: 409,
+        when: "registering a Hedgerow app device while 4 of the user's devices (20 on the server) have not received a push yet",
+        on_page: false,
+    },
+];
+
+pub static DOCS: DocsSpec = DocsSpec {
+    routes: &ALL_ROUTES,
     openapi_title: "Wise Wren API",
     openapi_description: "REST API for Wise Wren. Authenticate with `Authorization: Bearer ww_…`. Reads need any token; writes need a token with write access (a session cookie is never enough) of an editor or, where marked, an admin.",
     bearer_description: "API token (ww_…)",
@@ -196,9 +246,9 @@ pub static DOCS: DocsSpec = DocsSpec {
         header: None,
     }],
     error_example: ERROR_EXAMPLE,
-    error_codes: &[RATE_LIMITED],
+    error_codes: ERROR_CODES,
     config_document: None,
-    curl_path_param: no_param,
+    curl_path_param: curl_param,
     markdown_intro: intro,
     markdown_middle: nothing,
     markdown_outro: nothing,
@@ -215,7 +265,15 @@ pub static DOCS: DocsSpec = DocsSpec {
 pub fn router() -> Router<Core> {
     use crate::api_settings as set;
     use axum::routing::delete;
+    // The Hedgerow app's three routes (devices and push texts), with their
+    // full paths. The kit's handlers serve every signed-in caller, read-only
+    // tokens included; `DOCS` documents them. A session needs to come from
+    // our own pages for the writes, as for every other route here.
+    let push = vole_kit::push::api::router::<Core>().route_layer(axum::middleware::from_fn(
+        vole_kit::http::rest::session_write_guard,
+    ));
     Router::new()
+        .merge(push)
         .route("/api/v1/servers", get(servers).post(set::add_server))
         .route("/api/v1/servers/{id}", delete(set::delete_server))
         .route("/api/v1/servers/{id}/{action}", post(set::server_action))
