@@ -677,6 +677,54 @@ async fn only_one_hedgerow_channel_can_be_active() {
     );
 }
 
+/// Two active Hedgerow app channels can exist already (config as code, an
+/// import). Editing one still works; only a paused one can't be switched on.
+#[tokio::test]
+async fn the_one_active_hedgerow_check_runs_only_when_a_channel_becomes_active() {
+    let app = App::new().await;
+    let mut web = Web::new(&app, "ada", "admin").await;
+    for (name, active) in [("Phones", 1), ("Tablets", 1), ("Spare", 0)] {
+        app.exec(format!(
+            "INSERT INTO notification_channels (name, kind, config, active) VALUES ('{name}', 'hedgerow', '{{}}', {active})"
+        ))
+        .await;
+    }
+    let first = app
+        .count("SELECT id FROM notification_channels WHERE name = 'Phones'")
+        .await;
+    let spare = app
+        .count("SELECT id FROM notification_channels WHERE name = 'Spare'")
+        .await;
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{first}"),
+            &[("name", "Renamed"), ("active", "on")],
+            false,
+        )
+        .await;
+    assert_ne!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    assert_eq!(
+        app.count(
+            "SELECT COUNT(*) FROM notification_channels WHERE name = 'Renamed' AND active = 1"
+        )
+        .await,
+        1
+    );
+    let res = web
+        .post_with(
+            &format!("/settings/notifications/{spare}/active"),
+            &[("active", "true")],
+            true,
+        )
+        .await;
+    assert_eq!(res.header("hx-retarget"), "#channels");
+    assert_eq!(
+        app.count("SELECT active FROM notification_channels WHERE name = 'Spare'")
+            .await,
+        0
+    );
+}
+
 #[tokio::test]
 async fn viewers_cannot_open_channels() {
     let app = App::new().await;
