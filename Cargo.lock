@@ -2840,8 +2840,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vole-kit"
-version = "0.7.0"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.7.0#44e2ef90e8c2103c7827e223c50178b87db027ba"
+version = "0.8.0"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.0#4647badd1811a5aa01d1e4d63a60ec1e3150e1e2"
 dependencies = [
  "argon2",
  "askama",
@@ -2877,8 +2877,8 @@ dependencies = [
 
 [[package]]
 name = "vole-kit-build"
-version = "0.7.0"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.7.0#44e2ef90e8c2103c7827e223c50178b87db027ba"
+version = "0.8.0"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.0#4647badd1811a5aa01d1e4d63a60ec1e3150e1e2"
 
 [[package]]
 name = "walkdir"
