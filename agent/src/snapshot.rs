@@ -94,14 +94,16 @@ pub fn safe_name(name: &str) -> String {
 /// the exit status and the end of stderr.
 pub async fn exec(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+    cmd.args(args).stdin(std::process::Stdio::null());
     crate::process::scrub(&mut cmd);
-    let out = tokio::time::timeout(timeout, cmd.output())
+    let out = crate::process::run(&mut cmd, timeout, crate::process::Keep::Tail)
         .await
-        .map_err(|_| format!("{program} took longer than {} s", timeout.as_secs()))?
-        .map_err(|e| format!("can't start {program}: {e}"))?;
+        .map_err(|e| match e {
+            crate::process::RunError::TimedOut => {
+                format!("{program} took longer than {} s", timeout.as_secs())
+            }
+            crate::process::RunError::Start(e) => format!("can't start {program}: {e}"),
+        })?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -341,6 +343,11 @@ pub async fn take(p: &DataPath, dest: &Path, method: Method) -> Result<Method, S
                 Ok(_) => Ok(Method::Reflink),
                 Err(_) => {
                     remove(dest).await;
+                    // The space check was made for a reflink copy, which
+                    // needs next to nothing: a plain copy needs the size.
+                    let size = size(&p.real).await?;
+                    let (avail, total) = space(dest.parent().unwrap_or(dest)).await?;
+                    fits(need(Method::Copy, size), avail, total)?;
                     exec("cp", &["-a", &src, &dst], COPY_TIMEOUT).await?;
                     Ok(Method::Copy)
                 }
@@ -494,6 +501,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_reflink_falls_back_to_a_checked_copy() {
+        let root = tmp("fallback");
+        let data = root.join("app/data");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(data.join("a.txt"), "one").unwrap();
+        let p = resolve(&data, &root).await;
+        let dest = p.snapshot_at("t", 1);
+        // Most test filesystems can't reflink, so this takes the fallback; on
+        // one that can, the reflink copy simply works.
+        let used = take(&p, &dest, Method::Reflink).await.unwrap();
+        assert!(matches!(used, Method::Copy | Method::Reflink), "{used:?}");
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "one");
+        // The fallback needs the size of the data, not the floor of a reflink.
+        let size = 40 << 30;
+        assert!(need(Method::Copy, size) > 40 << 30);
+        assert!(fits(need(Method::Copy, size), 30 << 30, 100 << 30).is_err());
+        assert!(fits(need(Method::Reflink, size), 30 << 30, 100 << 30).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]

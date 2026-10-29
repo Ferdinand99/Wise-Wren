@@ -377,6 +377,42 @@ pub fn under(path: &Path, root: &Path) -> bool {
             .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
+/// [`under`], and the real places too: with symlinks resolved on both
+/// sides, `path` is still inside `root`. Someone who can replace a folder
+/// under a root by a symlink (a local user of the host) must not move what
+/// the agent touches out of the root. A path or root that does not exist
+/// here can't be resolved and counts by its name alone, as before (a later
+/// step refuses a missing folder).
+pub fn really_under(path: &Path, root: &Path) -> bool {
+    if !under(path, root) {
+        return false;
+    }
+    match (real_path(path), root.canonicalize()) {
+        (Some(real), Ok(root)) => real.starts_with(root),
+        _ => true,
+    }
+}
+
+/// `path` with symlinks resolved. A part that does not exist yet is kept as
+/// it is, after the deepest part that does (so `link/new` is judged by where
+/// `link` really points).
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut cur = path;
+    loop {
+        match cur.canonicalize() {
+            Ok(mut real) => {
+                real.extend(missing.iter().rev());
+                return Some(real);
+            }
+            Err(_) => {
+                missing.push(cur.file_name()?);
+                cur = cur.parent()?;
+            }
+        }
+    }
+}
+
 /// Host paths a container mounts that are never data: not worth a note.
 fn system_path(p: &Path) -> bool {
     [
@@ -516,7 +552,7 @@ pub fn check(
                     .collect();
             }
             let wd = &plan.working_dir;
-            if !config.roots.iter().any(|r| under(wd, r)) {
+            if !config.roots.iter().any(|r| really_under(wd, r)) {
                 return Err(Note::new(
                     "refused.not_under_roots",
                     &[("folder", &wd.to_string_lossy())],
@@ -531,7 +567,7 @@ pub fn check(
             if plan
                 .files
                 .iter()
-                .any(|f| !config.roots.iter().any(|r| under(f, r)))
+                .any(|f| !config.roots.iter().any(|r| really_under(f, r)))
             {
                 return Err(Note::new("refused.file_outside_roots", &[]));
             }
@@ -609,7 +645,7 @@ pub fn check(
                     .iter()
                     .any(|n| n.params.get("path").is_some_and(|p| *p == path))
             };
-            let Some(root) = config.roots.iter().find(|r| under(b, r)) else {
+            let Some(root) = config.roots.iter().find(|r| really_under(b, r)) else {
                 if !system_path(b) && !noted(&plan.notes) {
                     plan.notes
                         .push(Note::new("path.not_under_roots", &[("path", &path)]));
@@ -1403,6 +1439,31 @@ mod tests {
             "65cd0cbed6c2"
         );
         assert_eq!(own_container_id("0::/\n", "", "Tower"), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_a_root_is_not_under_it() {
+        let base = std::env::temp_dir().join(format!("wren-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        std::fs::create_dir_all(root.join("stack")).unwrap();
+        std::fs::create_dir_all(outside.join("etc")).unwrap();
+        std::os::unix::fs::symlink(outside.join("etc"), root.join("escape")).unwrap();
+        // The root itself may be a link: both sides resolve.
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+
+        assert!(under(&root.join("escape"), &root), "by name it is inside");
+        assert!(!really_under(&root.join("escape"), &root));
+        assert!(!really_under(&root.join("escape/sub"), &root));
+        assert!(really_under(&root.join("stack"), &root));
+        assert!(really_under(&alias.join("stack"), &alias));
+        assert!(!really_under(&alias.join("escape"), &alias));
+        // Missing paths are judged by name, as before.
+        assert!(really_under(&root.join("not-yet"), &root));
+        assert!(!really_under(&base.join("outside"), &root));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

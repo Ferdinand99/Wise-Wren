@@ -91,20 +91,18 @@ pub async fn cli(socket: &str, args: &[&str], timeout: Duration) -> Result<Strin
     let mut all = vec!["-H", host.as_str()];
     all.extend_from_slice(args);
     let mut cmd = tokio::process::Command::new("docker");
-    cmd.args(&all)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+    cmd.args(&all).stdin(std::process::Stdio::null());
     crate::process::scrub(&mut cmd);
-    let out = tokio::time::timeout(timeout, cmd.output())
+    let out = crate::process::run(&mut cmd, timeout, crate::process::Keep::Tail)
         .await
-        .map_err(|_| {
-            format!(
+        .map_err(|e| match e {
+            crate::process::RunError::TimedOut => format!(
                 "docker {} took longer than {} s",
                 args.first().unwrap_or(&""),
                 timeout.as_secs()
-            )
-        })?
-        .map_err(|e| format!("can't start docker: {e}"))?;
+            ),
+            crate::process::RunError::Start(e) => format!("can't start docker: {e}"),
+        })?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -117,7 +115,7 @@ pub async fn cli(socket: &str, args: &[&str], timeout: Duration) -> Result<Strin
             "docker {} failed ({}): {}",
             args.first().unwrap_or(&""),
             out.status,
-            crate::snapshot::tail(text.trim(), 600)
+            crate::snapshot::tail(&crate::redact::redact(text.trim()), 600)
         ))
     }
 }

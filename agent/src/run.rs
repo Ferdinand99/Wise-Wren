@@ -776,19 +776,24 @@ pub async fn run_script(
         .arg(command)
         .current_dir(dir)
         .envs(env)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .stdin(std::process::Stdio::null());
     crate::process::scrub(&mut cmd);
-    let out = tokio::time::timeout(timeout, cmd.output())
+    let out = crate::process::run(&mut cmd, timeout, crate::process::Keep::Tail)
         .await
-        .map_err(|_| format!("the script took longer than {} s", timeout.as_secs()))?
-        .map_err(|e| format!("can't start sh: {e}"))?;
+        .map_err(|e| match e {
+            crate::process::RunError::TimedOut => {
+                format!("the script took longer than {} s", timeout.as_secs())
+            }
+            crate::process::RunError::Start(e) => format!("can't start sh: {e}"),
+        })?;
+    // What looks like a secret is hidden before the end is cut off, so a
+    // cut can't leave half a name next to its value.
     let text = tail(
-        &format!(
+        &crate::redact::redact(&format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
-        ),
+        )),
         LOG_CHARS - 200,
     );
     if out.status.success() {
@@ -1423,13 +1428,15 @@ impl Report for ClientReport<'_> {
         ms: u64,
         notes: &[Note],
     ) -> Result<bool, String> {
+        // Whatever produced the log, a secret in it does not leave the agent.
+        let log = crate::redact::redact(log);
         self.client
             .step(
                 self.run,
                 &StepReport {
                     step,
                     status,
-                    log,
+                    log: &log,
                     duration_ms: ms,
                     notes,
                 },
