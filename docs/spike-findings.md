@@ -1,7 +1,6 @@
 # Wise Wren phase 1 spike: findings
 
-Spike run on 2026-10-23 on LANBox (Unraid 7.4.0-rc.1, Docker 29.9.2, Compose 5.6.1), following
-`docs/plans/2026-10-23-phase-1-spike.md`. Scripts are in the local throwaway repo `wren-spike`.
+Spike run on 2026-10-23 on LANBox (Unraid 7.4.0-rc.1, Docker 29.9.2, Compose 5.6.1). Scripts are in the local throwaway repo `wren-spike`.
 
 **Summary**
 - **Q1 registry digests:** anonymous `HEAD` with an index-first `Accept` list returns the index digest

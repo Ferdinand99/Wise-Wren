@@ -19,8 +19,6 @@ test-results/
 /data/
 *.sqlite*
 
-# Claude Code local state
-.claude/
 
 # Environment and secrets
 .env
