@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.0...v0.9.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* check for one active Hedgerow app channel only when a channel becomes active ([80d949f](https://github.com/Ferdinand99/Wise-Wren/commit/80d949f5bf3b1b986bfae9ddf01505a09b730e9b))
+
 ## [0.9.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.8.0...v0.9.0) (2026-10-28)
 
 
