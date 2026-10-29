@@ -43,24 +43,24 @@ related changes shipped in 0.7.1 (#37, #40).
 | WA-03 | Medium | Rollback job needs no local proof that the agent ran the update | Fixed in #36 (run ledger) |
 | WA-04 | Low | Script stack update and check run on demand, with no pending update | Fixed in #36 (ledger, `min_interval`) |
 | WA-05 | Medium (local attacker) | Snapshot probe files and destination follow planted symlinks | Fixed in #33 |
-| WA-06 | Low-Medium (local attacker) | Roots are enforced lexically, no realpath | Open, planned |
+| WA-06 | Low-Medium (local attacker) | Roots are enforced lexically, no realpath | Fixed in #50 (working folders, Compose files and bind paths are also compared by their real paths) |
 | WA-07 | Low | Server responses read without a size limit | Fixed in #33 |
 | WA-08 | Low | Server-chosen `run_id` can collide with existing rollback points | Fixed in #36 (ledger) |
-| WA-09 | Low | Reflink falls back to a full copy without re-checking space | Open |
+| WA-09 | Low | Reflink falls back to a full copy without re-checking space | Fixed in #50 |
 | WA-10 | Low | Unraid `update_container` pulls the tag again before `verify` | Open |
 | WA-11 | Medium (defaults) | Allow-all is the default; the agent can update its own container | Fixed in #33 (own container refused), #36 (`[updates]` allow list required) |
 | WA-12 | Low | Allow/deny keyed on the target name only | Fixed in #33 |
 | WA-13 | Low | `images[].from` of a rollback job not validated | Fixed in #33 |
-| WA-14 | Low | Step logs and inventory can carry secrets and host details | Open, planned (output redaction) |
-| WA-15 | Low | The server can trigger inventories and version commands continuously | Open |
+| WA-14 | Low | Step logs and inventory can carry secrets and host details | Step logs fixed in #50 (pattern-based redaction before the log leaves the host; best effort). The inventory is unchanged |
+| WA-15 | Low | The server can trigger inventories and version commands continuously | Fixed in #50 (scans Wren asks for keep a 30 second gap) |
 | WA-16 | Low | The server controls the safety nets around an update | Fixed in #36 for the health period and the snapshot requirement; see below for the digest choice |
-| WA-17 | Low | Timeouts do not kill process trees; output buffered unbounded | Open, planned (process-tree kill) |
+| WA-17 | Low | Timeouts do not kill process trees; output buffered unbounded | Fixed in #50 (own process group killed on timeout; 256 KiB kept per stream) |
 | WA-18 | Low | agent.toml helper: server name unescaped in a comment; GET parameters prefill commands | Partly fixed in #33 (control characters rejected and stripped); the helper is still a GET page. Open |
 | WA-19 | Info | Redirects and environment proxies on the agent's HTTP clients | Fixed in #33 (redirects off, URL userinfo rejected). The environment proxy setting was not changed |
 | WA-20 | Info | Log forging with server-supplied strings | Fixed in #33 |
 | WA-21 | Info | Blast radius of the documented mounts and container options | Open, planned (narrower mounts) |
-| WA-22 | Info | Re-tagging a shared reference affects containers outside the target | Open (not yet documented) |
-| WA-23 | Info | Background tasks die silently on panic | Open |
+| WA-22 | Info | Re-tagging a shared reference affects containers outside the target | Documented in #50 (`docs/security.md`) |
+| WA-23 | Info | Background tasks die silently on panic | Fixed in #50 (the scan task and the job loop) |
 
 ### Server
 
@@ -110,15 +110,14 @@ WS-11 in detail:
 - **Digest choice (WA-16, remainder).** The server still picks which digest of the same repository the agent
   updates to, including an older one. The agent only accepts a digest of the repository the container already runs.
   A "newer only" rule was suggested and not built.
-- **WA-06, canonical roots.** Open and planned. Needs a local attacker who can replace a directory under a root by a
-  symlink. The fix is canonicalising paths against the canonical root at the point of use.
-- **WA-14, output redaction.** Open and planned. Until then, script output (last few KB per step) is uploaded to Wren
-  and visible to every role. Do not run installers that print secrets.
-- **WA-17, process-tree kill.** Open and planned. A timeout kills the shell, not necessarily its children.
+- **WA-14, output redaction.** Done in #50 for step logs: the value of a `password=`, `token:` or `"api_key": "…"`
+  pair, a Bearer or Basic credential, the password of a `scheme://user:password@host` URL and a private key block are
+  hidden before the log is uploaded. It is pattern-based: a secret printed on its own line is still visible to every
+  role in Wren, so do not run installers that print secrets.
 - **WA-21, narrower mounts.** Open and planned. The documented `docker run` mounts more than the agent needs.
 - **Agent settings managed in the web UI.** Decided and planned by the owner, to replace copy-and-paste of the
   agent.toml helper output (WA-18). Not built yet.
-- **WA-09, WA-10, WA-15, WA-22, WA-23, WS-09.** Open, low severity, no change yet.
+- **WA-10, WS-09.** Open, low severity, no change yet. (WA-06, WA-09, WA-15, WA-17, WA-22 and WA-23 are done in #50.)
 - **Not fixed by design.** The Docker socket is root-equivalent and the agent runs as root; this is documented in
   `docs/security.md`.
 

@@ -53,6 +53,18 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
 - After a restore, the data it replaced is kept next to it (`<folder>.wren-aside-<run>`) until the target's next
   run, so a wrong rollback can be undone.
 - The agent never updates its own container, and a rollback job's digests must be digests.
+- A script's or command's output is held to a fixed size, and a timeout kills the whole process group the command
+  started, not only its shell. Before a step's log goes to Wren the agent hides what looks like a secret: the value
+  of a `password=`, `token:` or `"api_key": "…"` pair, a `Bearer` or `Basic` credential, the password in
+  `scheme://user:password@host` and a private key block. This is pattern-based and best effort; a secret printed on
+  its own line, with no name in front of it, is not recognised, so don't run installers that print one.
+- Folders are checked against the real paths too: a symlink under a root that points out of it doesn't make what is
+  behind it part of the root.
+- **A tag can be shared.** An update re-tags an image reference (`app:latest`) and the agent moves the target's
+  own containers to the new digest. Another container on the host that runs the same reference but is outside the
+  target (not part of the Compose project or the container Wren updates) keeps running its old image until someone
+  recreates it; the next time it is recreated it picks up the new image. Give targets their own references if that
+  matters.
 - The agent connects out; the host opens no ports. It doesn't follow redirects, reads at most 64 to 256 KiB of any
   answer from Wren, and starts none of its child processes (scripts, Docker, `cp`) with its token or Wren's
   address in their environment, so a vendor installer a script stack downloads can't take them. The server

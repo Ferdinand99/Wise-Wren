@@ -17,6 +17,7 @@ pub mod ledger;
 pub mod managed;
 pub mod presets;
 pub mod process;
+pub mod redact;
 pub mod run;
 pub mod snapshot;
 
@@ -34,6 +35,48 @@ pub const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// without restarting the agent: a revoked token stays refused, though).
 pub const REFUSED_WAIT: Duration = Duration::from_secs(5 * 60);
 
+/// The least time between two scans that Wren asks for ("Check now", or
+/// new managed settings). A server that sets the flag with every heartbeat
+/// can't keep the agent scanning without pause (each scan reads Docker and
+/// runs every version command); a request that arrives sooner waits.
+pub const MIN_ASKED_SCAN_GAP: Duration = Duration::from_secs(30);
+
+/// Whether a scan Wren asked for may start now, `last` being when the last
+/// scan started.
+fn asked_scan_allowed(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= MIN_ASKED_SCAN_GAP)
+}
+
+/// Waits for a background task. `false` when it panicked (said in the log,
+/// since nobody else would notice) or was cancelled.
+async fn finished(name: &str, task: tokio::task::JoinHandle<()>) -> bool {
+    match task.await {
+        Ok(()) => true,
+        Err(err) if err.is_panic() => {
+            tracing::error!(task = name, "background task panicked: {err}");
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+/// Runs `make()` as a task and runs it again, after a pause, whenever it
+/// panics. A task that ends by itself ends for good.
+fn supervise<F, Fut>(name: &'static str, pause: Duration, make: F) -> tokio::task::JoinHandle<()>
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            if finished(name, tokio::spawn(make())).await {
+                return;
+            }
+            tokio::time::sleep(pause).await;
+        }
+    })
+}
+
 /// The inventory runs beside the heartbeats (version commands may take a
 /// while), one at a time.
 #[derive(Default, Clone)]
@@ -50,22 +93,37 @@ impl Scans {
         }
         let (live, client, scans) = (live.clone(), client.clone(), self.clone());
         tokio::spawn(async move {
-            // The settings in force when the scan starts.
-            let config = live.config();
-            let inv = discover::scan(&config, Path::new("/")).await;
-            if !inv.error.is_empty() {
-                tracing::warn!(error = %inv.error, "can't read Docker for the inventory");
-            }
-            match client.inventory(&inv).await {
-                Ok(()) => tracing::info!(
-                    containers = inv.containers.len(),
-                    script_stacks = inv.script_stacks.len(),
-                    "inventory sent"
-                ),
-                Err(err) => {
-                    tracing::warn!("inventory not sent: {err}");
-                    scans.retry.store(true, Ordering::Relaxed);
+            let work = tokio::spawn(async move {
+                // The settings in force when the scan starts.
+                let config = live.config();
+                let inv = discover::scan(&config, Path::new("/")).await;
+                if !inv.error.is_empty() {
+                    tracing::warn!(error = %inv.error, "can't read Docker for the inventory");
                 }
+                match client.inventory(&inv).await {
+                    Ok(()) => tracing::info!(
+                        containers = inv.containers.len(),
+                        script_stacks = inv.script_stacks.len(),
+                        "inventory sent"
+                    ),
+                    Err(err) => {
+                        tracing::warn!("inventory not sent: {err}");
+                        return false;
+                    }
+                }
+                true
+            });
+            // A scan that panicked must not leave `running` set (no scan
+            // would ever start again) and is tried again like a failed one.
+            let sent = match work.await {
+                Ok(sent) => sent,
+                Err(err) => {
+                    tracing::error!("inventory scan stopped: {err}");
+                    false
+                }
+            };
+            if !sent {
+                scans.retry.store(true, Ordering::Relaxed);
             }
             scans.running.store(false, Ordering::Release);
         });
@@ -91,6 +149,10 @@ pub async fn run(
     let config = live.config();
     let scans = Scans::default();
     let mut next_scan = Instant::now();
+    // When the last scan started, and whether Wren asked for one that had
+    // to wait (see `MIN_ASKED_SCAN_GAP`).
+    let mut last_scan: Option<Instant> = None;
+    let mut asked = false;
     tracing::info!(
         version = heartbeat::VERSION,
         server = %config.server,
@@ -132,7 +194,12 @@ pub async fn run(
             tracing::info!(images = ?gone, "kept images beyond [retention] removed");
         }
     });
-    let job_task = tokio::spawn(jobs_loop(live.clone()));
+    // A panic in the job loop would leave an agent that sends heartbeats but
+    // never takes a job: it is restarted.
+    let jobs_live = live.clone();
+    let job_task = supervise("jobs", Duration::from_secs(5), move || {
+        jobs_loop(jobs_live.clone())
+    });
     let mut connected = false;
     let mut failures = 0u32;
     let mut last_refusal = String::new();
@@ -174,9 +241,13 @@ pub async fn run(
                         }
                     }
                 }
-                if scan || Instant::now() >= next_scan || scans.retry.swap(false, Ordering::Relaxed)
-                {
-                    next_scan = Instant::now() + live.config().scan_interval;
+                asked |= scan;
+                let now = Instant::now();
+                let may_ask = asked && asked_scan_allowed(last_scan, now);
+                if may_ask || now >= next_scan || scans.retry.swap(false, Ordering::Relaxed) {
+                    asked = false;
+                    last_scan = Some(now);
+                    next_scan = now + live.config().scan_interval;
                     scans.start(&live, &client);
                 }
                 Duration::from_secs(reply.interval_seconds.clamp(5, 300))
@@ -243,6 +314,39 @@ async fn jobs_loop(live: Arc<Live>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scans_wren_asks_for_keep_a_gap() {
+        let now = Instant::now();
+        assert!(asked_scan_allowed(None, now));
+        let recent = now.checked_sub(Duration::from_secs(5));
+        assert!(!asked_scan_allowed(recent, now));
+        let old = now.checked_sub(MIN_ASKED_SCAN_GAP);
+        assert!(asked_scan_allowed(old, now));
+    }
+
+    #[tokio::test]
+    async fn a_panicking_task_is_noticed_and_restarted() {
+        assert!(finished("ok", tokio::spawn(async {})).await);
+        assert!(!finished("boom", tokio::spawn(async { panic!("boom") })).await);
+
+        let runs = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = runs.clone();
+        let task = supervise("flaky", Duration::from_millis(10), move || {
+            let seen = seen.clone();
+            async move {
+                // The first two runs panic, the third ends normally.
+                if seen.fetch_add(1, Ordering::SeqCst) < 2 {
+                    panic!("boom");
+                }
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("the supervisor ends once the task does")
+            .unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
 
     #[test]
     fn backoff_grows_to_a_minute() {

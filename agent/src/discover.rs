@@ -359,15 +359,18 @@ pub async fn run(
         .arg(command)
         .current_dir(dir)
         .envs(env)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
+        .stdin(std::process::Stdio::null());
     crate::process::scrub(&mut cmd);
-    let output = tokio::time::timeout(timeout, cmd.output())
+    let output = crate::process::run(&mut cmd, timeout, crate::process::Keep::Head)
         .await
-        .map_err(|_| format!("took longer than {} s", timeout.as_secs()))?
-        .map_err(|e| format!("can't start sh: {e}"))?;
+        .map_err(|e| match e {
+            crate::process::RunError::TimedOut => {
+                format!("took longer than {} s", timeout.as_secs())
+            }
+            crate::process::RunError::Start(e) => format!("can't start sh: {e}"),
+        })?;
     let first = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes)
+        crate::redact::redact(&String::from_utf8_lossy(bytes))
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty())
