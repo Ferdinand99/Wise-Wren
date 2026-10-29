@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.2](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.1...v0.9.2) (2026-10-29)
+
+
+### Bug Fixes
+
+* security review backlog ([#50](https://github.com/Ferdinand99/Wise-Wren/issues/50)) ([90badfc](https://github.com/Ferdinand99/Wise-Wren/commit/90badfc984a75c0af93ef4ce2c19d43bb278c3b0))
+* update vole-kit to 0.8.0 ([#52](https://github.com/Ferdinand99/Wise-Wren/issues/52)) ([3064c99](https://github.com/Ferdinand99/Wise-Wren/commit/3064c9967b006a13f018c1fa0da7ac1c20a62908))
+
 ## [0.9.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.0...v0.9.1) (2026-10-29)
 
 
