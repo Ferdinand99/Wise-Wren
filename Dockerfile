@@ -75,15 +75,15 @@ RUN apk add --no-cache ca-certificates \
         bash curl openssl coreutils jq attr btrfs-progs \
         php84 php84-curl php84-dom php84-simplexml php84-xml php84-mbstring \
         php84-posix php84-session php84-ctype \
-    && ln -sf /usr/bin/php84 /usr/bin/php
+    && ln -sf /usr/bin/php84 /usr/bin/php \
+    && mkdir -p /usr/share/doc/wise-wren-agent
 
 COPY docker/php-wren.ini /etc/php84/conf.d/99-wren.ini
 COPY --from=builder /usr/local/bin/wren-agent /usr/local/bin/wren-agent
 
 # The licence texts: Wren's own (AGPL-3.0) and the notices of the crates in the
 # binary (scripts/notices.sh makes the file; CI checks that it is up to date).
-COPY --chmod=644 LICENSE /usr/share/doc/wise-wren-agent/LICENSE
-COPY --chmod=644 agent/THIRD-PARTY-NOTICES /usr/share/doc/wise-wren-agent/THIRD-PARTY-NOTICES
+COPY --chmod=644 LICENSE agent/THIRD-PARTY-NOTICES /usr/share/doc/wise-wren-agent/
 
 # agent.toml lives here (/config/agent.toml, the agent's default). It is
 # optional: WW_SERVER_URL and WW_AGENT_TOKEN suffice. Don't set
@@ -116,7 +116,7 @@ LABEL org.opencontainers.image.title="Wise Wren" \
 RUN apk add --no-cache ca-certificates tzdata su-exec \
     && addgroup -S -g 1000 wren \
     && adduser -S -D -H -u 1000 -G wren -h /data -s /sbin/nologin wren \
-    && mkdir -p /data \
+    && mkdir -p /data /usr/share/doc/wise-wren \
     && chown wren:wren /data
 
 COPY --from=builder /usr/local/bin/wise-wren /usr/local/bin/wise-wren
@@ -124,8 +124,7 @@ COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # The licence texts: Wren's own (AGPL-3.0) and the notices of the crates in the
 # binary (scripts/notices.sh makes the file; CI checks that it is up to date).
-COPY --chmod=644 LICENSE /usr/share/doc/wise-wren/LICENSE
-COPY --chmod=644 THIRD-PARTY-NOTICES /usr/share/doc/wise-wren/THIRD-PARTY-NOTICES
+COPY --chmod=644 LICENSE THIRD-PARTY-NOTICES /usr/share/doc/wise-wren/
 
 ENV WW_DATA_DIR=/data \
     WW_PORT=3003
