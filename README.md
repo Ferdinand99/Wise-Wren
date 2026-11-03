@@ -149,6 +149,10 @@ Wren is part of [Hedgerow](https://hedgerow.tools/), a family of small self-host
 [Keen Kestrel](https://hedgerow.tools/Keen-Kestrel/). Like its siblings, it is one Rust binary with SQLite in
 the family's design, plus a small agent for each server.
 
+## Support
+
+Hedgerow is built in spare time and is free to use. If you find it useful, you can support it through [GitHub Sponsors](https://github.com/sponsors/Ferdinand99) or [Ko-fi](https://ko-fi.com/ferdinand99). Thank you.
+
 ## License
 
 [GNU AGPL-3.0-only](LICENSE)
