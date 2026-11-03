@@ -152,3 +152,5 @@ the family's design, plus a small agent for each server.
 ## License
 
 [GNU AGPL-3.0-only](LICENSE)
+
+The licence texts of the Rust crates inside the images are in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES) (server) and [agent/THIRD-PARTY-NOTICES](agent/THIRD-PARTY-NOTICES) (agent). Each image carries its file, with the AGPL text, in `/usr/share/doc/wise-wren/` and `/usr/share/doc/wise-wren-agent/`. `scripts/notices.sh` makes the files (cargo-about, pinned), and CI fails when one is out of date or when a dependency has a licence that is not on the allowlist in `about.toml`. After changing a dependency, run `scripts/notices.sh` and commit the result.
