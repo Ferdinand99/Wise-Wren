@@ -65,7 +65,7 @@ LABEL org.opencontainers.image.title="Wise Wren agent" \
       org.opencontainers.image.url="https://github.com/Ferdinand99/Wise-Wren" \
       org.opencontainers.image.source="https://github.com/Ferdinand99/Wise-Wren" \
       org.opencontainers.image.documentation="https://github.com/Ferdinand99/Wise-Wren/blob/main/docs/agent.md" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
@@ -79,6 +79,11 @@ RUN apk add --no-cache ca-certificates \
 
 COPY docker/php-wren.ini /etc/php84/conf.d/99-wren.ini
 COPY --from=builder /usr/local/bin/wren-agent /usr/local/bin/wren-agent
+
+# The licence texts: Wren's own (AGPL-3.0) and the notices of the crates in the
+# binary (scripts/notices.sh makes the file; CI checks that it is up to date).
+COPY --chmod=644 LICENSE /usr/share/doc/wise-wren-agent/LICENSE
+COPY --chmod=644 agent/THIRD-PARTY-NOTICES /usr/share/doc/wise-wren-agent/THIRD-PARTY-NOTICES
 
 # agent.toml lives here (/config/agent.toml, the agent's default). It is
 # optional: WW_SERVER_URL and WW_AGENT_TOKEN suffice. Don't set
@@ -99,7 +104,7 @@ LABEL org.opencontainers.image.title="Wise Wren" \
       org.opencontainers.image.url="https://github.com/Ferdinand99/Wise-Wren" \
       org.opencontainers.image.source="https://github.com/Ferdinand99/Wise-Wren" \
       org.opencontainers.image.documentation="https://github.com/Ferdinand99/Wise-Wren#readme" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
@@ -116,6 +121,11 @@ RUN apk add --no-cache ca-certificates tzdata su-exec \
 
 COPY --from=builder /usr/local/bin/wise-wren /usr/local/bin/wise-wren
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# The licence texts: Wren's own (AGPL-3.0) and the notices of the crates in the
+# binary (scripts/notices.sh makes the file; CI checks that it is up to date).
+COPY --chmod=644 LICENSE /usr/share/doc/wise-wren/LICENSE
+COPY --chmod=644 THIRD-PARTY-NOTICES /usr/share/doc/wise-wren/THIRD-PARTY-NOTICES
 
 ENV WW_DATA_DIR=/data \
     WW_PORT=3003

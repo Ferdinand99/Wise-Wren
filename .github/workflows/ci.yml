@@ -44,6 +44,40 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+  # THIRD-PARTY-NOTICES (server) and agent/THIRD-PARTY-NOTICES (agent) hold the licence texts of
+  # the Rust crates in the two images. They are made from the dependencies (scripts/notices.sh),
+  # so a changed dependency makes them stale: this job fails then. It also fails when a
+  # dependency has a licence that is not on the allowlist in about.toml, or one that cargo-about
+  # can not read.
+  notices:
+    name: Third-party notices (up to date, licences allowed)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.99
+
+      # Pinned version and pinned checksum. Keep the version equal to want_version in
+      # scripts/notices.sh.
+      - name: Install cargo-about
+        env:
+          CARGO_ABOUT_VERSION: "0.9.3"
+          CARGO_ABOUT_SHA256: "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4"
+        run: |
+          name="cargo-about-${CARGO_ABOUT_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/cargo-about.tar.gz"             "https://github.com/EmbarkStudios/cargo-about/releases/download/${CARGO_ABOUT_VERSION}/${name}.tar.gz"
+          echo "${CARGO_ABOUT_SHA256}  $RUNNER_TEMP/cargo-about.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$RUNNER_TEMP/cargo-about.tar.gz" -C "$HOME/.local/bin" --strip-components=1 "${name}/cargo-about"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # A licence outside the allowlist and an unreadable licence must stop the check.
+      - name: cargo-about stops on a dependency it must not accept
+        run: scripts/test-notices-fail.sh
+
+      - name: The notices files are up to date
+        run: scripts/notices.sh --check
+
   docker:
     # Builds both images for linux/amd64 and linux/arm64 on native runners (no
     # QEMU) to catch Dockerfile breakage before merging. Cache only;
@@ -78,6 +112,24 @@ jobs:
           build-args: |
             REVISION=${{ github.sha }}
           # Same cache scopes as docker-publish.yml, so pull requests reuse
-          # main's layers.
+          # main's layers. The image is loaded (not pushed) so that the next
+          # step can look inside it.
           cache-from: type=gha,scope=${{ matrix.target }}-${{ env.PLATFORM_PAIR }}
-          outputs: type=cacheonly
+          load: true
+          tags: wren-ci:${{ matrix.target }}
+
+      # The image must carry the licence texts: the AGPL text and the notices of the
+      # crates in the binary, at the same place in both images.
+      - name: The image carries the licence texts
+        run: |
+          if [ "${{ matrix.target }}" = server ]; then
+            doc=wise-wren; notices=THIRD-PARTY-NOTICES
+          else
+            doc=wise-wren-agent; notices=agent/THIRD-PARTY-NOTICES
+          fi
+          for pair in "THIRD-PARTY-NOTICES:$notices" "LICENSE:LICENSE"; do
+            file="${pair%%:*}"; source="${pair#*:}"
+            docker run --rm --entrypoint cat "wren-ci:${{ matrix.target }}" "/usr/share/doc/$doc/$file" > "$RUNNER_TEMP/$file"
+            cmp "$RUNNER_TEMP/$file" "$source"
+            echo "/usr/share/doc/$doc/$file is in the image ($(wc -c < "$RUNNER_TEMP/$file") bytes, same as $source)"
+          done
