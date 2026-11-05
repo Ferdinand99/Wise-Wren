@@ -3,11 +3,11 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{App, Web, api_token, bearer, finish, poll_as, post_json, set_remote, step};
+use common::{
+    App, Web, add_hook, api_token, bearer, finish, hooks, poll_as, post_json, set_remote, step,
+};
 use serde_json::{Value, json};
 use vole_kit::auth::TokenScope;
 use wise_wren::{runs, targets};
@@ -385,39 +385,6 @@ async fn silent_agent_fails_the_run() {
     assert_eq!(closed.len(), 1);
     assert_eq!(run(&app, run_id).await.status, "rollback_failed");
     assert_eq!(poll(&app, &token).await.status, StatusCode::NO_CONTENT);
-}
-
-/// A webhook receiver: what it got.
-async fn hooks() -> (String, Arc<Mutex<Vec<Value>>>) {
-    let got: Arc<Mutex<Vec<Value>>> = Arc::default();
-    let g = got.clone();
-    let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
-        let g = g.clone();
-        async move {
-            g.lock()
-                .unwrap()
-                .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
-            StatusCode::OK
-        }
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}/hook"), got)
-}
-
-async fn add_hook(app: &App, url: String) {
-    let config = json!({"url": url, "method": "POST"}).to_string();
-    app.wren
-        .core
-        .with_conn(move |c| {
-            c.execute(
-                "INSERT INTO notification_channels (name, kind, config) VALUES ('hook', 'webhook', ?1)",
-                [config],
-            )
-        })
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

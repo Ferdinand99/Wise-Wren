@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use wise_wren::Wren;
 
@@ -336,6 +337,39 @@ pub async fn finish(app: &App, token: &str, run: i64, outcome: &str) -> Res {
         serde_json::json!({"outcome": outcome, "detail": "x"}),
     )
     .await
+}
+
+/// A webhook receiver: what it got.
+pub async fn hooks() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let got: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let g = got.clone();
+    let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
+        let g = g.clone();
+        async move {
+            g.lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            StatusCode::OK
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/hook"), got)
+}
+
+pub async fn add_hook(app: &App, url: String) {
+    let config = json!({"url": url, "method": "POST"}).to_string();
+    app.wren
+        .core
+        .with_conn(move |c| {
+            c.execute(
+                "INSERT INTO notification_channels (name, kind, config) VALUES ('hook', 'webhook', ?1)",
+                [config],
+            )
+        })
+        .await
+        .unwrap();
 }
 
 /// Puts `digest` in the registry as `image`'s newest and refreshes the targets.

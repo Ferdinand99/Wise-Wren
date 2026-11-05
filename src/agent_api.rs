@@ -199,6 +199,7 @@ pub async fn heartbeat(
     };
     let _ = wren.changes.send(());
     crate::runs::after_interrupted(&wren, interrupted);
+    tokio::spawn(crate::agent_update::announce(wren.clone(), id));
     // Beside `scan` (a fresh inventory) Wren can send settings, as data an
     // agent checks against its own limits (§8); never a command line.
     let mut reply = json!({

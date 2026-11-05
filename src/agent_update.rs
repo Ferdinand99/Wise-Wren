@@ -449,6 +449,48 @@ pub async fn refresh_release_of(wren: &Wren, repo: &str, version: &str) {
     let _ = wren.changes.send(());
 }
 
+/// Tells everyone once that the agent of `server_id` can be updated to the
+/// release Wren offers. Runs after every heartbeat; the version is marked
+/// (compare-and-set) before anything is sent, so two at once send one
+/// message and a version is never announced twice.
+pub async fn announce(wren: Wren, server_id: i64) {
+    let release = release(&wren);
+    let found = wren
+        .core
+        .with_conn(move |c| {
+            let standing = standing_of(c, server_id, release.as_ref())?;
+            let (State::Available, Some(release)) = (standing.state, release) else {
+                return Ok(None);
+            };
+            let changed = c.execute(
+                "UPDATE servers SET agent_update_announced = ?2
+                 WHERE id = ?1 AND agent_update_announced != ?2",
+                params![server_id, release.version],
+            )?;
+            if changed == 0 {
+                return Ok(None);
+            }
+            let name: String =
+                c.query_row("SELECT name FROM servers WHERE id = ?1", [server_id], |r| {
+                    r.get(0)
+                })?;
+            Ok(Some((name, standing.current, release.version)))
+        })
+        .await;
+    let (name, from, to) = match found {
+        Ok(Some(found)) => found,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(%err, server_id, "can't work out the agent update notice");
+            return;
+        }
+    };
+    crate::run_notify::broadcast(&wren.core, |base| {
+        crate::run_notify::agent_update_available_alert(server_id, &name, &from, &to, base)
+    })
+    .await;
+}
+
 /// Looks the release up at start, then every [`REFRESH`] (sooner while the
 /// first look hasn't worked).
 pub fn spawn_refresher(wren: Wren) {

@@ -70,7 +70,7 @@ fn alert(
         kind,
         event: event.into(),
         event_label: i18n::t(match event {
-            "agent_offline" | "agent_back" => "notify_msg.event_agent",
+            "agent_offline" | "agent_back" | "agent_update_available" => "notify_msg.event_agent",
             _ => "notify_msg.event_run",
         })
         .to_string(),
@@ -102,11 +102,14 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
     if run.config_refusal() {
         return None;
     }
+    let version = run.to_key.split('@').next().unwrap_or_default();
     let args = [
         ("name", run.target_name.as_str()),
         ("server", run.server_name.as_str()),
+        ("version", version),
     ];
     let rollback = run.kind == "rollback";
+    let agent = run.kind == crate::agent_update::KIND;
     let (kind, level, emoji, key) = match run.status.as_str() {
         runs::SUCCEEDED if rollback => (
             AlertKind::Recovered,
@@ -140,6 +143,7 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
         ),
         _ => return None,
     };
+    let key = if agent { agent_title_key(key) } else { key };
     let mut facts = vec![
         (
             i18n::t("notify_msg.fact_server").to_string(),
@@ -168,6 +172,15 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
     if !text.is_empty() {
         lines.push(text.chars().take(500).collect::<String>());
     }
+    if agent && run.status == runs::ROLLBACK_FAILED {
+        lines.push(i18n::tf(
+            "notify_msg.agent_update_break_glass",
+            &[(
+                "command",
+                &wren_agent::selfupdate::state::break_glass(&run.target_name, run.id),
+            )],
+        ));
+    }
     if let Some(why) = run.no_snapshot() {
         let mut line = i18n::t("snap.none").to_string();
         if !why.is_empty() {
@@ -191,6 +204,18 @@ pub fn run_alert(run: &Run, base: Option<&str>) -> Option<Alert> {
         link(base, &format!("/runs/{}", run.id)),
         (Some(run.id), run.target_name.clone(), "run"),
     ))
+}
+
+/// The title of an agent update's result: the run title `key` of the same
+/// outcome, said about the agent.
+fn agent_title_key(key: &'static str) -> &'static str {
+    match key {
+        "notify_msg.run_ok_title" => "notify_msg.agent_update_ok_title",
+        "notify_msg.run_rolled_back_title" => "notify_msg.agent_update_rolled_back_title",
+        "notify_msg.run_failed_title" => "notify_msg.agent_update_failed_title",
+        "notify_msg.run_needs_you_title" => "notify_msg.agent_update_needs_you_title",
+        other => other,
+    }
 }
 
 /// What started a run, in words.
@@ -297,6 +322,45 @@ pub fn agent_alert(server_id: i64, server: &str, back: bool, base: Option<&str>)
         link(base, &format!("/servers/{server_id}")),
         (Some(server_id), server.to_string(), "server"),
     )
+}
+
+/// The message about a newer agent being available for a server.
+pub fn agent_update_available_alert(
+    server_id: i64,
+    server: &str,
+    from: &str,
+    to: &str,
+    base: Option<&str>,
+) -> Alert {
+    let mut alert = alert(
+        AlertKind::Expiring,
+        Level::Info,
+        "\u{2b06}\u{fe0f}",
+        "agent_update_available",
+        i18n::tf(
+            "notify_msg.agent_update_available_title",
+            &[("server", server), ("from", from), ("to", to)],
+        ),
+        None,
+        vec![
+            (
+                i18n::t("notify_msg.fact_server").to_string(),
+                server.to_string(),
+            ),
+            (
+                i18n::t("notify_msg.fact_kind").to_string(),
+                kind_label(crate::agent_update::TARGET_KIND).to_string(),
+            ),
+            (
+                i18n::t("notify_msg.fact_available").to_string(),
+                format!("{from} \u{2192} {to}"),
+            ),
+        ],
+        link(base, &format!("/servers/{server_id}#agent-update")),
+        (Some(server_id), server.to_string(), "server"),
+    );
+    alert.link_label = i18n::t("notify_msg.view_updates").to_string();
+    alert
 }
 
 /// Servers whose agent went offline (not told yet) and ones back online

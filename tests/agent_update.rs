@@ -4,7 +4,9 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{App, add_user, api_token, poll_as, post_json};
+use std::sync::{Arc, Mutex};
+
+use common::{App, add_hook, add_user, api_token, hooks, poll_as, post_json};
 use serde_json::{Value, json};
 use vole_kit::auth::TokenScope;
 use wise_wren::agent_update::{self, Release};
@@ -30,6 +32,15 @@ fn su(enabled: bool, blocked: &str) -> Value {
 }
 
 async fn setup() -> (App, i64, String) {
+    setup_with(None).await
+}
+
+/// [`setup`] with a webhook channel that exists before the first heartbeat.
+async fn setup_with_hook(url: String) -> (App, i64, String) {
+    setup_with(Some(url)).await
+}
+
+async fn setup_with(hook: Option<String>) -> (App, i64, String) {
     let app = App::new().await;
     let (id, token) = app.add_server("Tower").await;
     *app.wren.agent_release.write().unwrap() = Some(Release {
@@ -37,6 +48,9 @@ async fn setup() -> (App, i64, String) {
         digest: D.into(),
         newest_wren: None,
     });
+    if let Some(url) = hook {
+        add_hook(&app, url).await;
+    }
     beat(&app, &token, "0.10.0", "boot-a", Some(su(true, ""))).await;
     (app, id, token)
 }
@@ -633,4 +647,167 @@ async fn a_probation_report_during_an_agent_update_imports_nothing() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert!(res.json().get("settings").is_none(), "{}", res.body);
     assert_eq!(app.count("SELECT COUNT(*) FROM agent_settings").await, 0);
+}
+
+// --- Notifications -----------------------------------------------------------
+
+type Got = Arc<Mutex<Vec<Value>>>;
+
+fn count_of(got: &Got) -> usize {
+    got.lock().unwrap().len()
+}
+
+/// The title of each webhook message so far ("<emoji> <title> — <detail>").
+fn titles(got: &Got) -> Vec<String> {
+    got.lock()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            let summary = m["summary"].as_str().unwrap_or_default();
+            let text = summary.split_once(' ').map_or(summary, |(_, rest)| rest);
+            text.split(" \u{2014} ")
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Waits (up to 5 s) until `n` messages came in; their titles.
+async fn wait_titles(got: &Got, n: usize) -> Vec<String> {
+    for _ in 0..100 {
+        if count_of(got) >= n {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    titles(got)
+}
+
+/// Waits (up to 5 s) for a message that `found` accepts.
+async fn wait_for(got: &Got, found: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..100 {
+        if let Some(m) = got.lock().unwrap().iter().find(|m| found(m)) {
+            return m.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("no such message in {:?}", got.lock().unwrap());
+}
+
+/// Gives anything still on its way time to arrive.
+async fn settle() {
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
+
+#[tokio::test]
+async fn an_available_agent_update_is_announced_once() {
+    let (url, got) = hooks().await;
+    let (app, _, token) = setup_with_hook(url).await;
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, ""))).await;
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, ""))).await;
+    let titles = wait_titles(&got, 1).await;
+    assert_eq!(
+        titles,
+        ["Agent update available for Tower: 0.10.0 \u{2192} 0.10.1"]
+    );
+    assert_eq!(got.lock().unwrap()[0]["event"], "agent_update_available");
+    // A newer release is news again.
+    *app.wren.agent_release.write().unwrap() = Some(Release {
+        version: "0.10.2".into(),
+        digest: D.into(),
+        newest_wren: None,
+    });
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, ""))).await;
+    let titles = wait_titles(&got, 2).await;
+    assert_eq!(
+        titles[1],
+        "Agent update available for Tower: 0.10.0 \u{2192} 0.10.2"
+    );
+    // And that is all there was.
+    settle().await;
+    assert_eq!(count_of(&got), 2);
+}
+
+#[tokio::test]
+async fn announcements_at_the_same_time_send_one_message() {
+    let (url, got) = hooks().await;
+    let (app, id, _) = setup_with_hook(url).await;
+    // The setup's heartbeat announced it already; start over.
+    wait_titles(&got, 1).await;
+    app.exec("UPDATE servers SET agent_update_announced = ''".into())
+        .await;
+    got.lock().unwrap().clear();
+    let tasks: Vec<_> = (0..8)
+        .map(|_| tokio::spawn(agent_update::announce(app.wren.clone(), id)))
+        .collect();
+    for t in tasks {
+        t.await.unwrap();
+    }
+    settle().await;
+    assert_eq!(count_of(&got), 1, "{:?}", titles(&got));
+    assert_eq!(
+        app.count_sql(format!(
+            "SELECT COUNT(*) FROM servers WHERE id = {id} AND agent_update_announced = '0.10.1'"
+        ))
+        .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn nothing_is_announced_for_an_agent_that_cannot_take_the_update() {
+    for (version, report) in [
+        ("0.10.1", su(true, "")),
+        ("0.10.0", su(false, "")),
+        ("0.10.0", su(true, "pinned")),
+        ("0.9.2", json!(null)),
+    ] {
+        let (url, got) = hooks().await;
+        let app = App::new().await;
+        let (id, token) = app.add_server("Tower").await;
+        *app.wren.agent_release.write().unwrap() = Some(Release {
+            version: "0.10.1".into(),
+            digest: D.into(),
+            newest_wren: None,
+        });
+        add_hook(&app, url).await;
+        beat(&app, &token, version, "boot-a", Some(report)).await;
+        settle().await;
+        assert_eq!(count_of(&got), 0, "{version}: {:?}", titles(&got));
+        assert_eq!(
+            app.count_sql(format!(
+                "SELECT COUNT(*) FROM servers WHERE id = {id} AND agent_update_announced = ''"
+            ))
+            .await,
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_update_results_are_announced() {
+    for (outcome, title, line) in [
+        ("succeeded", "The agent on Tower is updated to 0.10.1", None),
+        (
+            "rolled_back",
+            "The agent update on Tower was rolled back",
+            None,
+        ),
+        (
+            "rollback_failed",
+            "The agent update on Tower needs you",
+            Some("docker rm -f wren-agent"),
+        ),
+    ] {
+        let (url, got) = hooks().await;
+        let (app, id, token) = setup_with_hook(url).await;
+        let run = approve_as_admin(&app, id, "0.10.1").await;
+        poll(&app, &token, "boot-a").await;
+        common::finish(&app, &token, run, outcome).await;
+        let msg = wait_for(&got, |m| m.to_string().contains(title)).await;
+        if let Some(l) = line {
+            assert!(msg.to_string().contains(l), "{msg}");
+        }
+    }
 }
