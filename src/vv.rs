@@ -807,13 +807,14 @@ pub async fn sync(wren: &Wren) -> bool {
     let core = &wren.core;
     let Ok(ids) = core
         .with_conn(|c| {
-            c.prepare(
+            c.prepare(&format!(
                 "SELECT id FROM runs WHERE
                     (vv_state IN ('open', 'planned', 'replan') AND status NOT IN ('queued', 'running'))
-                 OR (status = 'queued' AND scheduled_for IS NOT NULL AND kind != 'agent_update'
+                 OR (status = 'queued' AND scheduled_for IS NOT NULL AND kind != '{}'
                      AND vv_state IN ('', 'replan'))
                  ORDER BY id",
-            )?
+                crate::agent_update::KIND
+            ))?
             .query_map([], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()
         })

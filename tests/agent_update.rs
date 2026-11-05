@@ -587,7 +587,7 @@ async fn no_maintenance_window_for_an_agent_update() {
 }
 
 #[tokio::test]
-async fn a_scheduled_agent_update_gets_no_maintenance_step() {
+async fn a_scheduled_agent_update_is_left_alone_by_the_maintenance_sync() {
     let (app, id, _token) = setup().await;
     let ad = admin_token(&app).await;
     let at = jiff::Timestamp::now()
@@ -602,7 +602,9 @@ async fn a_scheduled_agent_update_gets_no_maintenance_step() {
     .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     let run = res.json()["run_id"].as_i64().unwrap();
-    wise_wren::vv::sync(&app.wren).await;
+    // Nothing for the maintenance reconciler to do: it would otherwise pick
+    // the scheduled run every pass and announce a change each time.
+    assert!(!wise_wren::vv::sync(&app.wren).await);
     assert_eq!(
         app.count_sql(format!(
             "SELECT COUNT(*) FROM run_steps WHERE run_id = {run}"
@@ -610,4 +612,25 @@ async fn a_scheduled_agent_update_gets_no_maintenance_step() {
         .await,
         0
     );
+}
+
+#[tokio::test]
+async fn a_probation_report_during_an_agent_update_imports_nothing() {
+    let (app, id, token) = setup().await;
+    assert_eq!(app.count("SELECT COUNT(*) FROM agent_settings").await, 0);
+    approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    // A report with settings in force, as an unlocked agent without stored
+    // settings would see imported: not while the update runs.
+    let settings = json!({
+        "supported": true, "locked": false, "version": null, "error": "",
+        "error_version": null, "mounts": ["/srv"], "presets": [], "custom_stacks": [],
+        "current": wren_agent::managed::Settings::default(),
+    });
+    let body = json!({"agent_version": "0.10.1", "boot_id": "boot-b", "uptime_seconds": 100,
+                      "settings": settings});
+    let res = post_json(&app, "/api/agent/v1/heartbeat", &token, body).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.json().get("settings").is_none(), "{}", res.body);
+    assert_eq!(app.count("SELECT COUNT(*) FROM agent_settings").await, 0);
 }
