@@ -124,6 +124,7 @@ jobs:
       packages: write
       id-token: write # cosign keyless signing (GitHub OIDC)
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: server
@@ -169,12 +170,15 @@ jobs:
       - name: Create and push manifest
         working-directory: ${{ runner.temp }}/digests
         run: |
+          # shellcheck disable=SC2046 # the tag list and the digest list are meant to split into words
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
+      # Releases only (the same condition as the :latest tag); :edge is not signed.
       # Pinned to a commit; the installer's v3 line installs a cosign v2 release.
       - name: Install cosign
+        if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/v')
         uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
         with:
           cosign-release: v2.6.1
@@ -183,6 +187,7 @@ jobs:
       # signature stays valid when :latest and :X move on. No key: the signature is
       # tied to this workflow run through GitHub OIDC and logged in Rekor.
       - name: Sign the image (keyless)
+        if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/v')
         run: |
           digest="$(docker buildx imagetools inspect "${IMAGE}:${{ steps.meta.outputs.version }}" --format '{{json .Manifest}}' | jq -r .digest)"
           case "$digest" in sha256:*) ;; *) echo "no image digest found for ${IMAGE}" >&2; exit 1 ;; esac
