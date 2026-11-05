@@ -29,8 +29,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wren_agent::selfupdate::state::{Phase, StateFile};
 
-// The registry address; the scenarios of Task 10 use it.
-#[allow(dead_code)]
 const REG: &str = "localhost:5057";
 const REPO: &str = "localhost:5057/ww-test-su/agent";
 const REGISTRY: &str = "ww-test-su-registry";
@@ -111,10 +109,31 @@ fn built() -> &'static Mutex<HashMap<String, (String, String)>> {
 /// process and version: the tag is the version, so a version has one label
 /// (a variant with another label needs a tag of its own).
 fn build(version: &str, label: &str) -> String {
-    if let Some((built_label, digest)) = built().lock().unwrap().get(version) {
+    build_as(version, version, label, false)
+}
+
+/// The same binary as `REPO:<version>` in an image of its own (an extra
+/// image label, so another digest), pushed as `REPO:alt-<version>` and never
+/// made the release: an image with the right version label that is not the
+/// release of that version.
+fn build_variant(version: &str) -> String {
+    build_as(&format!("alt-{version}"), version, version, true)
+}
+
+/// Version to the copy of the binary built as that version in this process.
+fn binaries() -> &'static Mutex<HashMap<String, std::path::PathBuf>> {
+    static BINARIES: OnceLock<Mutex<HashMap<String, std::path::PathBuf>>> = OnceLock::new();
+    BINARIES.get_or_init(Mutex::default)
+}
+
+/// Builds the agent as `version` (once per process), makes an image labelled
+/// `label` (and with an extra label when `variant`) and pushes it as
+/// `REPO:<tag>`.
+fn build_as(tag: &str, version: &str, label: &str, variant: bool) -> String {
+    if let Some((built_label, digest)) = built().lock().unwrap().get(tag) {
         assert_eq!(
             built_label, label,
-            "{version} was built with another label; give a variant its own tag"
+            "{tag} was built with another label; give a variant its own tag"
         );
         return digest.clone();
     }
@@ -125,55 +144,65 @@ fn build(version: &str, label: &str) -> String {
     // the cargo that runs this test, and only `wren-agent` compiles again when
     // the version changes.
     let target = root.join("target/su-images");
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "wren-agent",
-            "--features",
-            "selfupdate-test",
-        ])
-        .current_dir(root)
-        .env("WW_SU_TEST_VERSION", version)
-        .env("WW_SU_TEST_REPO", REPO)
-        .env("CARGO_TARGET_DIR", &target)
-        .status()
-        .expect("can't run cargo");
-    assert!(status.success(), "cargo build of {version} failed");
+    let known = binaries().lock().unwrap().get(version).cloned();
+    let binary = known.unwrap_or_else(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "--release",
+                "--locked",
+                "-p",
+                "wren-agent",
+                "--features",
+                "selfupdate-test",
+            ])
+            .current_dir(root)
+            .env("WW_SU_TEST_VERSION", version)
+            .env("WW_SU_TEST_REPO", REPO)
+            .env("CARGO_TARGET_DIR", &target)
+            .status()
+            .expect("can't run cargo");
+        assert!(status.success(), "cargo build of {version} failed");
+        // Kept apart, so that the next version's build doesn't replace it.
+        let kept = target.join(format!("wren-agent-{version}"));
+        std::fs::copy(target.join("release/wren-agent"), &kept).unwrap();
+        binaries()
+            .lock()
+            .unwrap()
+            .insert(version.to_string(), kept.clone());
+        kept
+    });
     let dir = std::env::temp_dir().join(format!("ww-test-su-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(target.join("release/wren-agent"), dir.join("wren-agent")).unwrap();
+    std::fs::copy(&binary, dir.join("wren-agent")).unwrap();
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/selfupdate.Dockerfile"),
         dir.join("Dockerfile"),
     )
     .unwrap();
-    let tag = format!("{REPO}:{version}");
-    docker(&[
-        "build",
-        "--build-arg",
-        &format!("WW_SU_LABEL_VERSION={label}"),
-        "-t",
-        &tag,
-        dir.to_str().unwrap(),
-    ]);
+    let image = format!("{REPO}:{tag}");
+    let label_arg = format!("WW_SU_LABEL_VERSION={label}");
+    let mut args = vec!["build", "--build-arg", &label_arg];
+    if variant {
+        args.extend(["--label", "ww-test-su.variant=1"]);
+    }
+    args.extend(["-t", &image, dir.to_str().unwrap()]);
+    docker(&args);
     let _ = std::fs::remove_dir_all(&dir);
-    docker(&["push", &tag]);
-    let digests = docker(&["image", "inspect", "-f", "{{json .RepoDigests}}", &tag]);
+    docker(&["push", &image]);
+    let digests = docker(&["image", "inspect", "-f", "{{json .RepoDigests}}", &image]);
     let digests: Vec<String> = serde_json::from_str(&digests).unwrap();
     let prefix = format!("{REPO}@");
     let digest = digests
         .iter()
         .find_map(|d| d.strip_prefix(&prefix))
-        .unwrap_or_else(|| panic!("{tag} has no digest in {REPO}: {digests:?}"))
+        .unwrap_or_else(|| panic!("{image} has no digest in {REPO}: {digests:?}"))
         .to_string();
     built()
         .lock()
         .unwrap()
-        .insert(version.to_string(), (label.to_string(), digest.clone()));
+        .insert(tag.to_string(), (label.to_string(), digest.clone()));
     digest
 }
 
@@ -234,8 +263,6 @@ enum Mode {
         agent_version: String,
     },
     /// Closes every connection without an answer.
-    // Used by the Wren-down scenario of Task 10.
-    #[allow(dead_code)]
     Down,
 }
 
@@ -270,8 +297,7 @@ struct Shared {
 /// `docker` and `cargo` for minutes, and the agent must still be answered.
 struct FakeWren {
     url: String,
-    // The id the fake answers with; Task 10 reads it.
-    #[allow(dead_code)]
+    /// The id the fake answers with.
     server_id: i64,
     port: u16,
     shared: Arc<Shared>,
@@ -538,6 +564,18 @@ fn volume(name: &str) -> String {
 /// Starts the agent `ww-test-su-<name>` from `image` against the fake Wren;
 /// its id. `extra` goes before the image (more `-e`, `--label`, …).
 fn start_agent(name: &str, wren: &FakeWren, image: &str, extra: &[&str]) -> String {
+    start_agent_with(name, wren, image, extra, "")
+}
+
+/// [`start_agent`] with `config_mode` (`:ro` or nothing) after the config
+/// volume's mount.
+fn start_agent_with(
+    name: &str,
+    wren: &FakeWren,
+    image: &str,
+    extra: &[&str],
+    config_mode: &str,
+) -> String {
     let container = format!("ww-test-su-{name}");
     // Made here with the label (`-v` would make it without one), so that the
     // volume can be told from anyone else's by its label.
@@ -548,7 +586,7 @@ fn start_agent(name: &str, wren: &FakeWren, image: &str, extra: &[&str]) -> Stri
         "owner=wise-wren",
         &volume(name),
     ]);
-    let config = format!("{}:/config", volume(name));
+    let config = format!("{}:/config{config_mode}", volume(name));
     let server = format!("WW_SERVER_URL={}", wren.url);
     let token = format!("WW_AGENT_TOKEN=wwa_{}", "t".repeat(43));
     let mut args = vec![
@@ -597,9 +635,41 @@ fn job(run: i64, to_version: &str, to_digest: &str) -> Value {
 
 /// The test's state file, read through a throwaway container on its volume.
 fn state(name: &str) -> StateFile {
+    let text = state_text(name).unwrap_or_else(|e| panic!("{e}"));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("selfupdate.json: {e}: {text}"))
+}
+
+/// Waits until the test's state file is there and `wanted` holds for its
+/// phase; the state then.
+async fn wait_phase(name: &str, wanted: impl Fn(Phase) -> bool, within: Duration) -> StateFile {
+    let end = Instant::now() + within;
+    loop {
+        let seen = state_text(name)
+            .ok()
+            .and_then(|t| serde_json::from_str::<StateFile>(&t).ok());
+        if let Some(st) = seen {
+            if wanted(st.phase) {
+                return st;
+            }
+            assert!(
+                Instant::now() < end,
+                "{name}: the phase is {:?} after {within:?}",
+                st.phase
+            );
+        } else {
+            assert!(
+                Instant::now() < end,
+                "{name}: no state file after {within:?}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+fn state_text(name: &str) -> Result<String, String> {
     let reader = format!("ww-test-su-{name}-read");
     let mount = format!("{}:/c:ro", volume(name));
-    let text = docker(&[
+    try_docker(&[
         "run",
         "--rm",
         "--name",
@@ -611,8 +681,7 @@ fn state(name: &str) -> StateFile {
         ALPINE,
         "cat",
         "/c/selfupdate.json",
-    ]);
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("selfupdate.json: {e}: {text}"))
+    ])
 }
 
 /// The ids of the containers that mount this volume.
@@ -635,6 +704,7 @@ fn cleanup(name: &str) {
         let mut doomed = users_of(&volume);
         doomed.push(format!("ww-test-su-{name}"));
         doomed.push(format!("ww-test-su-{name}-read"));
+        doomed.push("ww-test-su-killer".to_string());
         let old = try_docker(&[
             "ps",
             "-a",
@@ -866,4 +936,430 @@ async fn a_new_agent_that_exits_at_once_is_rolled_back_fast() {
     let st = state("exits");
     assert_eq!(st.phase, Phase::RolledBack);
     assert!(st.reason.contains("the new agent stopped"), "{}", st.reason);
+}
+
+/// The id of the container `name` (it is another one after an update).
+fn id_of(name: &str) -> String {
+    inspect(name)["Id"].as_str().unwrap_or_default().to_string()
+}
+
+/// Waits until the run has posted the step with the status.
+async fn wait_step(wren: &FakeWren, run: i64, step: &str, status: &str, within: Duration) {
+    let end = Instant::now() + within;
+    while !wren
+        .steps_of(run)
+        .iter()
+        .any(|(s, st)| s == step && st == status)
+    {
+        assert!(
+            Instant::now() < end,
+            "run {run} never posted {step} {status}; steps {:?}",
+            wren.steps_of(run)
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn a_crash_right_after_confirming_is_rolled_back() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("crash");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = FakeWren::start(3).await;
+    let old_id = start_agent(
+        "crash",
+        &wren,
+        &format!("{REPO}:latest"),
+        &["-e", "WW_SU_FAULT=crash_after_confirm"],
+    );
+    let digest = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    wren.queue_job(job(130, "0.90.1", &digest));
+    assert_eq!(
+        wren.finish_of(130, Duration::from_secs(240)).await,
+        ("rolled_back".into(), "selfupdate.rolled_back".into())
+    );
+    assert_eq!(id_of("ww-test-su-crash"), old_id);
+    assert!(running("ww-test-su-crash"));
+    let st = state("crash");
+    assert_eq!(st.phase, Phase::RolledBack);
+    assert!(st.reason.contains("the new agent stopped"), "{}", st.reason);
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn a_killed_helper_comes_back_and_finishes() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("killed");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = FakeWren::start(3).await;
+    start_agent("killed", &wren, &format!("{REPO}:latest"), &[]);
+    let digest = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    wren.queue_job(job(140, "0.90.1", &digest));
+    wait_phase(
+        "killed",
+        |p| p == Phase::NewStarted,
+        Duration::from_secs(240),
+    )
+    .await;
+    // `docker kill` counts as a stop by hand, which `unless-stopped` does not
+    // undo. A kill from the host's process space is a crash.
+    let helper = "wren-agent-selfupdate-140";
+    let pid = docker(&["inspect", "-f", "{{.State.Pid}}", helper]);
+    assert_ne!(pid, "0", "the helper isn't running any more");
+    docker(&[
+        "run",
+        "--rm",
+        "--pid",
+        "host",
+        "--name",
+        "ww-test-su-killer",
+        "--label",
+        "owner=wise-wren",
+        ALPINE,
+        "kill",
+        "-9",
+        &pid,
+    ]);
+    // Docker starts it again (or the run is already over and it is gone).
+    let end = Instant::now() + Duration::from_secs(30);
+    loop {
+        match try_docker(&["inspect", "-f", "{{.RestartCount}}", helper]) {
+            Ok(n) if n != "0" => break,
+            Err(_) => break,
+            Ok(_) => {}
+        }
+        assert!(Instant::now() < end, "the helper wasn't restarted");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        wren.finish_of(140, Duration::from_secs(240)).await,
+        ("succeeded".into(), "selfupdate.done".into())
+    );
+    assert_eq!(state("killed").phase, Phase::Done);
+    assert!(wren.beats_from("0.90.1") > 0, "the new agent never beat");
+    assert!(running("ww-test-su-killed"));
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn wren_down_during_probation_rolls_back_and_reports_later() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("down");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = FakeWren::start(3).await;
+    let old_id = start_agent("down", &wren, &format!("{REPO}:latest"), &[]);
+    let digest = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    wren.queue_job(job(150, "0.90.1", &digest));
+    // Wren goes away before the new agent exists, so it can never be answered
+    // in its probation. (The old agent has posted its last step by now.)
+    wait_step(&wren, 150, "update", "running", Duration::from_secs(120)).await;
+    wren.set_mode(Mode::Down);
+    let st = wait_phase("down", |p| p == Phase::RolledBack, Duration::from_secs(240)).await;
+    assert_eq!(st.server_id, wren.server_id);
+    assert_eq!(id_of("ww-test-su-down"), old_id);
+    assert!(running("ww-test-su-down"));
+    // Rolled back, but Wren hasn't heard: the result waits for it.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        wren.finish(150).is_none(),
+        "the run finished while Wren was down: {:?}",
+        wren.finish(150)
+    );
+    wren.set_mode(Mode::Ok);
+    assert_eq!(
+        wren.finish_of(150, Duration::from_secs(60)).await,
+        ("rolled_back".into(), "selfupdate.rolled_back".into())
+    );
+}
+
+/// One row of the refusals table.
+#[derive(Default)]
+struct Refusal {
+    name: &'static str,
+    /// The agent's image; empty: `REPO:latest`.
+    image: String,
+    /// Make the image by tagging `REPO:latest` with the name above first (a
+    /// repository that isn't the release's).
+    retag: bool,
+    extra: Vec<&'static str>,
+    config_ro: bool,
+    to_version: &'static str,
+    to_digest: String,
+    outcome: &'static str,
+    code: &'static str,
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn refusals_change_nothing() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("refuse");
+    ensure_registry();
+    let d0 = build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    // `:latest` stays 0.90.0: every agent below starts from it, and the
+    // releases that come next are only pushed under their own tags.
+    let d1 = build("0.90.1", "0.90.1");
+    // Labelled `edge`: not the version it is tagged as.
+    let d2 = build("0.90.2", "edge");
+    // Carries the right label, but is not what `REPO:0.90.1` points at.
+    let alt = build_variant("0.90.1");
+    assert_ne!(alt, d1, "the variant must be another image");
+    let rows = vec![
+        Refusal {
+            name: "downgrade",
+            to_version: "0.89.0",
+            to_digest: d0.clone(),
+            outcome: "refused",
+            code: "selfupdate.bad_version",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "same version",
+            to_version: "0.90.0",
+            to_digest: d0.clone(),
+            outcome: "refused",
+            code: "selfupdate.bad_version",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "edge label",
+            to_version: "0.90.2",
+            to_digest: d2,
+            outcome: "failed",
+            code: "selfupdate.label_mismatch",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "digest not the release",
+            to_version: "0.90.1",
+            to_digest: alt,
+            outcome: "failed",
+            code: "selfupdate.not_release",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "foreign repo",
+            image: format!("{REG}/ww-test-su/other:latest"),
+            retag: true,
+            to_version: "0.90.1",
+            to_digest: d1.clone(),
+            outcome: "refused",
+            code: "selfupdate.foreign_repo",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "pinned tag",
+            image: format!("{REPO}:0.90.0"),
+            to_version: "0.90.1",
+            to_digest: d1.clone(),
+            outcome: "refused",
+            code: "selfupdate.pinned",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "--rm",
+            extra: vec!["--rm"],
+            to_version: "0.90.1",
+            to_digest: d1.clone(),
+            outcome: "refused",
+            code: "selfupdate.autoremove",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "read-only config",
+            config_ro: true,
+            to_version: "0.90.1",
+            to_digest: d1.clone(),
+            outcome: "refused",
+            code: "selfupdate.config_ro",
+            ..Refusal::default()
+        },
+        Refusal {
+            name: "opt-in off",
+            extra: vec!["-e", "WW_AGENT_SELF_UPDATE=0"],
+            to_version: "0.90.1",
+            to_digest: d1,
+            outcome: "refused",
+            code: "selfupdate.off",
+            ..Refusal::default()
+        },
+    ];
+    let wren = FakeWren::start(3).await;
+    for (i, row) in rows.iter().enumerate() {
+        // A fresh agent per row.
+        cleanup("refuse");
+        let run = 200 + i64::try_from(i).unwrap();
+        let image = if row.image.is_empty() {
+            format!("{REPO}:latest")
+        } else {
+            row.image.clone()
+        };
+        if row.retag {
+            docker(&["tag", &format!("{REPO}:latest"), &image]);
+        }
+        let old_id = start_agent_with(
+            "refuse",
+            &wren,
+            &image,
+            &row.extra,
+            if row.config_ro { ":ro" } else { "" },
+        );
+        wren.queue_job(job(run, row.to_version, &row.to_digest));
+        assert_eq!(
+            wren.finish_of(run, Duration::from_secs(120)).await,
+            (row.outcome.into(), row.code.into()),
+            "row {}",
+            row.name
+        );
+        assert_eq!(id_of("ww-test-su-refuse"), old_id, "row {}", row.name);
+        assert!(running("ww-test-su-refuse"), "row {}", row.name);
+        assert_eq!(
+            containers_named(&format!("wren-agent-selfupdate-{run}")),
+            "",
+            "row {}: a helper exists",
+            row.name
+        );
+        if row.retag {
+            let _ = try_docker(&["rmi", &image]);
+        }
+    }
+}
+
+const COMPOSE: &str = "ww-test-su-compose";
+
+/// Takes the Compose project down (with its volume) and removes its
+/// rollback tags, however the test ends.
+struct ComposeScope(std::path::PathBuf);
+
+impl ComposeScope {
+    fn file(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+
+    fn compose(&self, args: &[&str]) -> Result<String, String> {
+        let mut all = vec!["compose", "-p", COMPOSE, "-f", self.file()];
+        all.extend(args);
+        try_docker(&all)
+    }
+
+    fn down(&self) -> Result<String, String> {
+        let out = self.compose(&["down", "-v"]);
+        let tags = try_docker(&[
+            "image",
+            "ls",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+            "--filter",
+            &format!("reference=wren-rollback/agent-{COMPOSE}-agent-1:*"),
+        ])
+        .unwrap_or_default();
+        for tag in tags.split_whitespace() {
+            let _ = try_docker(&["rmi", tag]);
+        }
+        out
+    }
+}
+
+impl Drop for ComposeScope {
+    fn drop(&mut self) {
+        let _ = self.down();
+        let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn a_compose_agent_stays_in_its_project() {
+    if !on() {
+        return;
+    }
+    // Declared before the Compose scope: dropped after it.
+    let _scope = Scope::new("compose");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = FakeWren::start(3).await;
+    let dir = std::env::temp_dir().join(format!("ww-test-su-compose-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let compose = ComposeScope(dir.join("compose.yml"));
+    std::fs::write(
+        &compose.0,
+        format!(
+            "services:
+  agent:
+    image: {REPO}:latest
+    restart: unless-stopped
+    labels:
+      owner: wise-wren
+    extra_hosts:
+      - \"host.docker.internal:host-gateway\"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - {vol}:/config
+    environment:
+      WW_SERVER_URL: \"{url}\"
+      WW_AGENT_TOKEN: \"wwa_{token}\"
+      WW_AGENT_SELF_UPDATE: \"1\"
+      WW_SU_TEST_TIME_PCT: \"10\"
+volumes:
+  {vol}:
+    name: {vol}
+    labels:
+      owner: wise-wren
+",
+            vol = volume("compose"),
+            url = wren.url,
+            token = "t".repeat(43),
+        ),
+    )
+    .unwrap();
+    // What an earlier, killed run left behind.
+    let _ = compose.down();
+    compose.compose(&["up", "-d"]).unwrap();
+    let old_id = compose.compose(&["ps", "-q", "agent"]).unwrap();
+    assert!(!old_id.is_empty(), "the agent didn't start");
+    let digest = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    wren.queue_job(job(170, "0.90.1", &digest));
+    assert_eq!(
+        wren.finish_of(170, Duration::from_secs(240)).await,
+        ("succeeded".into(), "selfupdate.done".into())
+    );
+    wait_gone("wren-agent-selfupdate-170", Duration::from_secs(30)).await;
+    let new_id = compose.compose(&["ps", "-q", "agent"]).unwrap();
+    assert_ne!(new_id, old_id);
+    assert_eq!(new_id.lines().count(), 1, "{new_id}");
+    let after = inspect(&new_id);
+    assert_eq!(
+        after
+            .pointer("/Config/Labels/com.docker.compose.project")
+            .and_then(Value::as_str),
+        Some(COMPOSE)
+    );
+    assert!(running(&new_id));
+    // Compose still owns it: `up -d` leaves one running agent.
+    compose.compose(&["up", "-d"]).unwrap();
+    let all = compose.compose(&["ps", "-q", "agent"]).unwrap();
+    assert_eq!(all.lines().count(), 1, "{all}");
+    assert!(running(all.trim()));
+    compose.down().unwrap();
 }
