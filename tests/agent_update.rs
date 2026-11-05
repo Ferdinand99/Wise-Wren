@@ -948,23 +948,38 @@ async fn the_form_schedules_and_refuses_in_words() {
     let back = format!("/servers/{id}");
     let queued = || app.count("SELECT COUNT(*) FROM runs WHERE kind = 'agent_update'");
     // No time, an unknown choice, an old version, the past, too far ahead.
-    for form in [
-        vec![("version", "0.10.1"), ("when", "at"), ("at", "")],
-        vec![("version", "0.10.1"), ("when", "later")],
-        vec![("version", "0.10.0"), ("when", "now")],
-        vec![
-            ("version", "0.10.1"),
-            ("when", "at"),
-            ("at", "2020-01-01T03:00"),
-        ],
-        vec![
-            ("version", "0.10.1"),
-            ("when", "at"),
-            ("at", "2999-01-01T03:00"),
-        ],
+    let (bad_time, changed) = (
+        "Pick a time in the future",
+        "A newer version appeared since you looked",
+    );
+    for (form, said) in [
+        (
+            vec![("version", "0.10.1"), ("when", "at"), ("at", "")],
+            bad_time,
+        ),
+        (vec![("version", "0.10.1"), ("when", "later")], bad_time),
+        (vec![("version", "0.10.0"), ("when", "now")], changed),
+        (
+            vec![
+                ("version", "0.10.1"),
+                ("when", "at"),
+                ("at", "2020-01-01T03:00"),
+            ],
+            bad_time,
+        ),
+        (
+            vec![
+                ("version", "0.10.1"),
+                ("when", "at"),
+                ("at", "2999-01-01T03:00"),
+            ],
+            bad_time,
+        ),
     ] {
         let res = web.post(&url, &form).await;
         assert_eq!(res.header("location"), back, "{form:?}");
+        let page = web.get(&back).await.body;
+        assert!(page.contains(said), "{form:?}: {page}");
     }
     assert_eq!(queued().await, 0);
     let page = server_page(&mut web, id).await;
@@ -1022,4 +1037,47 @@ async fn the_servers_list_shows_the_next_version() {
         page.contains("0.10.0 → 0.10.1") && page.contains("Agent update"),
         "{page}"
     );
+}
+
+#[tokio::test]
+async fn a_never_connected_server_has_no_false_agent_card() {
+    let (app, _, _) = setup().await;
+    let (new_id, _) = app.add_server("Fresh").await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let page = server_page(&mut web, new_id).await;
+    assert!(
+        !page.contains("id=\"agent-update\"") && !page.contains("look up its own agent release"),
+        "{page}"
+    );
+    // Wren's own missing release is still said, for an agent that reported.
+    let (id, token) = app.add_server("Known").await;
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, ""))).await;
+    *app.wren.agent_release.write().unwrap() = None;
+    let page = server_page(&mut web, id).await;
+    assert!(page.contains("look up its own agent release"), "{page}");
+}
+
+#[tokio::test]
+async fn a_report_of_off_says_the_self_update_is_off() {
+    let (app, id, token) = setup().await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, "off"))).await;
+    let page = server_page(&mut web, id).await;
+    assert!(page.contains("WW_AGENT_SELF_UPDATE=1"), "{page}");
+}
+
+#[tokio::test]
+async fn an_agent_update_run_page_goes_back_to_its_server() {
+    let (app, id, _) = setup().await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let res = web
+        .post(
+            &format!("/servers/{id}/agent-update"),
+            &[("version", "0.10.1"), ("when", "now")],
+        )
+        .await;
+    let page = web.get(res.header("location")).await.body;
+    let link = format!("href=\"/servers/{id}#agent-update\"");
+    let at = page.find(&link).unwrap_or_else(|| panic!("{page}"));
+    assert!(page[at..].contains("Tower"), "the server's name: {page}");
 }

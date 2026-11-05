@@ -7,7 +7,7 @@
 
 {% block content %}
 
-{% call m::page_header(tr1("runs.title_short", "id", body.run.id), body.run.kind_label, back_href.as_str(), body.run.target_name.as_str()) %}
+{% call m::page_header(tr1("runs.title_short", "id", body.run.id), body.run.kind_label, back_href.as_str(), back_label.as_str()) %}
   {{ m::live() }}
 {% endcall %}
 

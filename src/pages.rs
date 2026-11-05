@@ -237,19 +237,17 @@ pub async fn server_targets(core: &Core, server_id: i64) -> ApiResult<Vec<Target
             let mut out = Vec::new();
             for t in list {
                 let p = crate::runs::policy(c, t.id)?.unwrap_or_default();
-                let link = agent_link(c, t.id, t.server_id)?;
-                out.push((t, p, link));
+                out.push((t, p));
             }
             Ok(out)
         })
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(t, p, link)| {
+        .map(|(t, p)| {
             let mut v = TargetView::new(t);
             v.auto = p.updates_itself();
             v.own = p.own;
-            v.agent_link = link;
             v
         })
         .collect())

@@ -282,11 +282,20 @@ impl AgentUpdateCard {
             "autoremove" => "servers.au_blocked_autoremove",
             "network_mode" => "servers.au_blocked_network_mode",
             "config_ro" => "servers.au_blocked_config_ro",
+            "off" => "servers.au_off",
             code => {
                 return i18n::tf("servers.au_blocked_other", &[("code", code)]);
             }
         };
         i18n::t(key).to_string()
+    }
+
+    /// Whether the card has anything to say: not for an agent that hasn't
+    /// reported a version yet (and has never been updated).
+    pub fn shown(&self) -> bool {
+        self.last_run.is_some()
+            || self.standing.state != AgentState::Unknown
+            || self.standing.reason == "release_unknown"
     }
 
     /// The last agent update run's status as a pill: class and label.

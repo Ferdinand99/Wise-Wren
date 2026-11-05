@@ -1,5 +1,6 @@
 {#- The agent's version and its self-update: why it can or can't, and for admins the form that approves it. Needs: server, agent_update, tz. -#}
 {%- import "kit/macros.html" as m -%}
+{%- if agent_update.shown() %}
 <section class="card stack-sm" id="agent-update" aria-labelledby="agent-update-title">
   <div class="card-head">
     <h2 class="card-title" id="agent-update-title">{{ tr("servers.au_title") }}</h2>
@@ -40,7 +41,10 @@
   {%- when AgentState::Blocked %}
   <p class="help" data-au-state="blocked">{{ agent_update.blocked_text() }}</p>
   {%- when AgentState::Unknown %}
+  {#- Only a missing release is Wren's to say; no version yet means the agent hasn't reported. -#}
+  {%- if agent_update.standing.reason == "release_unknown" %}
   <p class="help" data-au-state="unknown">{{ tr("servers.au_unknown") }}</p>
+  {%- endif %}
   {%- endmatch %}
 
   {%- if let Some(version) = agent_update.newest_wren %}
@@ -52,3 +56,4 @@
   {%- endif %}
   {%- endif %}
 </section>
+{%- endif %}

@@ -847,6 +847,8 @@ struct RunPage {
     ctx: PageCtx,
     body: RunBody,
     back_href: String,
+    /// What the back link is called: the server for an agent update, else the target.
+    back_label: String,
 }
 
 #[derive(Template)]
@@ -910,12 +912,18 @@ async fn run_page(
         Some(t) => format!("/targets/{t}"),
         None => "/updates".to_string(),
     };
+    let back_label = if body.run.is_agent_update {
+        body.run.server_name.clone()
+    } else {
+        body.run.target_name.clone()
+    };
     Ok((
         jar,
         HtmlTemplate(RunPage {
             ctx,
             body,
             back_href,
+            back_label,
         }),
     ))
 }
