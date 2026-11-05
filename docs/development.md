@@ -329,7 +329,14 @@ The agent runs `installed_command` and `latest_command` itself with `sh -c` in t
 stack's `env` and the timeout; Wren keeps the first line of their output. Versions compare as semver when both
 parse (`v1.2` counts as `1.2.0`), otherwise any difference counts as newer.
 
-### The dev instance on LANBox
+### The dev instance on an Unraid test host
+
+LANBox, the owner's test server, used to be an Unraid host and is now a Proxmox host. Docker builds and test runs
+(`cargo test`, the Docker scenarios, workflow linting) happen in its Docker build VM, reached through the Docker
+context `lanbox` (VM 120): `docker --context lanbox …`, never a local Docker Desktop and never the production
+server. That VM is a plain Docker host with no Unraid paths. The dev instance below was set up while LANBox ran
+Unraid; it is the recipe for testing against a real Unraid host (Unraid template containers, `/boot/config`,
+Compose Manager), with that host's paths.
 
 `wise-wren-dev` (port 3003, host network so it reaches the test registry on `localhost:5056` like the daemon does,
 data in `/mnt/user/appdata/wise-wren-dev`) and `wren-agent-dev`, started with:
@@ -365,7 +372,7 @@ busybox images with the variants `v1`, `v2`, `v3`, `broken` (damages `/data` and
 | `ww-test-stack` | script stack (`docker compose pull && docker compose up -d`) | `/mnt/user/appdata/ww-test-stack/data` |
 | `ww-other-refused` | container outside the allowlist | none |
 
-The scripts in `/mnt/disk1/ww-test-scripts/` on LANBox: `push.sh <tag> <variant>` publishes a variant under the
+The scripts in `/mnt/disk1/ww-test-scripts/` on that host: `push.sh <tag> <variant>` publishes a variant under the
 same tag (a new digest, so "Update available" after Check now), `sums.sh <dir>` checksums a data folder, `run.sh`
 pushes, waits for the check, approves through the REST API and prints the run. The health period of the test
 targets is 15 s. The Compose Manager stack `postiz` has its files in
@@ -518,6 +525,38 @@ mode and health period, the Overview the running run, then the queued ones, then
 `GET /api/v1/runs/{id}` (with steps), `POST /api/v1/targets/{id}/{approve,skip,snooze}` (an API token with write
 access of an editor or admin; session cookies don't work here), MCP `list_runs` and `approve_update`.
 
+### Agent self-update
+
+For the user's view see [Agent self-update](agent.md#agent-self-update); this is how it is built.
+
+- **Heartbeat:** an agent from 0.10 adds `self_update` (`supported`, `enabled`, `blocked`: a code or empty,
+  `container`, `reference` and `pending` with `run_id`, `phase` and `to_version` while a state file is open).
+  `agent_update.rs` stores it on the server row and works out what an admin may do (`standing`: `available`,
+  `current`, `running`, `off`, `blocked`, `below_floor`, `unsupported`, `unknown`).
+- **Release offered:** always Wren's own version (`CARGO_PKG_VERSION`) with the digest GHCR gives for that tag of
+  the agent image, looked up every 6 hours. `AGENT_SELF_UPDATE_FLOOR` (0.10.0) is the oldest agent that can take it.
+- **Run:** `POST /api/v1/servers/{id}/agent-update` (admin, write token), the server page's **Agent version** card or
+  the MCP tool creates a run with `kind = 'agent_update'` and `target_kind = 'agent'`. The agent gets
+  `{"job": {"run_id", "kind": "agent_update", "target": {"kind": "agent", "name"}, "to_version", "to_digest"}}` and
+  reads nothing else from it. The usual run machinery applies, except that a restart of the agent doesn't close the
+  run and a silent one closes after 45 minutes instead of 10.
+- **Agent code** (`agent/src/selfupdate/`): `prepare` (the checks and the helper's create body), `machine` (the
+  helper's pure decision table), `helper` (the helper mode, `wren-agent --self-update-helper --state PATH --socket
+  PATH`), `probation` (the new agent), `report` (what goes in the heartbeat), `state` (the state file) and `version`
+  (semver and tag rules, by hand: the agent has no new dependency).
+- **Contracts between versions:** the helper of one release reads what the next one writes, so `selfupdate.json`
+  (fixture `agent/tests/fixtures/selfupdate-v1.json`) and the confirm marker `selfupdate.confirm` (the run id,
+  nothing else) only ever gain optional fields.
+- **Tests:** unit tests need nothing special. The Docker scenarios are in `agent/tests/docker_self_update.rs`, ignored
+  by default. They build the agent with `--features selfupdate-test`, which lets the repository and the clock be
+  overridden (`WW_SU_TEST_REPO`, `WW_SU_TEST_TIME_PCT`; a release build has neither), push test images to a local
+  registry and run the agent against a real Docker, a fake Wren and, for two scenarios, the real server. They only
+  touch containers, volumes and images named `ww-test-su-…` (and the helpers the agent makes itself):
+
+  ```bash
+  WW_DOCKER_TESTS=1 cargo test -p wren-agent --test docker_self_update -- --ignored --test-threads=1
+  ```
+
 ## Scheduling and automatic updates
 
 - **Approve for a time** (target page, `POST /api/v1/targets/{id}/schedule`, MCP `approve_update` with `at`): the
@@ -530,8 +569,10 @@ access of an editor or admin; session cookies don't work here), MCP `list_runs` 
   while the window is open; a run still queued when the window closes lapses. A target set to `approve` or
   `notify` on an `auto` server is excluded; skipped and snoozed versions are left alone; a version whose auto run
   failed, rolled back or was refused is not tried again on its own. Every mode change is logged (`actions`).
-- **Not updated by Wren in v1:** images named `…/wise-wren*` and `…/vigilant-vole*` (Wren, its agents, VV) can't be
-  approved, scheduled or auto-updated; their pages say so.
+- **Not updated like other targets:** images named `…/wise-wren*` and `…/vigilant-vole*` (Wren, its agents, VV)
+  can't be approved, scheduled or auto-updated as targets; their pages say so. Wren and VV aren't updated by Wren at
+  all. An agent is updated by its own kind of run (`kind = 'agent_update'`, below), only where its host allows it
+  and only by approval in 0.10.
 - **Schedules** (nav): upcoming scheduled updates with their VV window, and per server the auto window and the
   targets that update on their own. `GET /api/v1/schedules`, MCP `list_schedules`; modes through
   `POST /api/v1/targets/{id}/mode`, `POST /api/v1/servers/{id}/mode` and MCP `set_mode`.

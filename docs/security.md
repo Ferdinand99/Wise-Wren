@@ -19,7 +19,7 @@ Who decides what the agent may touch depends on one switch:
 The trade-off, in plain words: with managed settings, **an attacker who controls Wren (or an admin account) can widen
 what an unlocked agent may do**, up to the hard limits: allow every target, lower the safety minimums, add a root
 under any folder mounted into the agent, or start a preset script stack. They still can't make the agent run a command
-of their choosing, touch system folders, update itself or reach a folder that isn't mounted into it. Wren makes this
+of their choosing, touch system folders, switch on its self-update or reach a folder that isn't mounted into it. Wren makes this
 visible (every change is in the history, and changes that widen access notify all notification channels), and
 locking removes the exposure. Mount only the folders Wren really needs into the agent: the mounts are the outer limit.
 
@@ -34,7 +34,7 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   `/proc`, `/sys`, `/dev`, `/var/lib/docker`, `/var/run`, `/run`, `/usr`, `/bin`, `/sbin`, `/lib*` or `/root`, or is
   the agent's config folder; when a script stack names a preset it doesn't have, or a folder outside the roots; when a
   number is out of the bounds `agent.toml` has; or when the version is older than the one in force. A compromised
-  server can't send a command line, can't make the agent touch system paths, and can't make it update itself.
+  server can't send a command line, can't make the agent touch system paths, and can't switch on the agent's self-update.
 - The agent re-checks every job against Docker: the target exists, each image is the one that container runs now,
   at the digest Wren saw, and the new one is a digest of the **same repository**. It never pulls an image a target
   doesn't already run, and it only touches folders under its `roots` (no `..`, never `/`).
@@ -52,7 +52,8 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   have nothing to snapshot).
 - After a restore, the data it replaced is kept next to it (`<folder>.wren-aside-<run>`) until the target's next
   run, so a wrong rollback can be undone.
-- The agent never updates its own container, and a rollback job's digests must be digests.
+- An ordinary job never touches the agent's own container, and a rollback job's digests must be digests. The only
+  way the agent replaces itself is [self-update](#agent-self-update), below.
 - A script's or command's output is held to a fixed size, and a timeout kills the whole process group the command
   started, not only its shell. Before a step's log goes to Wren the agent hides what looks like a secret: the value
   of a `password=`, `token:` or `"api_key": "…"` pair, a `Bearer` or `Basic` credential, the password in
@@ -70,6 +71,44 @@ What limits the damage if the **Wren server** is compromised (design: Wren must 
   address in their environment, so a vendor installer a script stack downloads can't take them. The server
   address must be `https://` unless the host is on your own network (loopback, private or link-local address,
   a single-label name, `.local`, `.lan`, `.home.arpa`, `.internal`, `.ts.net` or a Tailscale 100.64.0.0/10 address): the agent refuses to start otherwise.
+
+## Agent self-update
+
+Since 0.10 an agent can replace itself with a newer release (see [Agent self-update](agent.md#agent-self-update)).
+It is off until the host's owner switches it on locally (`WW_AGENT_SELF_UPDATE=1` or `[self_update] enabled = true`),
+and Wren has no way to do that: the setting isn't part of the managed settings, and a settings update that carries
+it is refused whole.
+
+**What a compromised Wren can do with it:** only choose *when* an agent that its owner has allowed goes to a newer
+official release, and only to one that GHCR publishes under a release tag. It can't pick an image, a repository or a
+command, can't switch the feature on, can't move an agent to the same or an older version and can't replay an old
+run. (Starting an update takes an admin's approval, so a compromised admin account can do the same; the approval is
+the server-side control.)
+
+The agent checks all of this itself, before anything is stopped or changed:
+
+1. The local opt-in is on.
+2. The agent can find and read its own container, and that container can be recreated safely: not started with
+   `--rm`, not sharing another container's network, with a writable config folder.
+3. The container runs the **official repository**, `ghcr.io/ferdinand99/wise-wren-agent`. That is a constant in the
+   agent, changed only by a build, never at runtime.
+4. The tag follows releases (`:latest`, `:X` or `:X.Y`), also for the target version. Wren never moves a tag that
+   promises a version, so an exact tag or a digest is refused.
+5. The version is a plain release (`X.Y.Z`, no pre-release) and newer than the agent's own, and the digest is a
+   `sha256:` digest.
+6. The agent pulls that digest itself, and the image's version label must equal the version.
+7. The release tag (`:X.Y.Z`) must point at the same digest, so a server can only choose digests that GHCR currently
+   publishes as a release.
+8. The run id has to be newer than any the agent already ran for itself (the run ledger).
+
+After that a helper made from the old image replaces the agent, and the old agent is kept, renamed, until the new
+one has reached Wren. A new agent that can't talk to Wren is rolled back. The helper has the Docker socket and the
+config folder, no network and none of the agent's secrets.
+
+**There is no signature check yet.** The images are signed with cosign (keyless, through GitHub's OIDC identity of
+this repository's release workflow) from 0.10.0, so you can verify them by hand with `cosign verify`, but the agent
+doesn't check the signature: today the checks above end in trusting what the maintainer's GitHub account publishes
+under a release tag. Verification in the agent may follow later.
 
 ## Tokens and secrets
 

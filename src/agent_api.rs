@@ -278,7 +278,8 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
         "# agent.toml needs an [updates] allow list: without one the agent refuses every update and\n\
          # rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):\n\
          #   [updates]\n\
-         #   allow = [\"*\"]\n{roots}{}",
+         #   allow = [\"*\"]\n{roots}\
+         # Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent (docs/agent.md).\n{}",
         lines.join(" \\\n  ")
     )
 }
@@ -317,8 +318,18 @@ mod tests {
         for never in ["--privileged", "--cap-add", "--pid"] {
             assert!(!run.contains(never));
         }
+        // Self-update is opt-in: said as a comment, never an active flag.
+        assert!(
+            run.contains("# Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent"),
+            "{run}"
+        );
+        assert!(
+            !run.lines()
+                .any(|l| !l.trim_start().starts_with('#') && l.contains("WW_AGENT_SELF_UPDATE"))
+        );
         let linux = docker_run("https://wren.example.com", "wwa_abc", false);
         assert!(linux.contains("-v /etc/wren-agent:/config") && !linux.contains("emhttp"));
+        assert!(linux.contains("# Add -e WW_AGENT_SELF_UPDATE=1"));
     }
 
     #[test]

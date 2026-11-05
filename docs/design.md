@@ -206,11 +206,17 @@ in the target's history:
 Timeouts for every step; a run never waits forever. A run can be cancelled before step 3.
 Script stacks that handle their own stop, backup and verification skip steps 3–4 (see §4).
 
-**Wren, its agents and Vigilant Vole are not updated by Wren in v1** (decided by the owner). Wren runs on
-**Tower**. Updating itself would end the run in progress, an agent can't snapshot or roll back itself,
-and updating VV removes the maintenance and health source mid-run. For these Wren only **notifies**
-about new versions, and the owner updates them by hand. Later, the agent can update the server and the
-server can update agents (one at a time, never both).
+**Wren and Vigilant Vole are not updated by Wren** (decided by the owner). Wren runs on **Tower**. Updating
+itself would end the run in progress, and updating VV removes the maintenance and health source mid-run. For
+these Wren only **notifies** about new versions, and the owner updates them by hand. Later, the agent can
+update the server (one at a time, never both).
+
+**Agents can be updated by Wren since 0.10, where the host's owner allows it.** An agent can't snapshot or
+roll back itself the way the run pipeline does for a target, so this is a separate kind of run: the owner
+switches it on locally on the host (never from Wren), an admin approves it, and a short-lived helper
+container made from the old image replaces the agent and rolls back unless the new one proves it reaches
+Wren. The target is always Wren's own version, from the official image only. See
+[Agent self-update](agent.md#agent-self-update) and [Security notes](security.md#agent-self-update).
 
 ## 7. Snapshots
 

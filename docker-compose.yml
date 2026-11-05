@@ -40,6 +40,7 @@ services:
   #   environment:
   #     - WW_SERVER_URL=http://wise-wren:3003
   #     - WW_AGENT_TOKEN=wwa_…
+  #     # - WW_AGENT_SELF_UPDATE=1   # let Wren update this agent; keep the image on :latest or :0 (docs/agent.md)
   #   volumes:
   #     - /var/run/docker.sock:/var/run/docker.sock
   #     - ./agent:/config      # agent.toml, needed: [updates] allow = ["*"] (or a list), else the agent refuses every update

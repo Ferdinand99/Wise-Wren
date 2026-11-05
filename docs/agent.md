@@ -27,6 +27,7 @@ and `WW_AGENT_TOKEN`, and keep the paths as they are. Or run the line from Wren'
 # rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):
 #   [updates]
 #   allow = ["*"]
+# Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent (see Agent self-update below).
 docker run -d --name wren-agent --restart unless-stopped \
   -e WW_SERVER_URL=http://10.0.3.26:3003 \
   -e WW_AGENT_TOKEN=wwa_… \
@@ -51,6 +52,7 @@ Stacks from the **Compose Manager** plugin live in `/boot/config/plugins/compose
 ### Other Linux hosts (best-effort)
 
 ```bash
+# Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent (see Agent self-update below).
 docker run -d --name wren-agent --restart unless-stopped \
   -e WW_SERVER_URL=https://wren.example.com \
   -e WW_AGENT_TOKEN=wwa_… \
@@ -111,6 +113,12 @@ deny = ["media-db*"]               # deny wins over allow
 [retention]
 rollback_images = 1                # updates whose old images stay tagged (1-10)
 snapshots = 2                      # data snapshots (1-10)
+
+# Let Wren replace this agent with a newer official release (off by default;
+# WW_AGENT_SELF_UPDATE=1 does the same and wins when set). See Agent self-update.
+# [self_update]
+# enabled = true
+# confirm_minutes = 5              # how long the new agent has to reach Wren (2–30)
 ```
 
 | Key | What |
@@ -125,6 +133,7 @@ snapshots = 2                      # data snapshots (1-10)
 | `[[script_stack]] min_interval` | Default `1h`, at most `24h`. The shortest time between two updates of a script stack. |
 | `[retention]` | `rollback_images` (default 1): after a successful update the old images of the newest N updates stay tagged `wren-rollback/…`, older ones go. `snapshots` (default: Wren's 2). See [Snapshots](snapshots.md). |
 | `[[script_stack]]` | A Compose stack that updates with its own script (below). |
+| `[self_update]` | `enabled` (default `false`; `WW_AGENT_SELF_UPDATE` wins when set) lets Wren replace this agent with a newer official release once an admin approves it; `confirm_minutes` (2–30, default 5) is how long the new agent has to reach Wren. Local only: never part of the managed settings. See [Agent self-update](#agent-self-update). |
 
 **`[updates]` is your last word, and it is required.** Whatever happens to the Wren server, the agent only touches
 what this file allows. A new agent with no `[updates]` allow list starts, reports its inventory and refuses every
@@ -159,8 +168,9 @@ by hand; the next run removes it.
 For a script stack the globs are checked against both names, the stack's `name` and its `compose_project`: a `deny`
 on either refuses the job, and an `allow` on the stack's name is enough. A Compose job for a project that a
 `[[script_stack]]` owns (its `compose_project`) is refused, so a plain `docker compose up` can't go round the
-stack's script. The agent also never updates **itself**: a job whose target includes the agent's own container
-(alone, or in the same Compose project) is refused with "Wren never updates its own agent".
+stack's script. An ordinary update or rollback job never touches the agent's own container: a job whose target
+includes it (alone, or in the same Compose project) is refused with "Wren never updates its own agent". The agent
+replaces itself only through [Agent self-update](#agent-self-update), which the host's owner has to switch on.
 
 **The server address must be `https://`, except on your own network.** Plain `http://` is accepted only when the
 host is a loopback, private (RFC 1918), link-local or unique-local IPv6 address, a single-label name (`tower`), or
@@ -214,7 +224,7 @@ Maintenance windows already live in Wren and are not part of this.
 4. **After a restart** the agent reads `managed.json` again. A damaged or no-longer-valid file is reported, and the
    agent falls back to `agent.toml`.
 
-What stays in `agent.toml`: `server`, `token`, `docker_socket`, `scan_interval`, and every `[[script_stack]]` with
+What stays in `agent.toml`: `server`, `token`, `docker_socket`, `scan_interval`, `[self_update]`, and every `[[script_stack]]` with
 commands of its own (the settings page lists their names as custom stacks you edit in `agent.toml` on the host). Once
 an agent has managed settings, they **replace** the file's `[updates]`, `roots`, `[retention]` and preset-like stacks,
 so editing those keys in `agent.toml` no longer does anything (use the page, or lock the agent). A stack in
@@ -238,7 +248,8 @@ The agent refuses the whole settings update when one of these is broken:
 - Numbers within the bounds `agent.toml` has: `min_health_seconds` 0-3600, `rollback_images` and `snapshots` 1-10;
   allow and deny entries are names with `*` and `?`.
 - A custom stack from `agent.toml` must stay under the roots.
-- The agent never updates its own container, whatever the settings say.
+- An ordinary job never touches the agent's own container, and the settings have no field that switches
+  [self-update](#agent-self-update) on, whatever Wren sends.
 - A settings version older than the one in force is refused (a replay).
 
 ### Locked agents
@@ -342,8 +353,160 @@ http://nas.lan/version.txt`): the agent runs it on its own host. Or set `WW_ALLO
 Wren server to let `url` sources reach private and local addresses. Leave it off unless you need it: anyone who can
 edit an agent's `agent.toml` could then make the server fetch addresses on its own network.
 
-## Upgrading the agent
+## Agent self-update
 
-Wren doesn't update its own agents (or itself, or Vigilant Vole) yet: their targets show the new version but
-can't be approved. Pull the new image and recreate the container (Unraid: "Check for updates" → apply). Managed settings live in
-`managed.json` in the config folder, so they survive an update.
+Since 0.10 Wren can replace its own agents with a newer release. It can do that **only where the host's owner has
+allowed it**, only with the official image, and only to the version of Wren itself. Everything else about an update
+stays as it was: an admin approves it, and the agent checks it before anything is touched.
+
+### Turn it on (on the host)
+
+Self-update is **off** until someone with access to the host switches it on, in one of two places:
+
+- the environment variable `WW_AGENT_SELF_UPDATE=1` on the agent container (`1`/`0`, `true`/`false`, `yes`/`no`
+  and `on`/`off` are understood), or
+- `agent.toml`:
+
+  ```toml
+  [self_update]
+  enabled = true
+  confirm_minutes = 5      # how long the new agent has to reach Wren (2–30, default 5)
+  ```
+
+The variable wins when it is set (`WW_AGENT_SELF_UPDATE=0` switches it off whatever the file says). Prefer the
+variable if you may ever go back to an agent before 0.10: those refuse to start on an `agent.toml` that has a
+`[self_update]` section. `wren-agent --check` says whether it is on.
+
+Wren can't switch it on. The switch is not part of the managed settings (a settings update that carries the field is
+refused as a whole), and `[updates] allow` / `deny` don't apply to it, so `allow = ["*"]` doesn't turn it on either.
+`WW_AGENT_LOCKED` makes no difference: the opt-in is already local, so a locked agent with the switch on can be
+updated and one without it can't.
+
+### What Wren can and can't do
+
+An admin approves the update on the server's page (**Agent version**: now, or at a set time), through
+`POST /api/v1/servers/{id}/agent-update` or the matching MCP tool. In 0.10 it is **approval only**: there is no
+automatic mode for agents, and the auto window doesn't touch them. Wren sends the agent a version and an image
+digest, nothing else: no image name, no repository, no command line.
+
+- The target is always **Wren's own version**. An agent is never offered a version the server doesn't know, so
+  update Wren first and the agents after. When a newer Wren is out than the one you run, the card says so.
+- Only the **official repository** (`ghcr.io/ferdinand99/wise-wren-agent`, fixed in the agent) is accepted. A local
+  build (`wise-wren-agent:dev`), a fork or a mirror is refused.
+- Only **upwards**, to a release (`X.Y.Z`, no pre-release): never the same version or an older one.
+- The agent pulls the digest Wren named and checks that the image says it is that version and that the release tag
+  (`:X.Y.Z`) points at the same digest. A server can only choose between images GHCR publishes as a release.
+- The agent has to be replaceable: not started with `--rm`, not sharing another container's network, and with its
+  config folder (`/config`) mounted from the host and writable. Otherwise the card says why it can't.
+- An agent before 0.10.0 can't do any of this. Update it by hand once (see [Upgrading](upgrading.md#to-010)). The
+  first real self-update is therefore 0.10.0 → 0.10.1.
+
+### The image tag
+
+Wren never moves a tag that promises a version, so the tag the agent runs from has to follow releases:
+
+| Tag | Self-update |
+|---|---|
+| `:latest` (or no tag) | yes |
+| `:0` (the major version) | yes, within that major version |
+| `:0.10` (major and minor) | yes, to patch releases of 0.10 only; 0.11.0 is refused until you change the tag |
+| `:0.10.1` (exact) or `@sha256:…` | no: "change the tag to :latest or :0" |
+| `:edge`, a local tag | no |
+
+### What happens
+
+1. The old agent checks everything (opt-in, own container, repository, tag, version, digest, config folder) before
+   anything changes, pulls the new image and keeps the old one as `wren-rollback/agent-<name>:<run>-<name>`. It
+   copies `managed.json` and `runs.json` aside and writes `selfupdate.json` in the config folder.
+2. It starts a **helper container**, `wren-agent-selfupdate-<run>`, made from the *old* image (known to work on this
+   host, so a broken release can't break its own rollback). The helper has the Docker socket and the config folder,
+   no network, and none of the agent's environment except `TZ` and `RUST_LOG`: it never talks to Wren. It restarts
+   itself after a crash and carries on from the state file.
+3. The helper stops the old agent, renames it `<name>-wren-old-<run>` and creates the new agent under the original
+   name with the same configuration (environment, mounts, labels, restart policy, networks).
+4. The new agent is on **probation**: it reports to Wren as usual but takes no jobs and no settings. It confirms
+   when Wren answers with the same server id, Docker is readable, one job poll worked and it has run without a
+   restart for `max(min_health_seconds, 60 s)`.
+5. Confirmed: the helper removes the old container and the backup, then itself, and the new agent reports "updated
+   to X" to Wren. Not confirmed in time, or the new agent crashes or restarts in a loop: the helper **rolls back**
+   (below).
+
+Wren has no contact with the host for about a minute while this runs. The run page shows it, and the notification
+channels get the result. **Don't update Wren itself while an agent update runs**: the new agent needs Wren to confirm
+it. If Wren is down for the whole probation, the update is rolled back (and can be tried again); the old agent
+reports it when Wren is back.
+
+| Step | Time allowed |
+|---|---|
+| The helper starts | 2 minutes |
+| The old agent stops | 60 seconds |
+| The new agent is created and started | 2 minutes |
+| The new agent confirms | `confirm_minutes`, default 5 (2–30) |
+| It must then run stable | `max(min_health_seconds, 60 s)` |
+| The whole update, hard limit | 30 minutes |
+| Wren closes a run it hears nothing about as "needs you" | 45 minutes |
+
+If the host reboots or Docker restarts during the probation, the helper gives the new agent a fresh confirmation
+period; if that happens before the new agent was started, it rolls back instead.
+
+### What you see on the host
+
+For a minute or two the Docker tab (Unraid) or `docker ps -a` shows two extra containers: the helper
+`wren-agent-selfupdate-<run>` and the stopped old agent `<name>-wren-old-<run>`. Unraid lists them as containers it
+doesn't know; that is expected, and both go away after a good update.
+
+- **`docker run`:** add `-e WW_AGENT_SELF_UPDATE=1` and recreate the container once.
+- **Compose:** the new container keeps its Compose labels, so `docker compose ps` knows it. The compose file must use
+  `:latest`, `:0` or `:0.10`, not an exact version: the next `docker compose up -d` would put the old version back,
+  so Wren refuses it ("pinned"). During an update `compose ps` shows the extra stopped `-wren-old-` container; a
+  later `docker compose up -d` either does nothing or recreates the agent once with the same tag. An agent in the
+  same Compose project as the server is fine: only the agent's container is touched.
+- **Unraid:** the container's repository must be `ghcr.io/ferdinand99/wise-wren-agent:latest` (or `:0`); add the
+  variable `WW_AGENT_SELF_UPDATE` with the value `1` to the container. The agent keeps its name, so Unraid's template
+  link and autostart keep working. The helper also gets the `/var/lib/docker` mount (the `docker run` line for
+  Unraid has it already) so that Wren can write Unraid's update status for the new image and the Docker tab stays in
+  sync.
+
+### When something goes wrong
+
+The helper rolls back when the new agent never confirms, crashes, restarts in a loop, or can't be created or
+started: it removes the new container, renames `<name>-wren-old-<run>` back to `<name>`, restores `managed.json` and
+`runs.json`, points the image tag back at the old image and starts the old agent. That agent reports "rolled back"
+and the reason to Wren. Nothing is deleted before the new agent has proved it can talk to Wren.
+
+**Break glass.** If the helper itself can't finish (the rollback failed, or the helper is stuck), Wren closes the run
+as "needs you" and shows this command; it is also in the agent's log and in `selfupdate.json`. Run it on the host
+(`<name>` is the agent's container name, `<run>` the run number Wren shows):
+
+```bash
+docker rm -f <name> && docker rename <name>-wren-old-<run> <name> && docker start <name>
+```
+
+Then remove the helper (`docker rm -f wren-agent-selfupdate-<run>`) and read the agent's log before you try again.
+
+### Going back by hand after a good update
+
+The old image stays tagged `wren-rollback/agent-<name>:<run>-<name>` (the newest `[retention] rollback_images` of
+them, default 1). To go back, tag it as the reference the container uses and recreate the container with the same
+options as before (your `docker run` line, Compose file or Unraid template):
+
+```bash
+docker tag wren-rollback/agent-<name>:<run>-<name> ghcr.io/ferdinand99/wise-wren-agent:latest
+docker rm -f <name>
+```
+
+Wren has no "roll back the agent" button: it would be a downgrade. An agent older than the server keeps working, but
+Wren will offer the update again.
+
+### Hard limits
+
+Wren can never make an agent update itself. Only the owner of the host can allow it, and even then Wren can only
+choose *when* the agent moves to a *newer official release*.
+
+- An ordinary `update` or `rollback` job for the agent's own container (alone, or in its Compose project) is still
+  refused ("Wren never updates its own agent"). Self-update is a separate kind of job with its own checks.
+- The switch is local (variable or `agent.toml`) and can't be set from Wren.
+- The repository is built into the agent. It accepts only newer releases and checks the label and the release tag of
+  what it pulled.
+- The old agent is kept, renamed, until the new one has reached Wren.
+- A run id has to be newer than any the agent already ran for itself (the run ledger), as for every other job.

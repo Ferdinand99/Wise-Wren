@@ -5,6 +5,7 @@ Wren has two parts:
 - **the server** (`ghcr.io/ferdinand99/wise-wren`): the web UI, the API and the database, once per household;
 - **an agent** (`ghcr.io/ferdinand99/wise-wren-agent`) on every Docker host Wren looks after, including the one the
   server runs on. Adding agents is in [Adding an agent](agent.md).
+  From 0.10 an agent can update itself once the host's owner switches that on (`WW_AGENT_SELF_UPDATE=1`, off by default): [Agent self-update](agent.md#agent-self-update).
 
 Wren is an early release: both are Docker images for amd64 and arm64. Static binaries and a Linux installer come
 later. Wren is tested on Unraid 7 (the owner's two servers); other Linux Docker hosts are best-effort for now.

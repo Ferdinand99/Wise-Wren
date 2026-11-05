@@ -51,7 +51,10 @@ Updates page, target page, `POST /api/v1/targets/{id}/approve` or the MCP tool `
 - Several targets can be approved together; one run at a time per server.
 - **Skip** hides this version (a newer one shows again); **snooze** hides the update for a day or a week; **Show
   again** undoes both.
-- Wren never updates itself, its agents or Vigilant Vole yet; their pages say so.
+- Wren never updates itself or Vigilant Vole yet; their pages say so. Its agents are updated from the server's page
+  (**Agent version**) once the host's owner has switched that on locally: see
+  [Agent self-update](agent.md#agent-self-update). They are not approved like other targets, and there is no
+  automatic mode for them.
 - What the server's agent would refuse shows **Blocked** with the reason and can't be approved or scheduled: a target
   outside its `[updates]` allow list, a stack whose folder isn't under its `roots`, a stack whose files it can't
   reach. Approving several together skips those and says how many. The API answers `409` with the reason
