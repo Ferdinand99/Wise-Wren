@@ -24,7 +24,7 @@ pub mod snapshot;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use heartbeat::{Client, SendError};
@@ -197,9 +197,13 @@ pub async fn run(
     });
     // A panic in the job loop would leave an agent that sends heartbeats but
     // never takes a job: it is restarted.
+    // Wren's id for this server, from the last heartbeat reply (0 before the
+    // first): an agent update records it for the new agent to check.
+    let server_id = Arc::new(AtomicI64::new(0));
     let jobs_live = live.clone();
+    let jobs_id = server_id.clone();
     let job_task = supervise("jobs", Duration::from_secs(5), move || {
-        jobs_loop(jobs_live.clone())
+        jobs_loop(jobs_live.clone(), jobs_id.clone())
     });
     let mut connected = false;
     let mut failures = 0u32;
@@ -222,6 +226,7 @@ pub async fn run(
                     connected = true;
                 }
                 failures = 0;
+                server_id.store(reply.server.id, Ordering::Relaxed);
                 // A scan on start, on the agent's own schedule, when Wren asks
                 // ("Check now") and again after a failed one.
                 let mut scan = reply.scan;
@@ -278,8 +283,24 @@ pub async fn run(
     }
 }
 
+/// Seconds an agent update waits for a first heartbeat reply (one round).
+const SERVER_ID_WAIT: u64 = 35;
+
+/// Wren's id for this server: `id` as soon as a heartbeat reply has set it,
+/// waiting up to `wait` for the first one; 0 when none came.
+async fn known_server_id(id: &AtomicI64, wait: Duration) -> i64 {
+    let end = Instant::now() + wait;
+    loop {
+        let known = id.load(Ordering::Relaxed);
+        if known != 0 || Instant::now() >= end {
+            return known;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Waits for jobs and runs them, one at a time.
-async fn jobs_loop(live: Arc<Live>) {
+async fn jobs_loop(live: Arc<Live>, server_id: Arc<AtomicI64>) {
     let config = live.config();
     let client = match jobs::JobClient::new(&config.server, &config.token) {
         Ok(c) => c,
@@ -296,7 +317,24 @@ async fn jobs_loop(live: Arc<Live>) {
                 failures = 0;
                 // The settings in force now; a run keeps them to its end.
                 let config = live.config();
-                run::handle(&config, &client, job).await;
+                // A job that comes before the first heartbeat reply waits for
+                // it (up to one round); an agent update needs the id.
+                let id = if job.kind == jobs::JobKind::AgentUpdate {
+                    let wait = Duration::from_secs(selfupdate::scaled(SERVER_ID_WAIT));
+                    known_server_id(&server_id, wait).await
+                } else {
+                    server_id.load(Ordering::Relaxed)
+                };
+                if run::handle(&config, &client, job, id).await
+                    == selfupdate::prepare::Handoff::Stopping
+                {
+                    // The helper stops this agent (SIGTERM ends the process);
+                    // no job may start meanwhile. Heartbeats go on.
+                    tracing::info!(
+                        "self-update handed over; no more jobs until the agent restarts"
+                    );
+                    std::future::pending::<()>().await;
+                }
             }
             Ok(jobs::Polled::Job(Err((run, why)))) => {
                 tracing::warn!(run, reason = ?why, "job refused");
@@ -348,6 +386,20 @@ mod tests {
             .expect("the supervisor ends once the task does")
             .unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn an_agent_update_waits_for_a_known_server_id() {
+        let id = Arc::new(AtomicI64::new(0));
+        let none = known_server_id(&id, Duration::from_millis(50)).await;
+        assert_eq!(none, 0, "no heartbeat reply yet");
+        let late = id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            late.store(3, Ordering::Relaxed);
+        });
+        let known = known_server_id(&id, Duration::from_secs(10)).await;
+        assert_eq!(known, 3);
     }
 
     #[test]

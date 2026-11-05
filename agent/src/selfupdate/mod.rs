@@ -2,10 +2,12 @@
 //! `agent_update` job with a released version and its digest; this module
 //! holds the names, labels, deadlines and codes the parts of that job share.
 //! [`version`] has the rules for which version and which image reference
-//! may be updated; [`report`] tells Wren whether this agent can do it.
+//! may be updated; [`report`] tells Wren whether this agent can do it;
+//! [`prepare`] is the old agent's preflight and hand-over to the helper.
 
 pub mod helper;
 pub mod machine;
+pub mod prepare;
 pub mod report;
 pub mod state;
 pub mod version;

@@ -18,6 +18,7 @@ use crate::config::Config;
 use crate::docker::{cli, get_json, post_json};
 use crate::jobs::{self, Ctr, Job, JobClient, JobKind, Kind, Note, Plan, StepReport, repo_of};
 use crate::ledger::{self, Ledger};
+use crate::selfupdate::prepare::{self, Handoff};
 use crate::snapshot::{self, DataPath, Method, exec, tail};
 
 /// Step time limits; the update of a script stack uses its own `timeout`.
@@ -1470,8 +1471,14 @@ pub fn admit(
         .map_err(|error| Note::new("refused.ledger_write", &[("error", &error)]))
 }
 
-/// Checks and runs one job from Wren.
-pub async fn handle(config: &Config, client: &JobClient, job: Job) {
+/// Checks and runs one job from Wren. `server_id` is Wren's id for this
+/// server (from the last heartbeat reply, 0 when none came yet), recorded by
+/// an agent update. [`Handoff::Stopping`]: the helper has taken over and
+/// will stop this agent.
+pub async fn handle(config: &Config, client: &JobClient, job: Job, server_id: i64) -> Handoff {
+    if job.kind == JobKind::AgentUpdate {
+        return prepare::handle(config, client, job, server_id).await;
+    }
     let run = job.run_id;
     let report = ClientReport { client, run };
     // What the server sent is logged escaped (`?`): a name with a newline or
@@ -1481,7 +1488,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     if let Err(why) = jobs::allowed(config, &job.target.name) {
         tracing::warn!(run, reason = ?why.text(), "job refused");
         report.finish("refused", &why).await;
-        return;
+        return Handoff::Done;
     }
     let all = match read_all(&config.docker_socket).await {
         Ok(all) => all,
@@ -1489,7 +1496,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
             report
                 .finish("failed", &Note::plain(format!("can't read Docker: {err}")))
                 .await;
-            return;
+            return Handoff::Done;
         }
     };
     let templates = crate::discover::unraid_templates(Path::new("/"));
@@ -1498,7 +1505,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
         Err(why) => {
             tracing::warn!(run, reason = ?why.text(), "job refused");
             report.finish("refused", &why).await;
-            return;
+            return Handoff::Done;
         }
     };
     // The approved digest already runs (pulled by another digest of the
@@ -1508,7 +1515,7 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
         let why = Note::new("done.already_on", &[("target", &job.target.name)]);
         tracing::info!(run, note = ?why.text(), "nothing to do");
         report.finish("succeeded", &why).await;
-        return;
+        return Handoff::Done;
     }
     // What this agent itself ran: run ids only grow, a rollback undoes the
     // newest successful update once, a script stack keeps its distance.
@@ -1520,13 +1527,14 @@ pub async fn handle(config: &Config, client: &JobClient, job: Job) {
     if let Err(why) = admit(&mut ledger, &job, min_interval, ledger::now()) {
         tracing::warn!(run, reason = ?why.text(), "job refused");
         report.finish("refused", &why).await;
-        return;
+        return Handoff::Done;
     }
     let outcome = execute(&DockerHost { config }, &report, &plan).await;
     if let Err(error) = ledger.finish(&job, outcome) {
         tracing::warn!(run, "{error}");
     }
     tracing::info!(run, outcome, "run finished");
+    Handoff::Done
 }
 
 #[cfg(test)]
