@@ -35,4 +35,5 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; “Docker 소켓” |
 | auto window | 자동 시간대 | per-server window in which automatic updates may run |
 | scheduled update | 예약된 업데이트 | an update approved to run at a chosen time |
+| self-update (the agent updates itself) | 자체 업데이트 | agent self-update; "agent update" = the update of the agent itself |
 | monitor (Vigilant Vole) | 모니터 | VV: “모니터” |

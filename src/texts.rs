@@ -44,6 +44,23 @@ pub fn key(code: &str) -> Option<&'static str> {
         "path.shared" => "agent_msg.path_shared",
         "path.volume" => "agent_msg.path_volume",
         "snapshot.none" => "agent_msg.snapshot_none",
+        "selfupdate.off" => "agent_msg.selfupdate_off",
+        "selfupdate.no_own_id" => "agent_msg.selfupdate_no_own_id",
+        "selfupdate.not_container" => "agent_msg.selfupdate_not_container",
+        "selfupdate.foreign_repo" => "agent_msg.selfupdate_foreign_repo",
+        "selfupdate.pinned" => "agent_msg.selfupdate_pinned",
+        "selfupdate.autoremove" => "agent_msg.selfupdate_autoremove",
+        "selfupdate.network_mode" => "agent_msg.selfupdate_network_mode",
+        "selfupdate.config_ro" => "agent_msg.selfupdate_config_ro",
+        "selfupdate.bad_version" => "agent_msg.selfupdate_bad_version",
+        "selfupdate.bad_digest" => "agent_msg.selfupdate_bad_digest",
+        "selfupdate.busy" => "agent_msg.selfupdate_busy",
+        "selfupdate.label_mismatch" => "agent_msg.selfupdate_label_mismatch",
+        "selfupdate.not_release" => "agent_msg.selfupdate_not_release",
+        "selfupdate.helper_failed" => "agent_msg.selfupdate_helper_failed",
+        "selfupdate.done" => "agent_msg.selfupdate_done",
+        "selfupdate.rolled_back" => "agent_msg.selfupdate_rolled_back",
+        "selfupdate.rollback_failed" => "agent_msg.selfupdate_rollback_failed",
         _ => return None,
     })
 }
@@ -132,4 +149,17 @@ pub fn notes(stored: &str) -> (bool, Vec<String>) {
 pub fn no_snapshot(stored: &str) -> Option<Vec<String>> {
     let (none, reasons) = notes(stored);
     none.then_some(reasons)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_selfupdate_code_has_a_key() {
+        for code in wren_agent::selfupdate::CODES {
+            let key = key(code).unwrap_or_else(|| panic!("{code}"));
+            assert_eq!(key, format!("agent_msg.{}", code.replace('.', "_")));
+        }
+    }
 }
