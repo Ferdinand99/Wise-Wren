@@ -27,8 +27,11 @@ const RESTORED: [&str; 2] = ["managed.json", "runs.json"];
 /// What the helper needs of the Docker host. [`DockerEngine`] is the real
 /// one; the tests use a fake.
 pub trait Engine {
-    /// `GET /containers/<name>/json`; `None` when there is no such container.
-    fn inspect(&self, name: &str) -> impl Future<Output = Option<Value>> + Send;
+    /// `GET /containers/<name>/json`: `Ok(None)` only when Docker says there
+    /// is no such container; any other failure is an error (the helper then
+    /// decides nothing, because it can't tell a gone container from a
+    /// Docker that didn't answer).
+    fn inspect(&self, name: &str) -> impl Future<Output = Result<Option<Value>, String>> + Send;
     /// The `Config` of image `image_id` (`Null` when it can't be read).
     fn image_config(&self, image_id: &str) -> impl Future<Output = Value> + Send;
     fn stop(&self, name: &str, seconds: u64) -> impl Future<Output = Result<(), String>> + Send;
@@ -63,10 +66,13 @@ impl DockerEngine {
 }
 
 impl Engine for DockerEngine {
-    async fn inspect(&self, name: &str) -> Option<Value> {
-        get_json(&self.socket, &format!("/containers/{name}/json"))
-            .await
-            .ok()
+    async fn inspect(&self, name: &str) -> Result<Option<Value>, String> {
+        match get_json(&self.socket, &format!("/containers/{name}/json")).await {
+            Ok(v) => Ok(Some(v)),
+            // `get_json` words a non-200 answer as "Docker answered <status line>".
+            Err(e) if e.starts_with("Docker answered") && e.contains(" 404") => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn image_config(&self, image_id: &str) -> Value {
@@ -196,6 +202,19 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
     loop {
         let before = s.clone();
         let now = engine.now();
+        // A pass that can't see the world decides nothing: a Docker that
+        // didn't answer is not a container that is gone.
+        let (renamed, named) = match (
+            engine.inspect(&old_n).await,
+            engine.inspect(&s.container).await,
+        ) {
+            (Ok(renamed), Ok(named)) => (renamed, named),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!("can't look at the containers, trying again: {e}");
+                engine.sleep(Duration::from_secs(scaled(2))).await;
+                continue;
+            }
+        };
         // The boot id is compared and stored on the first pass only, so a
         // reboot is seen once.
         let mut boot_changed = false;
@@ -206,16 +225,26 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
                 s.host_boot = boot;
             }
         }
-        let renamed = engine.inspect(&old_n).await;
         let seen = Seen {
             now,
-            named: observe(engine.inspect(&s.container).await.as_ref()),
+            named: observe(named.as_ref()),
             renamed: observe(renamed.as_ref()),
             confirmed: confirmed(&dir, s.run_id),
             boot_changed,
             fresh_start: first,
         };
         first = false;
+        // A new container whose id was lost (the reply to `create` never
+        // came) is known by now.
+        if s.new_container_id.is_empty()
+            && matches!(
+                s.phase,
+                Phase::OldRenamed | Phase::NewCreated | Phase::NewStarted | Phase::Confirmed
+            )
+            && let Some(c) = seen.named.as_ref().filter(|c| c.id != s.old_container_id)
+        {
+            s.new_container_id = c.id.clone();
+        }
         let mut action = next(&s, &seen);
         match &action {
             Action::Finish => return Ok(finish(engine, &s).await),
@@ -262,11 +291,19 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
             save(state_path, &s)?;
             match roll_back(engine, &s, &dir, &old_n).await {
                 Ok(()) => s.phase = Phase::RolledBack,
-                Err(e) => {
-                    tracing::error!("the rollback failed: {e}");
+                // Docker didn't answer: nothing was decided, the next pass
+                // (still `rolling_back`) does it all again.
+                Err(Rb::Retry(e)) => {
+                    tracing::warn!("can't look at the containers, trying the rollback again: {e}");
+                    engine.sleep(Duration::from_secs(scaled(2))).await;
+                    continue;
+                }
+                Err(Rb::Failed(e)) => {
                     s.phase = Phase::RollbackFailed;
                     s.reason = format!("{}; {e}", s.reason);
                     s.break_glass = break_glass(&s.container, s.run_id);
+                    tracing::error!("the rollback failed: {e}");
+                    tracing::error!("put the old agent back by hand: {}", s.break_glass);
                 }
             }
             s.updated_at = engine.now();
@@ -300,7 +337,7 @@ async fn clean_up<E: Engine>(engine: &E, s: &StateFile, dir: &Path, old_n: &str)
     if s.unraid {
         unraid_status(engine, s, &s.to_digest, &s.to_digest);
     }
-    if engine.inspect(old_n).await.is_some()
+    if matches!(engine.inspect(old_n).await, Ok(Some(_)))
         && let Err(e) = engine.remove(old_n, false).await
     {
         tracing::warn!("couldn't remove the old container {old_n}: {e}");
@@ -319,6 +356,32 @@ fn unraid_status<E: Engine>(engine: &E, s: &StateFile, local: &str, remote: &str
     }
 }
 
+/// Why a rollback stopped.
+enum Rb {
+    /// Docker couldn't be looked at: nothing was decided, try again.
+    Retry(String),
+    /// A step failed: nothing more is touched.
+    Failed(String),
+}
+
+impl From<String> for Rb {
+    fn from(e: String) -> Rb {
+        Rb::Failed(e)
+    }
+}
+
+impl From<&str> for Rb {
+    fn from(e: &str) -> Rb {
+        Rb::Failed(e.into())
+    }
+}
+
+/// Whatever container has the agent's name now (a failed look is a retry).
+async fn named_now<E: Engine>(engine: &E, s: &StateFile) -> Result<Option<Ctr0>, Rb> {
+    let inspect = engine.inspect(&s.container).await.map_err(Rb::Retry)?;
+    Ok(observe(inspect.as_ref()))
+}
+
 /// Puts the old agent back. Every step looks at what is there first, so it
 /// can be run again after a crash. The first error stops it.
 async fn roll_back<E: Engine>(
@@ -326,16 +389,21 @@ async fn roll_back<E: Engine>(
     s: &StateFile,
     dir: &Path,
     old_n: &str,
-) -> Result<(), String> {
+) -> Result<(), Rb> {
     // 1. Whatever now has the agent's name is not the old agent.
-    if let Some(c) = observe(engine.inspect(&s.container).await.as_ref())
+    if let Some(c) = named_now(engine, s).await?
         && c.id != s.old_container_id
     {
         engine.remove(&s.container, true).await?;
     }
     // 2. The old agent gets its name back.
-    if engine.inspect(old_n).await.is_some() {
+    if engine.inspect(old_n).await.map_err(Rb::Retry)?.is_some() {
         engine.rename(old_n, &s.container).await?;
+    }
+    // Only the old agent may be started from here on.
+    match named_now(engine, s).await? {
+        Some(c) if c.id == s.old_container_id => {}
+        _ => return Err("the old agent's container isn't back under its name".into()),
     }
     // 3. managed.json and runs.json as they were (a missing backup leaves the
     //    current file).
@@ -344,7 +412,9 @@ async fn roll_back<E: Engine>(
         match std::fs::read(backup.join(name)) {
             Ok(bytes) => write_private(&dir.join(name), &bytes)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("can't read {}: {e}", backup.join(name).display())),
+            Err(e) => {
+                return Err(format!("can't read {}: {e}", backup.join(name).display()).into());
+            }
         }
     }
     // 4. The reference points at the old image again.
@@ -357,8 +427,9 @@ async fn roll_back<E: Engine>(
     let until = engine.now() + scaled(ROLLBACK_CHECK);
     loop {
         engine.sleep(Duration::from_secs(scaled(2))).await;
-        let up = observe(engine.inspect(&s.container).await.as_ref())
-            .is_some_and(|c| c.running && c.status != "restarting");
+        let up = named_now(engine, s)
+            .await?
+            .is_some_and(|c| c.id == s.old_container_id && c.running && c.status != "restarting");
         if !up {
             return Err("the old agent doesn't stay running".into());
         }
@@ -412,6 +483,11 @@ mod tests {
         fail_on: Option<&'static str>,
         /// How many matching calls still fail.
         fail_left: Mutex<u32>,
+        /// Per name: inspects to let through, then inspects that fail
+        /// (Docker did not answer).
+        inspect_fails: Mutex<BTreeMap<String, (u32, u32)>>,
+        /// `remove` says yes and removes nothing.
+        sticky_remove: bool,
         confirm: bool,
         unraid: bool,
         dir: Mutex<PathBuf>,
@@ -426,6 +502,8 @@ mod tests {
                 clock: AtomicU64::new(T0),
                 fail_on: None,
                 fail_left: Mutex::new(u32::MAX),
+                inspect_fails: Mutex::new(BTreeMap::new()),
+                sticky_remove: false,
                 confirm,
                 unraid: false,
                 dir: Mutex::new(PathBuf::new()),
@@ -446,6 +524,17 @@ mod tests {
         fn failing_times(self, prefix: &'static str, times: u32) -> Fake {
             *self.fail_left.lock().unwrap() = times;
             self.failing(prefix)
+        }
+        fn inspect_failing(self, name: &str, skip: u32, times: u32) -> Fake {
+            self.inspect_fails
+                .lock()
+                .unwrap()
+                .insert(name.into(), (skip, times));
+            self
+        }
+        fn sticky_remove(mut self) -> Fake {
+            self.sticky_remove = true;
+            self
         }
         fn unraid(mut self) -> Fake {
             self.unraid = true;
@@ -492,8 +581,19 @@ mod tests {
         }
     }
 
+    /// The test's temporary config folder goes with the fake.
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            if let Ok(dir) = self.dir.lock()
+                && !dir.as_os_str().is_empty()
+            {
+                let _ = std::fs::remove_dir_all(&*dir);
+            }
+        }
+    }
+
     impl Engine for Fake {
-        async fn inspect(&self, name: &str) -> Option<Value> {
+        async fn inspect(&self, name: &str) -> Result<Option<Value>, String> {
             // The new agent confirms once the helper has recorded its start.
             if self.confirm
                 && let Ok(Some(s)) = load(&self.dir().join("selfupdate.json"))
@@ -501,14 +601,24 @@ mod tests {
             {
                 write_confirm(&self.dir(), s.run_id).unwrap();
             }
-            let c = self.ctr(name)?;
-            Some(json!({
+            if let Some((skip, left)) = self.inspect_fails.lock().unwrap().get_mut(name) {
+                if *skip > 0 {
+                    *skip -= 1;
+                } else if *left > 0 {
+                    *left -= 1;
+                    return Err("Docker didn't answer".into());
+                }
+            }
+            let Some(c) = self.ctr(name) else {
+                return Ok(None);
+            };
+            Ok(Some(json!({
                 "Id": c.id,
                 "RestartCount": c.restarts,
                 "State": {"Running": c.running, "Status": c.status},
                 "Config": {"Image": "old-image", "Env": ["A=1"]},
                 "HostConfig": {"NetworkMode": "bridge"},
-            }))
+            })))
         }
         async fn image_config(&self, _image_id: &str) -> Value {
             json!({})
@@ -553,6 +663,9 @@ mod tests {
                 "remove {name}{}",
                 if force { " force" } else { "" }
             ))?;
+            if self.sticky_remove {
+                return Ok(());
+            }
             self.ctrs
                 .lock()
                 .unwrap()
@@ -845,6 +958,115 @@ mod tests {
                 .is_err()
         );
         assert!(fake.calls().is_empty());
+    }
+
+    /// A run in `phase` with the world as it stands there, set to roll back.
+    fn rolling_back(name: &str, fake: Fake, world: Phase) -> (Fake, PathBuf) {
+        let (fake, path) = setup_at(name, fake, world);
+        let mut s = load(&path).unwrap().unwrap();
+        s.phase = Phase::RollingBack;
+        s.reason = "a test reason".into();
+        save(&path, &s).unwrap();
+        (fake, path)
+    }
+
+    #[tokio::test]
+    async fn a_docker_that_does_not_answer_is_not_a_container_that_is_gone() {
+        let fake = Fake::confirming()
+            .inspect_failing("wren-agent", 0, 3)
+            .inspect_failing("wren-agent-wren-old-57", 0, 2);
+        let (fake, path) = setup_at("flaky", fake, Phase::NewStarted);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert!(
+            !fake
+                .calls()
+                .iter()
+                .any(|c| c.contains("force") && !c.starts_with("remove wren-agent-selfupdate")),
+            "{:?}",
+            fake.calls()
+        );
+        let s = load(&path).unwrap().unwrap();
+        assert_eq!(s.reason, "");
+    }
+
+    #[tokio::test]
+    async fn a_flaky_docker_during_a_rollback_does_not_start_the_wrong_container() {
+        // The new agent holds the name; the old one is renamed.
+        let fake = Fake::silent().inspect_failing("wren-agent", 1, 2);
+        let (fake, path) = rolling_back("flaky-rb-new", fake, Phase::NewStarted);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        assert_eq!(
+            fake.calls()[0],
+            "remove wren-agent force",
+            "{:?}",
+            fake.calls()
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        // The old one is looked at too.
+        let fake = Fake::silent().inspect_failing("wren-agent-wren-old-57", 1, 2);
+        let (fake, path) = rolling_back("flaky-rb-old", fake, Phase::OldRenamed);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        assert_eq!(fake.ctr("wren-agent").unwrap().id, "old");
+    }
+
+    #[tokio::test]
+    async fn the_helper_only_starts_the_old_container() {
+        // Docker says the new container was removed but it still holds the name.
+        let fake = Fake::silent().sticky_remove();
+        let (fake, path) = rolling_back("wrong-one", fake, Phase::NewStarted);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        assert!(
+            !fake
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("start") || c.starts_with("tag")),
+            "{:?}",
+            fake.calls()
+        );
+        let s = load(&path).unwrap().unwrap();
+        assert!(s.reason.starts_with("a test reason; "), "{}", s.reason);
+        assert_eq!(s.break_glass, break_glass("wren-agent", 57));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_fails_rolls_back_at_once() {
+        let (fake, path) = setup("stopfail", Fake::confirming().failing("stop wren-agent"));
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let s = load(&path).unwrap().unwrap();
+        assert!(
+            s.reason.starts_with("couldn't stop the old agent: "),
+            "{}",
+            s.reason
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("create")));
+    }
+
+    #[tokio::test]
+    async fn a_rename_that_fails_rolls_back_at_once() {
+        let fake = Fake::confirming().failing("rename wren-agent wren-agent-wren-old-57");
+        let (fake, path) = setup("renamefail", fake);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let s = load(&path).unwrap().unwrap();
+        assert!(
+            s.reason.starts_with("couldn't rename the old agent: "),
+            "{}",
+            s.reason
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("create")));
+    }
+
+    #[tokio::test]
+    async fn a_new_container_whose_id_was_lost_is_found_again() {
+        // `create` worked but its reply never came: the state has no id.
+        let (fake, path) = setup_at("lostid", Fake::confirming(), Phase::NewCreated);
+        assert_eq!(load(&path).unwrap().unwrap().new_container_id, "");
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert_eq!(load(&path).unwrap().unwrap().new_container_id, "new");
     }
 
     #[test]
