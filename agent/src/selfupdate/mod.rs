@@ -8,6 +8,7 @@
 pub mod helper;
 pub mod machine;
 pub mod prepare;
+pub mod probation;
 pub mod report;
 pub mod state;
 pub mod version;

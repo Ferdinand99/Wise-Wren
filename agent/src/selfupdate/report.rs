@@ -177,8 +177,12 @@ fn pending(config_dir: &Path) -> Option<Pending> {
     if s.phase.terminal() && s.reported {
         return None;
     }
-    let probation =
-        matches!(s.phase, Phase::NewStarted | Phase::Confirmed) && s.to_version == VERSION;
+    // `new_created` too: the helper may have started this agent before it
+    // wrote that down.
+    let probation = matches!(
+        s.phase,
+        Phase::NewCreated | Phase::NewStarted | Phase::Confirmed
+    ) && s.to_version == VERSION;
     let phase = if probation {
         "probation".to_string()
     } else {
@@ -407,7 +411,7 @@ mod tests {
             })
         );
         // The new agent (this version) waiting to be confirmed is on probation.
-        for p in [Phase::NewStarted, Phase::Confirmed] {
+        for p in [Phase::NewCreated, Phase::NewStarted, Phase::Confirmed] {
             s.phase = p;
             assert_eq!(phase(&s).unwrap().phase, "probation", "{p:?}");
         }

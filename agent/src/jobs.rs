@@ -827,6 +827,18 @@ struct StepAnswer {
     cancel: bool,
 }
 
+/// Whether `error` (from [`JobClient::step`] or [`JobClient::finish`]) is
+/// Wren saying no: the run is not (or no longer) this agent's. Asking again
+/// would get the same answer; a network error, a 5xx, a 408 or a 429 may
+/// pass.
+pub fn rejected(error: &str) -> bool {
+    error
+        .strip_prefix("Wren answered ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|code| code.parse::<u16>().ok())
+        .is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429)
+}
+
 /// Talks to Wren's job endpoints.
 pub struct JobClient {
     http: reqwest::Client,
@@ -900,6 +912,32 @@ impl JobClient {
             serde_json::from_value::<Job>(poll.job)
                 .map_err(|e| (run_id, format!("refused: the job isn't understood ({e})"))),
         ))
+    }
+
+    /// Asks for a job without waiting (`wait=0`): does Wren answer this
+    /// agent's job channel? A job in the answer or none (204) is an answer.
+    pub async fn probe(&self) -> Result<(), crate::heartbeat::SendError> {
+        use crate::heartbeat::SendError;
+        let res = self
+            .http
+            .get(format!(
+                "{}{JOBS_PATH}?boot={}&wait=0",
+                self.server,
+                crate::heartbeat::boot().id
+            ))
+            .send()
+            .await
+            .map_err(|e| SendError::Failed(format!("can't reach Wren: {e}")))?;
+        let status = res.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(SendError::Refused(format!(
+                "Wren refused the token ({status})"
+            )));
+        }
+        if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::OK {
+            return Ok(());
+        }
+        Err(SendError::Failed(format!("Wren answered {status}")))
     }
 
     async fn post(&self, path: String, body: &impl Serialize) -> Result<Value, String> {
@@ -1607,5 +1645,61 @@ mod tests {
         for code in crate::selfupdate::CODES {
             assert!(!Note::new(code, &[]).text().is_empty(), "{code}");
         }
+    }
+
+    /// Answers the first connection with `response`, and sends back the
+    /// request line it read.
+    async fn serve_capture(response: Vec<u8>) -> (String, std::sync::mpsc::Receiver<String>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            let text = String::from_utf8_lossy(&buf[..n]);
+            let _ = tx.send(text.lines().next().unwrap_or("").to_string());
+            let _ = sock.write_all(&response).await;
+            let _ = sock.shutdown().await;
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    #[tokio::test]
+    async fn the_probe_poll_asks_without_waiting() {
+        let (url, request) =
+            serve_capture(b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\n\r\n".to_vec()).await;
+        let client = JobClient::new(&url, "wwa_x").unwrap();
+        assert!(client.probe().await.is_ok());
+        let line = request.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            line.starts_with("GET /api/agent/v1/jobs?boot=") && line.contains("&wait=0"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_probe_counts_a_job_as_an_answer_and_a_refusal_as_none() {
+        let (url, _) = serve_capture(
+            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}"
+                .to_vec(),
+        )
+        .await;
+        assert!(JobClient::new(&url, "wwa_x").unwrap().probe().await.is_ok());
+        let (url, _) =
+            serve_capture(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".to_vec()).await;
+        assert!(matches!(
+            JobClient::new(&url, "wwa_x").unwrap().probe().await,
+            Err(crate::heartbeat::SendError::Refused(_))
+        ));
+        let (url, _) = serve_capture(
+            b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n".to_vec(),
+        )
+        .await;
+        assert!(matches!(
+            JobClient::new(&url, "wwa_x").unwrap().probe().await,
+            Err(crate::heartbeat::SendError::Failed(_))
+        ));
     }
 }
