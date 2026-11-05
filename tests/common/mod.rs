@@ -285,3 +285,65 @@ pub async fn next_event(body: &mut axum::body::BodyDataStream) -> String {
     }
     text
 }
+
+/// A JSON `POST` with the agent token `token`.
+pub async fn post_json(app: &App, path: &str, token: &str, body: Value) -> Res {
+    let req = Request::post(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.send(req).await
+}
+
+/// The job poll of the agent process `boot`, without waiting.
+pub async fn poll_as(app: &App, token: &str, boot: &str) -> Res {
+    bearer(
+        app,
+        "GET",
+        &format!("/api/agent/v1/jobs?wait=0&boot={boot}"),
+        token,
+    )
+    .await
+}
+
+/// A step report of run `run`.
+pub async fn step(app: &App, token: &str, run: i64, step: &str, status: &str) -> Res {
+    post_json(
+        app,
+        &format!("/api/agent/v1/runs/{run}/steps"),
+        token,
+        serde_json::json!({"step": step, "status": status, "log": "…", "duration_ms": 120}),
+    )
+    .await
+}
+
+/// The end of run `run`.
+pub async fn finish(app: &App, token: &str, run: i64, outcome: &str) -> Res {
+    post_json(
+        app,
+        &format!("/api/agent/v1/runs/{run}/finish"),
+        token,
+        serde_json::json!({"outcome": outcome, "detail": "x"}),
+    )
+    .await
+}
+
+/// Puts `digest` in the registry as `image`'s newest and refreshes the targets.
+pub async fn set_remote(app: &App, image: &'static str, digest: &'static str) {
+    app.wren
+        .core
+        .with_conn(move |c| {
+            wise_wren::targets::set_remote(
+                c,
+                image,
+                &Ok(wise_wren::registry::Remote {
+                    digest: digest.into(),
+                    media_type: String::new(),
+                }),
+            )?;
+            wise_wren::targets::refresh_all(c)
+        })
+        .await
+        .unwrap();
+}

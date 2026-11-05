@@ -27,6 +27,8 @@ pub async fn run(config: Config) -> Result<(), crate::StartError> {
     crate::schedule::spawn_picker(wren.clone());
     // Vigilant Vole: planned windows ahead of scheduled runs, closing them.
     crate::vv::spawn_sync(wren.clone());
+    // The agent release this Wren offers (its own version's digest).
+    crate::agent_update::spawn_refresher(wren.clone());
 
     let addr = config.bind_addr();
     let listener = tokio::net::TcpListener::bind(addr)

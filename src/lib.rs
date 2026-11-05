@@ -13,6 +13,7 @@
 pub mod agent_api;
 pub mod agent_settings;
 pub mod agent_toml;
+pub mod agent_update;
 pub mod api;
 pub mod api_settings;
 pub mod channels;
@@ -87,6 +88,10 @@ pub struct Wren {
     /// Off unless `WW_ALLOW_PRIVATE_VERSION_URLS` is set ([`fetch`]); tests
     /// serve their fakes on loopback.
     pub allow_private_fetch: Arc<std::sync::atomic::AtomicBool>,
+    /// The agent release this Wren offers ([`agent_update::refresh_release`]):
+    /// its own version and that tag's digest. `None` until the first look
+    /// (or when the registry can't be reached).
+    pub agent_release: Arc<std::sync::RwLock<Option<agent_update::Release>>>,
 }
 
 impl Wren {
@@ -159,6 +164,7 @@ pub async fn start(data_dir: &Path, public_url: Option<&str>) -> Result<Wren, St
         vv_sync: Arc::new(tokio::sync::Notify::new()),
         vv_opening: Arc::default(),
         allow_private_fetch: Arc::default(),
+        agent_release: Arc::default(),
     })
 }
 

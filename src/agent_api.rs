@@ -50,8 +50,16 @@ pub const INTERVAL_SECONDS: u64 = 30;
 pub const RATE: Rate = Rate::per_minute(20);
 /// Longest value kept of each reported fact (characters).
 pub const MAX_FACT_CHARS: usize = 200;
+/// The agent image's repository, spelled once.
+macro_rules! agent_repo {
+    () => {
+        "ghcr.io/ferdinand99/wise-wren-agent"
+    };
+}
+/// The agent's repository (self-updates look up its tags).
+pub const AGENT_REPO: &str = agent_repo!();
 /// The agent's image.
-pub const AGENT_IMAGE: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+pub const AGENT_IMAGE: &str = concat!(agent_repo!(), ":latest");
 
 /// What an agent reports. Unknown fields are ignored, so newer agents can
 /// report more.
@@ -86,6 +94,10 @@ pub struct Heartbeat {
     /// leniently, so a newer agent's report can't make the heartbeat fail.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+    /// Self-update (0.10+): whether the agent may update itself and why not
+    /// ([`crate::agent_update`]). Absent from older agents; read leniently.
+    #[serde(default)]
+    pub self_update: Option<serde_json::Value>,
 }
 
 /// A boot id as Wren keeps it: letters, digits, `-` and `_`, at most 64;
@@ -163,10 +175,14 @@ pub async fn heartbeat(
     let uptime = beat.uptime_seconds;
     let report: Option<crate::agent_settings::Report> =
         beat.settings.and_then(|v| serde_json::from_value(v).ok());
+    let self_update: Option<crate::agent_update::Report> = beat
+        .self_update
+        .and_then(|v| serde_json::from_value(v).ok());
     let (scan, interrupted, settings) = match wren
         .core
         .with_conn(move |c| {
             db::record_heartbeat(c, id, &facts)?;
+            crate::agent_update::store_report(c, id, self_update)?;
             // An agent that restarted mid-run never finishes that run.
             let interrupted = match &boot {
                 Some(boot) => crate::runs::close_interrupted(c, id, boot, uptime)?,
