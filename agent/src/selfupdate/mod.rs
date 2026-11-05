@@ -4,6 +4,7 @@
 //! [`version`] has the rules for which version and which image reference
 //! may be updated; [`report`] tells Wren whether this agent can do it.
 
+pub mod helper;
 pub mod machine;
 pub mod report;
 pub mod state;
