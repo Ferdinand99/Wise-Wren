@@ -24,6 +24,7 @@ use axum::routing::post;
 use vole_kit::auth::AuthMethod;
 use vole_kit::http::ApiError;
 
+use crate::agent_update::{self, Release, Standing};
 use crate::runs::{self, Run};
 
 use crate::db;
@@ -31,7 +32,7 @@ use crate::targets::{self, Filter, Target};
 
 const ERROR_EXAMPLE: &str = r#"{"error": {"code": "not_found", "message": "Not found."}}"#;
 
-const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "agent_version": "0.1.0", "unraid": true}]}"#;
+const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "agent_version": "0.1.0", "unraid": true, "agent_update": {"state": "available", "current": "0.1.0", "available": "0.10.1", "reason": "", "run_id": null}}]}"#;
 
 const HEARTBEAT_EXAMPLE: &str = r#"{"agent_version": "0.1.0", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "unraid": true, "boot_id": "18f3a2c4e5d6b7a8-1-9c0d", "uptime_seconds": 3600}"#;
 
@@ -65,6 +66,8 @@ fn nothing(_: &mut String) {}
 const OWN_ROUTES: &[RouteDoc] = &[
         r("GET", "/api/v1/servers", "viewer", "Servers", "List the servers with their agents' status (online, offline, waiting for the agent, no token) and what each agent last reported.")
             .res(SERVERS_EXAMPLE),
+        r("GET", "/api/v1/servers/{id}", "viewer", "Servers", "One server, as in the list. `agent_update` says where its agent stands: `state` is `available` (a newer agent can be installed: `available` is the version), `current`, `running` (an agent update is queued or running: `run_id`), `off` (the agent's own switch is off), `blocked` (`reason` is the agent's code), `below_floor` (older than 0.10.0), `unsupported` or `unknown`.")
+            .res(r#"{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "agent_version": "0.10.0", "unraid": true, "mode": "approve", "auto_window": null, "check_interval_hours": 6, "agent_update": {"state": "available", "current": "0.10.0", "available": "0.10.1", "reason": "", "run_id": null}}"#),
         r("POST", "/api/v1/servers", "admin", "Servers", "Add a server. The answer has its agent token (`wwa_…`) and the `docker run` lines that start the agent (Unraid and other Linux); the token is shown only here, Wren keeps its SHA-256. Needs an API token with write access.")
             .req(r#"{"name": "Tower"}"#)
             .res(r#"{"server_id": 2, "token": "wwa_…", "docker_run": {"unraid": "docker run -d --name wren-agent …", "linux": "docker run -d --name wren-agent …"}, "note": "The token is shown only now; Wren keeps its hash."}"#),
@@ -74,6 +77,9 @@ const OWN_ROUTES: &[RouteDoc] = &[
             .res(r#"{"revoked": true}"#),
         r("DELETE", "/api/v1/servers/{id}", "admin", "Servers", "Delete a server with its targets and history. Its agent is refused from then on.")
             .res(r#"{"deleted": true}"#),
+        r("POST", "/api/v1/servers/{id}/agent-update", "admin", "Servers", "Update the server's agent to `version`, now or at `at` (RFC 3339 with an offset, or `null` for now; at most 90 days ahead). `version` must be the one the server's `agent_update.available` names: it is always Wren's own version, and the job carries only that version and its image digest. Refused when the agent can't update itself (`agent_update.state` is not `available`), when an agent update is already queued or running, or when the version changed since it was read. The agent then pulls, replaces itself and confirms, or rolls back; follow it as a run (`kind` `agent_update`). Needs an API token with write access of an admin.")
+            .req(r#"{"version": "0.10.1", "at": null}"#)
+            .res(r#"{"run_id": 57, "status": "queued", "scheduled_for": null}"#),
         r("POST", "/api/v1/servers/{id}/check", "editor", "Targets", "Check now: the agent sends a fresh inventory with its next heartbeat and Wren checks every target of the server as soon as it arrives. A fixed request, never a command.")
             .res(r#"{"checking": true}"#),
         r("POST", "/api/v1/servers/{id}/interval", "editor", "Targets", "Set how often the server's targets are checked: `hours` 1–168, or `null` for the default (6).")
@@ -281,7 +287,10 @@ pub fn router() -> Router<Core> {
     Router::new()
         .merge(push)
         .route("/api/v1/servers", get(servers).post(set::add_server))
-        .route("/api/v1/servers/{id}", delete(set::delete_server))
+        .route(
+            "/api/v1/servers/{id}",
+            get(server_route).delete(set::delete_server),
+        )
         .route("/api/v1/servers/{id}/{action}", post(set::server_action))
         .route("/api/v1/targets", get(targets_route))
         .route("/api/v1/targets/{id}", get(target_route))
@@ -429,11 +438,14 @@ async fn updates_route(State(core): State<Core>, _user: CurrentUser) -> ApiResul
     ))
 }
 
-/// The servers as the API and MCP give them.
-pub async fn server_list(core: &Core) -> ApiResult<Value> {
+/// The servers as the API and MCP give them, each with where its agent
+/// stands on a self-update (`release` is the agent release Wren offers).
+/// Nothing secret: the agent token is never read here.
+pub async fn server_list(core: &Core, release: Option<Release>) -> ApiResult<Value> {
     type Settings = std::collections::HashMap<i64, (String, Option<String>, Option<String>, i64)>;
-    let (rows, settings): (_, Settings) = core
-        .with_conn(|c| {
+    type Standings = std::collections::HashMap<i64, Standing>;
+    let (rows, settings, standings): (_, Settings, Standings) = core
+        .with_conn(move |c| {
             let settings = c
                 .prepare(
                     "SELECT id, mode, auto_start, auto_end, check_interval_hours FROM servers",
@@ -442,7 +454,12 @@ pub async fn server_list(core: &Core) -> ApiResult<Value> {
                     Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
-            Ok((db::servers(c)?, settings))
+            let rows = db::servers(c)?;
+            let mut standings = Standings::new();
+            for s in &rows {
+                standings.insert(s.id, agent_update::standing_of(c, s.id, release.as_ref())?);
+            }
+            Ok((rows, settings, standings))
         })
         .await?;
     let servers: Vec<Value> = rows
@@ -467,14 +484,36 @@ pub async fn server_list(core: &Core) -> ApiResult<Value> {
                 "mode": mode,
                 "auto_window": window,
                 "check_interval_hours": hours,
+                "agent_update": standings.get(&s.id),
             })
         })
         .collect();
     Ok(json!({ "servers": servers }))
 }
 
-async fn servers(State(core): State<Core>, _user: CurrentUser) -> ApiResult<Json<Value>> {
-    Ok(Json(server_list(&core).await?))
+async fn servers(
+    State(core): State<Core>,
+    Extension(wren): Extension<crate::Wren>,
+    _user: CurrentUser,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(
+        server_list(&core, agent_update::release(&wren)).await?,
+    ))
+}
+
+async fn server_route(
+    State(core): State<Core>,
+    Extension(wren): Extension<crate::Wren>,
+    _user: CurrentUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Value>> {
+    let list = server_list(&core, agent_update::release(&wren)).await?;
+    list["servers"]
+        .as_array()
+        .and_then(|all| all.iter().find(|s| s["id"] == id))
+        .cloned()
+        .map(Json)
+        .ok_or(ApiError::NotFound)
 }
 
 /// MCP: the same reads and actions as REST v1, for the caller's role. What
@@ -541,7 +580,12 @@ const EDITOR_TOOLS: &[&str] = &[
     "reschedule_run",
     "rollback_run",
 ];
-const ADMIN_TOOLS: &[&str] = &["link_monitor", "unlink_monitor", "test_vigilant_vole"];
+const ADMIN_TOOLS: &[&str] = &[
+    "link_monitor",
+    "unlink_monitor",
+    "test_vigilant_vole",
+    "update_agent",
+];
 
 fn int(args: &Map<String, Value>, key: &str) -> Option<i64> {
     args.get(key).and_then(Value::as_i64)
@@ -594,7 +638,18 @@ impl Mcp {
             )
             .await
             .map_err(|_| read("targets"))?,
-            "list_servers" => server_list(&self.core).await.map_err(|_| read("servers"))?,
+            "list_servers" => server_list(&self.core, agent_update::release(&self.wren))
+                .await
+                .map_err(|_| read("servers"))?,
+            "update_agent" => {
+                let body = json!({
+                    "version": s("version").unwrap_or_default(),
+                    "at": s("at"),
+                });
+                set::agent_update(&self.wren, &caller, need(args, "server_id")?, &body)
+                    .await
+                    .map_err(bad)?
+            }
             "get_target" => target_detail(&self.core, need(args, "target_id")?)
                 .await
                 .map_err(bad)?,
@@ -766,7 +821,7 @@ impl Handler for Mcp {
             ),
             tool(
                 "list_servers",
-                "List the servers with their agent's status (online, offline, waiting, no token), mode, auto window and check interval.",
+                "List the servers with their agent's status (online, offline, waiting, no token), mode, auto window, check interval and agent_update (whether the agent can be updated to Wren's version: state, current, available, reason, run_id).",
                 json!({}),
             ),
             tool(
@@ -862,6 +917,12 @@ impl Handler for Mcp {
                     "Remove a monitor link (link_id from get_target's monitors).",
                     json!({ "target_id": { "type": "integer" }, "link_id": { "type": "integer" } }),
                     &["target_id", "link_id"],
+                ),
+                write_tool(
+                    "update_agent",
+                    "Update a server's agent (server_id) to version, now or at a later time (at). version must be the one list_servers shows as agent_update.available (always Wren's own version); it is refused when the agent can't update itself or an agent update is already running. The agent replaces itself and rolls back when the new one doesn't confirm.",
+                    json!({ "server_id": { "type": "integer" }, "version": { "type": "string" }, "at": at }),
+                    &["server_id", "version"],
                 ),
                 tool(
                     "test_vigilant_vole",
@@ -1379,4 +1440,24 @@ async fn target_action_inner(
         _ => return Err(ApiError::NotFound),
     };
     Ok(Json(v))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_update_routes_are_documented() {
+        for (method, path) in [
+            ("GET", "/api/v1/servers/{id}"),
+            ("POST", "/api/v1/servers/{id}/agent-update"),
+        ] {
+            assert!(
+                OWN_ROUTES
+                    .iter()
+                    .any(|r| r.method == method && r.path == path),
+                "{method} {path}"
+            );
+        }
+    }
 }

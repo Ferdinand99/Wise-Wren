@@ -256,7 +256,12 @@ pub async fn server_action(
 
 /// Approves the update of the server's agent (admins): `{"version", "at"}`,
 /// `at` an RFC 3339 time or null for now.
-async fn agent_update(wren: &Wren, caller: &Caller, server_id: i64, b: &Value) -> ApiResult<Value> {
+pub(crate) async fn agent_update(
+    wren: &Wren,
+    caller: &Caller,
+    server_id: i64,
+    b: &Value,
+) -> ApiResult<Value> {
     let version = text(b, "version").unwrap_or_default().to_string();
     let at = match b.get("at") {
         None | Some(Value::Null) => None,
