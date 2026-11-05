@@ -19,7 +19,7 @@ Rust crates (105 packages)
 --- Apache License 2.0 (Apache-2.0) ---
 
 Used by:
-  aws-lc-sys 0.46.0 (https://github.com/aws/aws-lc-rs)
+  aws-lc-sys 0.47.0 (https://github.com/aws/aws-lc-rs)
 
 AWS Libcrypto (AWS-LC)
 
@@ -424,7 +424,7 @@ limitations under the License.
 --- BSD 3-Clause "New" or "Revised" License (BSD-3-Clause) ---
 
 Used by:
-  aws-lc-sys 0.46.0 (https://github.com/aws/aws-lc-rs)
+  aws-lc-sys 0.47.0 (https://github.com/aws/aws-lc-rs)
 
 AWS Libcrypto (AWS-LC)
 
@@ -806,7 +806,7 @@ Used by:
 --- ISC License (ISC) ---
 
 Used by:
-  aws-lc-sys 0.46.0 (https://github.com/aws/aws-lc-rs)
+  aws-lc-sys 0.47.0 (https://github.com/aws/aws-lc-rs)
 
 AWS Libcrypto (AWS-LC)
 
@@ -1157,7 +1157,7 @@ third-party/chromium/LICENSE.
 --- ISC License (ISC) ---
 
 Used by:
-  aws-lc-rs 1.18.2 (https://github.com/aws/aws-lc-rs)
+  aws-lc-rs 1.19.0 (https://github.com/aws/aws-lc-rs)
 
 SPDX-License-Identifier: ISC AND (Apache-2.0 OR ISC)
 
@@ -1420,7 +1420,7 @@ DEALINGS IN THE SOFTWARE.
 --- MIT License (MIT) ---
 
 Used by:
-  aws-lc-sys 0.46.0 (https://github.com/aws/aws-lc-rs)
+  aws-lc-sys 0.47.0 (https://github.com/aws/aws-lc-rs)
 
 AWS Libcrypto (AWS-LC)
 
