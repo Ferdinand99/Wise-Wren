@@ -830,13 +830,13 @@ struct StepAnswer {
 /// Whether `error` (from [`JobClient::step`] or [`JobClient::finish`]) is
 /// Wren saying no: the run is not (or no longer) this agent's. Asking again
 /// would get the same answer; a network error, a 5xx, a 408 or a 429 may
-/// pass.
+/// pass, and a 401 or 403 (a refused token) never reached the run at all.
 pub fn rejected(error: &str) -> bool {
     error
         .strip_prefix("Wren answered ")
         .and_then(|rest| rest.split_whitespace().next())
         .and_then(|code| code.parse::<u16>().ok())
-        .is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429)
+        .is_some_and(|code| (400..500).contains(&code) && ![401, 403, 408, 429].contains(&code))
 }
 
 /// Talks to Wren's job endpoints.

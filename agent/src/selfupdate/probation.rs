@@ -19,6 +19,7 @@
 //! prepared but never handed to a helper) are cleared by [`sweep`] and
 //! [`settle_prepared`].
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -29,14 +30,15 @@ use serde_json::Value;
 use super::helper::{DockerEngine, Engine};
 use super::state::{self, Phase, StateFile};
 use super::{
-    BACKUP_DIR, HELPER_LABEL, STATE_FILE, SWEEP, config_dir, helper_name, old_name, scaled,
+    BACKUP_DIR, HELPER_LABEL, HELPER_START, RUN_LABEL, STATE_FILE, SWEEP, config_dir, helper_name,
+    old_name, scaled,
 };
 use crate::config::Config;
 use crate::docker::get_json;
 use crate::heartbeat::{self, VERSION};
 use crate::jobs::{Job, JobClient, JobKind, Note, StepReport, TargetRef, rejected};
 use crate::ledger::Ledger;
-use crate::run::{prune_rollback_images, rollback_tag};
+use crate::run::{prune_rollback_images, rollback_tag, write_unraid_status};
 
 /// What this process is in a self-update.
 #[derive(Debug, PartialEq)]
@@ -144,18 +146,26 @@ pub fn outcome(s: &StateFile) -> (&'static str, Note) {
     }
 }
 
-/// The containers of a finished run that are still there: helpers when no
-/// run is going on, and the renamed old agent once the new one is `done`.
-/// `containers` is `(name, labels)`.
+/// The containers of a finished run that are still there: its helper, and
+/// the renamed old agent once the new one is `done`. A helper is the run's
+/// when its labels say so; with no state file any helper counts (the caller
+/// leaves out those that run). `containers` is `(name, labels)`.
 pub fn leftovers(state: Option<&StateFile>, containers: &[(String, Value)]) -> Vec<String> {
     let over = state.is_none_or(|s| s.phase.terminal());
+    let run = state.map(|s| s.run_id.to_string());
     let old = state
         .filter(|s| s.phase == Phase::Done)
         .map(|s| old_name(&s.container, s.run_id));
+    let label =
+        |labels: &Value, key: &str| labels.get(key).and_then(Value::as_str).map(str::to_string);
     containers
         .iter()
         .filter(|(name, labels)| {
-            (over && labels.get(HELPER_LABEL).is_some()) || old.as_deref() == Some(name.as_str())
+            let helper = label(labels, HELPER_LABEL).as_deref() == Some("helper")
+                && run
+                    .as_ref()
+                    .is_none_or(|run| label(labels, RUN_LABEL).as_ref() == Some(run));
+            (over && helper) || old.as_deref() == Some(name.as_str())
         })
         .map(|(name, _)| name.clone())
         .collect()
@@ -168,27 +178,54 @@ pub fn stale_prepared(s: &StateFile, now: u64, grace: u64, helper_exists: bool) 
     s.phase == Phase::Prepared && !helper_exists && now >= s.updated_at.saturating_add(grace)
 }
 
+/// A container's name in Docker's list answer (without the slash).
+fn name_of(c: &Value) -> Option<String> {
+    Some(
+        c.get("Names")?
+            .as_array()?
+            .first()?
+            .as_str()?
+            .trim_start_matches('/')
+            .to_string(),
+    )
+}
+
 /// `(name, labels)` of every container in Docker's list answer.
 pub fn containers_of(list: &Value) -> Vec<(String, Value)> {
     list.as_array()
         .into_iter()
         .flatten()
         .filter_map(|c| {
-            let name = c
-                .get("Names")?
-                .as_array()?
-                .first()?
-                .as_str()?
-                .trim_start_matches('/')
-                .to_string();
             let labels = c
                 .get("Labels")
                 .filter(|l| l.is_object())
                 .cloned()
                 .unwrap_or_else(|| Value::Object(Default::default()));
-            Some((name, labels))
+            Some((name_of(c)?, labels))
         })
         .collect()
+}
+
+/// What the sweep removes, given Docker's list answer. With no state file a
+/// helper that runs is left alone: it may belong to a run being prepared.
+pub fn sweepable(state: Option<&StateFile>, list: &Value) -> Vec<String> {
+    let mut all = containers_of(list);
+    if state.is_none() {
+        let live: HashSet<String> = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                matches!(
+                    c.get("State").and_then(Value::as_str),
+                    Some("running" | "restarting" | "created")
+                )
+            })
+            .filter_map(name_of)
+            .collect();
+        all.retain(|(name, _)| !live.contains(name));
+    }
+    leftovers(state, &all)
 }
 
 /// Seconds since the epoch of a Docker time (`2026-11-05T10:20:30.123Z`, UTC);
@@ -403,6 +440,168 @@ pub async fn remove_helper<E: Engine>(engine: &E, run: i64) {
     }
 }
 
+/// How a helper container looks to the new agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelperView {
+    /// Docker's status word.
+    pub status: String,
+    pub restarts: i64,
+    /// Seconds since it last stopped (0 when that isn't known).
+    pub idle: u64,
+}
+
+impl HelperView {
+    pub fn from_inspect(v: &Value, now: u64) -> HelperView {
+        HelperView {
+            status: v
+                .pointer("/State/Status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            restarts: v.get("RestartCount").and_then(Value::as_i64).unwrap_or(0),
+            idle: v
+                .pointer("/State/FinishedAt")
+                .and_then(Value::as_str)
+                .and_then(epoch)
+                .map_or(0, |at| now.saturating_sub(at)),
+        }
+    }
+}
+
+/// Restarts after which a helper that keeps falling over counts as broken.
+const STUCK_RESTARTS: i64 = 5;
+
+/// The helper is gone, or so broken it will not finish the run: no
+/// container, one that keeps restarting, or one that has stayed down. A
+/// helper that was killed comes back by itself and is not counted.
+pub fn helper_gone(helper: Option<&HelperView>) -> bool {
+    match helper {
+        None => true,
+        Some(h) => match h.status.as_str() {
+            "restarting" => h.restarts >= STUCK_RESTARTS,
+            "exited" | "dead" => h.idle >= scaled(HELPER_START),
+            _ => false,
+        },
+    }
+}
+
+/// What the new agent does about a run whose helper may be gone.
+#[derive(Debug, PartialEq)]
+pub enum Orphan {
+    Wait,
+    /// Do the helper's clean-up and mark the run `done`.
+    Finish,
+    /// Never confirmed: say how to go back by hand.
+    BreakGlass,
+}
+
+/// The new agent's decision for run `s` (it is on probation or confirmed):
+/// the helper is `gone`, and `marker` says whether this agent confirmed.
+pub fn orphan(s: &StateFile, gone: bool, marker: bool) -> Orphan {
+    if !gone || !matches!(s.phase, Phase::NewStarted | Phase::Confirmed) {
+        return Orphan::Wait;
+    }
+    if marker {
+        Orphan::Finish
+    } else {
+        Orphan::BreakGlass
+    }
+}
+
+/// The helper of the run the new agent confirmed is gone: the new agent does
+/// the helper's clean-up itself (the helper is gone, so the file still has
+/// one writer) and sets `done`; the ordinary report path tells Wren. `true`
+/// when it did. Without the confirmation nothing is decided: the break-glass
+/// command is logged (`loud`) and Wren's own time-out closes the run.
+pub async fn adopt<E: Engine>(engine: &E, dir: &Path, now: u64, loud: bool) -> bool {
+    let path = dir.join(STATE_FILE);
+    let Ok(Some(mut s)) = state::load(&path) else {
+        return false;
+    };
+    if s.to_version != VERSION {
+        return false;
+    }
+    let helper = helper_name(s.run_id);
+    let view = match helper_view(engine, &helper, now).await {
+        Ok(view) => view,
+        Err(e) => {
+            tracing::warn!("can't look for the helper {helper}: {e}");
+            return false;
+        }
+    };
+    match orphan(
+        &s,
+        helper_gone(view.as_ref()),
+        state::confirmed(dir, s.run_id),
+    ) {
+        Orphan::Wait => return false,
+        Orphan::BreakGlass => {
+            if loud {
+                tracing::warn!(
+                    run = s.run_id,
+                    "the self-update helper is gone and this agent never confirmed; to go back by hand: {}",
+                    s.break_glass
+                );
+            }
+            return false;
+        }
+        Orphan::Finish => {}
+    }
+    tracing::warn!(
+        run = s.run_id,
+        "the self-update helper is gone; finishing the update here"
+    );
+    // A helper that is stuck must not write the file later.
+    if view.is_some()
+        && let Err(e) = engine.remove(&helper, true).await
+    {
+        tracing::warn!("can't remove the broken helper {helper}: {e}");
+        return false;
+    }
+    let old = old_name(&s.container, s.run_id);
+    match engine.inspect(&old).await {
+        Ok(Some(_)) => {
+            if let Err(e) = engine.remove(&old, false).await {
+                tracing::warn!("couldn't remove the old container {old}: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("couldn't look for the old container {old}: {e}"),
+    }
+    if s.unraid
+        && let Err(e) = write_unraid_status(
+            &engine.unraid_status_file(),
+            &s.reference,
+            &s.to_digest,
+            &s.to_digest,
+        )
+    {
+        tracing::warn!("couldn't set Unraid's update status: {e}");
+    }
+    let _ = std::fs::remove_dir_all(dir.join(BACKUP_DIR).join(s.run_id.to_string()));
+    s.phase = Phase::Done;
+    s.updated_at = now;
+    match state::save(&path, &s) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("can't save {}: {e}", path.display());
+            false
+        }
+    }
+}
+
+/// The helper container `name`, as the new agent sees it.
+async fn helper_view<E: Engine>(
+    engine: &E,
+    name: &str,
+    now: u64,
+) -> Result<Option<HelperView>, String> {
+    Ok(engine
+        .inspect(name)
+        .await?
+        .map(|v| HelperView::from_inspect(&v, now)))
+}
+
 /// A run that was prepared but never handed to a helper (the old agent
 /// stopped in between) is put back as it was and marked `rolled_back`, so the
 /// agent that reports tells Wren and the next update may start. `true` when
@@ -415,14 +614,25 @@ pub async fn settle_prepared<E: Engine>(engine: &E, dir: &Path, grace: u64, now:
     if s.phase != Phase::Prepared {
         return false;
     }
-    let exists = match engine.inspect(&helper_name(s.run_id)).await {
-        Ok(found) => found.is_some(),
+    let helper = helper_name(s.run_id);
+    let found = match engine.inspect(&helper).await {
+        Ok(found) => found,
         Err(e) => {
             tracing::warn!("can't look for the helper of run {}: {e}", s.run_id);
             return false;
         }
     };
-    if !stale_prepared(&s, now, grace, exists) {
+    // A helper that was created but never started (the old agent stopped
+    // between the two) is no helper.
+    let never_started = found
+        .as_ref()
+        .is_some_and(|v| v.pointer("/State/Status").and_then(Value::as_str) == Some("created"));
+    let alive = found.is_some() && !never_started;
+    if !stale_prepared(&s, now, grace, alive) {
+        return false;
+    }
+    if never_started && let Err(e) = engine.remove(&helper, true).await {
+        tracing::warn!("can't remove the helper {helper} that never started: {e}");
         return false;
     }
     tracing::warn!(
@@ -467,7 +677,7 @@ pub async fn sweep(socket: &str, dir: &Path) -> Vec<String> {
         socket: socket.to_string(),
     };
     let mut gone = Vec::new();
-    for name in leftovers(state.as_ref(), &containers_of(&list)) {
+    for name in sweepable(state.as_ref(), &list) {
         match engine.remove(&name, true).await {
             Ok(()) => {
                 tracing::info!(container = %name, "removed a self-update leftover");
@@ -491,6 +701,7 @@ pub async fn round(config: &Config, jobs: &JobClient, ended: &AtomicI64, sweep_d
         socket: socket.to_string(),
     };
     settle_prepared(&engine, dir, scaled(SWEEP), state::now()).await;
+    adopt(&engine, dir, state::now(), sweep_due).await;
     let path = dir.join(STATE_FILE);
     let found = state::load(&path).ok().flatten();
     if let Some(s) = found.as_ref().filter(|s| s.phase.terminal()) {
@@ -519,7 +730,7 @@ pub async fn round(config: &Config, jobs: &JobClient, ended: &AtomicI64, sweep_d
 /// The new agent's probation: heartbeats (only; no settings, no jobs, no
 /// inventory) every [`scaled`]`(10)` s whatever the answer, its own checks,
 /// and the confirm marker once [`ready`]. Then it waits until the run is over
-/// or the helper is gone. Never touches `managed.json` or `runs.json`.
+/// or the helper is gone (or broken). Never touches `managed.json` or `runs.json`.
 pub async fn probation(
     config: &Config,
     client: &heartbeat::Client,
@@ -589,7 +800,10 @@ pub async fn probation(
             Err(_) => {}
             _ => return,
         }
-        if matches!(engine.inspect(&helper).await, Ok(None)) {
+        if let Ok(view) = helper_view(&engine, &helper, state::now()).await
+            && helper_gone(view.as_ref())
+        {
+            // `round` finishes the run if this agent confirmed.
             tracing::info!(run = st.run_id, "self-update: the helper is gone");
             return;
         }
@@ -819,7 +1033,7 @@ mod tests {
     fn leftovers_go_only_when_the_run_is_over() {
         let helper = (
             "wren-agent-selfupdate-57".to_string(),
-            json!({"tools.hedgerow.wren.selfupdate": "helper"}),
+            json!({"tools.hedgerow.wren.selfupdate": "helper", "tools.hedgerow.wren.run": "57"}),
         );
         let old = ("wren-agent-wren-old-57".to_string(), json!({}));
         let all = [
@@ -903,6 +1117,9 @@ mod tests {
         assert!(rejected("Wren answered 409 Conflict"));
         assert!(!rejected("Wren answered 429 Too Many Requests"));
         assert!(!rejected("Wren answered 408 Request Timeout"));
+        // A refused token never reached the run.
+        assert!(!rejected("Wren answered 401 Unauthorized"));
+        assert!(!rejected("Wren answered 403 Forbidden"));
         assert!(!rejected("Wren answered 502 Bad Gateway"));
         assert!(!rejected("can't reach Wren: connection refused"));
     }
@@ -1067,21 +1284,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Docker in memory for the leftover sweep: which containers exist, and
-    /// what was tagged.
+    /// Docker in memory for the leftover sweep: which containers exist (with
+    /// what inspect says), what was tagged and what was removed.
     struct FakeDocker {
-        existing: Vec<String>,
+        existing: Vec<(String, Value)>,
         fail: bool,
         tags: Mutex<Vec<String>>,
+        removed: Mutex<Vec<String>>,
     }
 
     impl FakeDocker {
         fn new(existing: &[&str], fail: bool) -> FakeDocker {
             FakeDocker {
-                existing: existing.iter().map(|n| (*n).to_string()).collect(),
+                existing: existing
+                    .iter()
+                    .map(|n| ((*n).to_string(), json!({})))
+                    .collect(),
                 fail,
                 tags: Mutex::new(Vec::new()),
+                removed: Mutex::new(Vec::new()),
             }
+        }
+        fn with(mut self, name: &str, inspect: Value) -> FakeDocker {
+            self.existing.retain(|(n, _)| n != name);
+            self.existing.push((name.to_string(), inspect));
+            self
+        }
+        fn removed(&self) -> Vec<String> {
+            self.removed.lock().unwrap().clone()
         }
     }
 
@@ -1090,7 +1320,12 @@ mod tests {
             if self.fail {
                 return Err("Docker didn't answer".into());
             }
-            Ok(self.existing.iter().any(|n| n == name).then(|| json!({})))
+            let removed = self.removed.lock().unwrap();
+            Ok(self
+                .existing
+                .iter()
+                .find(|(n, _)| n == name && !removed.contains(n))
+                .map(|(_, v)| v.clone()))
         }
         async fn image_config(&self, _: &str) -> Value {
             Value::Null
@@ -1107,8 +1342,9 @@ mod tests {
         async fn start(&self, _: &str) -> Result<(), String> {
             unreachable!()
         }
-        async fn remove(&self, _: &str, _: bool) -> Result<(), String> {
-            unreachable!()
+        async fn remove(&self, name: &str, _: bool) -> Result<(), String> {
+            self.removed.lock().unwrap().push(name.to_string());
+            Ok(())
         }
         async fn tag(&self, source: &str, target: &str) -> Result<(), String> {
             self.tags.lock().unwrap().push(format!("{source} {target}"));
@@ -1165,6 +1401,164 @@ mod tests {
         assert!(!settle_prepared(&docker, &dir, 600, 1100).await);
         assert_eq!(state::load(&path).unwrap().unwrap().phase, Phase::Prepared);
         assert!(docker.tags.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_helper_of_the_finished_run_is_swept() {
+        let label = |run: &str| json!({"tools.hedgerow.wren.selfupdate": "helper", "tools.hedgerow.wren.run": run});
+        let all = [
+            ("wren-agent-selfupdate-57".to_string(), label("57")),
+            // The next run's helper, just created: not this state's to remove.
+            ("wren-agent-selfupdate-58".to_string(), label("58")),
+            // Carries the label under another value, or no run at all.
+            (
+                "other".to_string(),
+                json!({"tools.hedgerow.wren.selfupdate": "x", "tools.hedgerow.wren.run": "57"}),
+            ),
+            (
+                "norun".to_string(),
+                json!({"tools.hedgerow.wren.selfupdate": "helper"}),
+            ),
+        ];
+        let s = at(Phase::RolledBack, "0.10.0", "0.10.1", true);
+        assert_eq!(leftovers(Some(&s), &all), vec!["wren-agent-selfupdate-57"]);
+    }
+
+    #[test]
+    fn with_no_state_only_helpers_that_do_not_run_are_swept() {
+        let list = json!([
+            {"Names": ["/wren-agent-selfupdate-61"], "State": "running",
+             "Labels": {"tools.hedgerow.wren.selfupdate": "helper", "tools.hedgerow.wren.run": "61"}},
+            {"Names": ["/wren-agent-selfupdate-60"], "State": "exited",
+             "Labels": {"tools.hedgerow.wren.selfupdate": "helper", "tools.hedgerow.wren.run": "60"}},
+            {"Names": ["/postiz"], "State": "exited", "Labels": {}},
+        ]);
+        assert_eq!(sweepable(None, &list), vec!["wren-agent-selfupdate-60"]);
+        // With a finished run the label decides, running or not.
+        let s = at(Phase::RolledBack, "0.10.0", "0.10.1", true);
+        assert!(sweepable(Some(&s), &list).is_empty());
+    }
+
+    #[test]
+    fn a_helper_that_is_gone_or_stuck_is_not_waited_for() {
+        let view = |status: &str, restarts: i64, idle: u64| HelperView {
+            status: status.into(),
+            restarts,
+            idle,
+        };
+        assert!(helper_gone(None));
+        assert!(!helper_gone(Some(&view("running", 0, 0))));
+        // A helper that was killed comes back by itself.
+        assert!(!helper_gone(Some(&view("restarting", 1, 0))));
+        assert!(!helper_gone(Some(&view("exited", 1, 5))));
+        // One that keeps falling over, or stays down, does not.
+        assert!(helper_gone(Some(&view("restarting", 5, 0))));
+        assert!(helper_gone(Some(&view("exited", 0, 100_000))));
+        assert!(helper_gone(Some(&view("dead", 0, 100_000))));
+    }
+
+    #[test]
+    fn a_confirmed_run_without_a_helper_is_finished_by_the_new_agent() {
+        use Phase::*;
+        let s = |p| at(p, "0.10.0", "0.10.1", false);
+        assert_eq!(orphan(&s(NewStarted), true, true), Orphan::Finish);
+        assert_eq!(orphan(&s(Confirmed), true, true), Orphan::Finish);
+        // Never confirmed: nobody may call it done; the way back is by hand.
+        assert_eq!(orphan(&s(NewStarted), true, false), Orphan::BreakGlass);
+        // A helper that lives decides for itself.
+        assert_eq!(orphan(&s(NewStarted), false, true), Orphan::Wait);
+        for p in [NewCreated, OldStopped, RollingBack, Done, RolledBack] {
+            assert_eq!(orphan(&s(p), true, true), Orphan::Wait, "{p:?}");
+        }
+    }
+
+    fn adoptable(name: &str, phase: Phase, marker: bool) -> (PathBuf, PathBuf) {
+        let s = at(phase, "0.10.0", crate::heartbeat::VERSION, false);
+        let (dir, path, _) = folder(name, &s);
+        std::fs::create_dir_all(dir.join("selfupdate").join("57")).unwrap();
+        if marker {
+            state::write_confirm(&dir, 57).unwrap();
+        }
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn the_new_agent_finishes_a_confirmed_run_whose_helper_is_gone() {
+        let (dir, path) = adoptable("adopt", Phase::Confirmed, true);
+        let docker = FakeDocker::new(&["wren-agent-wren-old-57"], false);
+        assert!(adopt(&docker, &dir, 7000, true).await);
+        let s = state::load(&path).unwrap().unwrap();
+        assert_eq!((s.phase, s.updated_at), (Phase::Done, 7000));
+        assert_eq!(docker.removed(), ["wren-agent-wren-old-57"]);
+        assert!(!dir.join("selfupdate").join("57").exists());
+        // The ordinary report path now tells Wren.
+        assert!(matches!(
+            role(Some(s), crate::heartbeat::VERSION),
+            Role::Report(_)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_helper_stuck_restarting_is_removed_before_the_new_agent_finishes() {
+        let (dir, path) = adoptable("stuck", Phase::NewStarted, true);
+        let docker = FakeDocker::new(&["wren-agent-wren-old-57"], false).with(
+            "wren-agent-selfupdate-57",
+            json!({"State": {"Status": "restarting"}, "RestartCount": 9}),
+        );
+        assert!(adopt(&docker, &dir, 7000, true).await);
+        assert_eq!(
+            docker.removed(),
+            ["wren-agent-selfupdate-57", "wren-agent-wren-old-57"]
+        );
+        assert_eq!(state::load(&path).unwrap().unwrap().phase, Phase::Done);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_finished_while_the_helper_lives_or_without_a_confirmation() {
+        // A running helper.
+        let (dir, path) = adoptable("alive", Phase::Confirmed, true);
+        let docker = FakeDocker::new(&[], false).with(
+            "wren-agent-selfupdate-57",
+            json!({"State": {"Status": "running"}, "RestartCount": 0}),
+        );
+        assert!(!adopt(&docker, &dir, 7000, true).await);
+        // Docker not answering.
+        let broken = FakeDocker::new(&[], true);
+        assert!(!adopt(&broken, &dir, 7000, true).await);
+        assert_eq!(state::load(&path).unwrap().unwrap().phase, Phase::Confirmed);
+        assert!(docker.removed().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        // No marker: the new agent never confirmed.
+        let (dir, path) = adoptable("nomark", Phase::NewStarted, false);
+        let docker = FakeDocker::new(&["wren-agent-wren-old-57"], false);
+        assert!(!adopt(&docker, &dir, 7000, true).await);
+        assert_eq!(
+            state::load(&path).unwrap().unwrap().phase,
+            Phase::NewStarted
+        );
+        assert!(docker.removed().is_empty());
+        assert!(dir.join("selfupdate").join("57").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_helper_that_was_created_but_never_started_is_settled_after_the_grace() {
+        let created = json!({"State": {"Status": "created"}});
+        let (dir, path) = crashed_prepare("created");
+        let docker = FakeDocker::new(&[], false).with("wren-agent-selfupdate-57", created);
+        // Young: the old agent may be about to start it.
+        assert!(!settle_prepared(&docker, &dir, 600, 1100).await);
+        assert!(docker.removed().is_empty());
+        // Old: removed, and the run is settled.
+        assert!(settle_prepared(&docker, &dir, 600, 1700).await);
+        assert_eq!(docker.removed(), ["wren-agent-selfupdate-57"]);
+        assert_eq!(
+            state::load(&path).unwrap().unwrap().phase,
+            Phase::RolledBack
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
