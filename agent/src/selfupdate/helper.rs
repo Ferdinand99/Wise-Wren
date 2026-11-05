@@ -69,8 +69,7 @@ impl Engine for DockerEngine {
     async fn inspect(&self, name: &str) -> Result<Option<Value>, String> {
         match get_json(&self.socket, &format!("/containers/{name}/json")).await {
             Ok(v) => Ok(Some(v)),
-            // `get_json` words a non-200 answer as "Docker answered <status line>".
-            Err(e) if e.starts_with("Docker answered") && e.contains(" 404") => Ok(None),
+            Err(e) if is_not_found(&e) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -147,6 +146,13 @@ impl Engine for DockerEngine {
     async fn sleep(&self, d: Duration) {
         tokio::time::sleep(d).await;
     }
+}
+
+/// Whether `get_json`'s error is Docker's 404 (no such container). It words a
+/// non-200 answer "Docker answered <status line>"; a test holds this to that
+/// wording, because a miss here makes every 404 a failed look.
+fn is_not_found(error: &str) -> bool {
+    error.starts_with("Docker answered") && error.contains(" 404")
 }
 
 /// What the helper makes of a container's inspect.
@@ -337,10 +343,14 @@ async fn clean_up<E: Engine>(engine: &E, s: &StateFile, dir: &Path, old_n: &str)
     if s.unraid {
         unraid_status(engine, s, &s.to_digest, &s.to_digest);
     }
-    if matches!(engine.inspect(old_n).await, Ok(Some(_)))
-        && let Err(e) = engine.remove(old_n, false).await
-    {
-        tracing::warn!("couldn't remove the old container {old_n}: {e}");
+    match engine.inspect(old_n).await {
+        Ok(Some(_)) => {
+            if let Err(e) = engine.remove(old_n, false).await {
+                tracing::warn!("couldn't remove the old container {old_n}: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("couldn't look for the old container {old_n}: {e}"),
     }
     let backup = dir.join(BACKUP_DIR).join(s.run_id.to_string());
     match std::fs::remove_dir_all(&backup) {
@@ -488,6 +498,9 @@ mod tests {
         inspect_fails: Mutex<BTreeMap<String, (u32, u32)>>,
         /// `remove` says yes and removes nothing.
         sticky_remove: bool,
+        /// A sleep puts another container under the agent's name (a start
+        /// that is overtaken while the helper watches it).
+        swap_on_sleep: bool,
         confirm: bool,
         unraid: bool,
         dir: Mutex<PathBuf>,
@@ -504,6 +517,7 @@ mod tests {
                 fail_left: Mutex::new(u32::MAX),
                 inspect_fails: Mutex::new(BTreeMap::new()),
                 sticky_remove: false,
+                swap_on_sleep: false,
                 confirm,
                 unraid: false,
                 dir: Mutex::new(PathBuf::new()),
@@ -530,6 +544,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(name.into(), (skip, times));
+            self
+        }
+        fn swap_on_sleep(mut self) -> Fake {
+            self.swap_on_sleep = true;
             self
         }
         fn sticky_remove(mut self) -> Fake {
@@ -687,6 +705,9 @@ mod tests {
         }
         async fn sleep(&self, d: Duration) {
             self.clock.fetch_add(d.as_secs().max(1), Ordering::SeqCst);
+            if self.swap_on_sleep {
+                self.put("wren-agent", "intruder", true, "running");
+            }
         }
     }
 
@@ -1012,21 +1033,58 @@ mod tests {
 
     #[tokio::test]
     async fn the_helper_only_starts_the_old_container() {
-        // Docker says the new container was removed but it still holds the name.
+        // The old container is gone and Docker says the new one was removed,
+        // but it still holds the name.
         let fake = Fake::silent().sticky_remove();
         let (fake, path) = rolling_back("wrong-one", fake, Phase::NewStarted);
+        fake.ctrs.lock().unwrap().remove("wren-agent-wren-old-57");
         assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        let calls = fake.calls();
+        assert_eq!(calls[0], "remove wren-agent force", "{calls:?}");
         assert!(
-            !fake
-                .calls()
+            !calls
                 .iter()
-                .any(|c| c.starts_with("start") || c.starts_with("tag")),
-            "{:?}",
-            fake.calls()
+                .any(|c| c.starts_with("start") || c.starts_with("tag") || c.starts_with("rename")),
+            "{calls:?}"
         );
         let s = load(&path).unwrap().unwrap();
         assert!(s.reason.starts_with("a test reason; "), "{}", s.reason);
+        assert!(
+            s.reason.contains("isn't back under its name"),
+            "{}",
+            s.reason
+        );
         assert_eq!(s.break_glass, break_glass("wren-agent", 57));
+    }
+
+    #[tokio::test]
+    async fn the_old_container_has_to_stay_the_one_that_runs() {
+        // Right after the start, something else takes the name.
+        let (fake, path) = rolling_back(
+            "overtaken",
+            Fake::silent().swap_on_sleep(),
+            Phase::OldRenamed,
+        );
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        let s = load(&path).unwrap().unwrap();
+        assert!(s.reason.contains("doesn't stay running"), "{}", s.reason);
+        assert!(fake.calls().iter().any(|c| c == "start wren-agent"));
+    }
+
+    #[test]
+    fn only_dockers_404_means_no_such_container() {
+        // The wording comes from the real parser, so a change there fails here.
+        let answer = |status: &str| {
+            crate::docker::parse_response(format!("HTTP/1.0 {status}\r\n\r\n").as_bytes())
+                .unwrap_err()
+        };
+        assert!(is_not_found(&answer("404 Not Found")));
+        assert!(!is_not_found(&answer("500 Internal Server Error")));
+        assert!(!is_not_found(&answer("403 Forbidden")));
+        assert!(!is_not_found(
+            "can't open /var/run/docker.sock: Permission denied"
+        ));
+        assert!(!is_not_found("Docker didn't answer within 5 s"));
     }
 
     #[tokio::test]
