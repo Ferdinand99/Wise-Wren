@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Wren;
 use crate::registry::{Checker, ImageRef};
+use crate::runs::{self, Refusal, Run};
 use crate::versions::semver_of;
 
 pub use crate::agent_api::AGENT_REPO;
@@ -237,6 +238,18 @@ pub fn standing_of(
     server_id: i64,
     release: Option<&Release>,
 ) -> rusqlite::Result<Standing> {
+    let active = active_run(c, server_id)?;
+    standing_with(c, server_id, release, active)
+}
+
+/// [`standing_of`] for a given queued or running update (`None`: as if there
+/// were none).
+fn standing_with(
+    c: &Connection,
+    server_id: i64,
+    release: Option<&Release>,
+    active: Option<i64>,
+) -> rusqlite::Result<Standing> {
     let version: String = c
         .query_row(
             "SELECT agent_version FROM servers WHERE id = ?1",
@@ -246,8 +259,146 @@ pub fn standing_of(
         .optional()?
         .unwrap_or_default();
     let report = report_of(c, server_id)?;
-    let active = active_run(c, server_id)?;
     Ok(standing(&version, report.as_ref(), release, active))
+}
+
+/// The `to_key` of an update to `release`: the version and the digest the
+/// agent is told to pull.
+fn key_of(release: &Release) -> String {
+    format!("{}@{}", release.version, release.digest)
+}
+
+/// The target of this server named `container` that is the agent's own
+/// container, when the inventory has it (the run then links to it).
+pub fn own_target(
+    c: &Connection,
+    server_id: i64,
+    container: &str,
+) -> rusqlite::Result<Option<i64>> {
+    c.query_row(
+        "SELECT id FROM targets WHERE server_id = ?1 AND name = ?2
+             AND kind IN ('container', 'unraid') ORDER BY id LIMIT 1",
+        params![server_id, container],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Approves the update of `server_id`'s agent to `version` now, or at `at`.
+/// Only an admin may; `version` must be the one the person saw. The run's id.
+pub fn approve(
+    c: &Connection,
+    server_id: i64,
+    version: &str,
+    user: &str,
+    is_admin: bool,
+    at: Option<jiff::Timestamp>,
+    release: Option<&Release>,
+) -> rusqlite::Result<Result<i64, Refusal>> {
+    if !is_admin {
+        return Ok(Err(Refusal::AdminOnly));
+    }
+    let known: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM servers WHERE id = ?1)",
+        [server_id],
+        |r| r.get(0),
+    )?;
+    if !known {
+        return Ok(Err(Refusal::NotFound));
+    }
+    if at.is_some_and(|t| !runs::time_ok(t, jiff::Timestamp::now())) {
+        return Ok(Err(Refusal::BadTime));
+    }
+    let standing = standing_of(c, server_id, release)?;
+    let release = match (standing.state, release) {
+        (State::Running, _) => return Ok(Err(Refusal::AlreadyQueued)),
+        (State::Available, Some(release)) => release,
+        _ => return Ok(Err(Refusal::NoAgentUpdate)),
+    };
+    if version != release.version {
+        return Ok(Err(Refusal::Changed));
+    }
+    let container = report_of(c, server_id)?
+        .map(|r| r.container)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "wren-agent".to_string());
+    let target_id = own_target(c, server_id, &container)?;
+    let at = at.map(crate::schedule::db_time);
+    let trigger = if at.is_some() {
+        runs::BY_SCHEDULE
+    } else {
+        runs::BY_USER
+    };
+    let to_key = key_of(release);
+    c.execute(
+        "INSERT INTO runs (server_id, target_id, target_kind, target_name, kind, from_key,
+             to_key, shown, requested_by, trigger, scheduled_for)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            server_id,
+            target_id,
+            TARGET_KIND,
+            container,
+            KIND,
+            standing.current,
+            to_key,
+            format!("{} \u{2192} {}", standing.current, release.version),
+            user,
+            trigger,
+            at
+        ],
+    )?;
+    let id = c.last_insert_rowid();
+    let detail = match &at {
+        Some(at) => format!("{to_key} at {at} UTC"),
+        None => to_key,
+    };
+    runs::log_action(c, user, KIND, target_id, Some(id), &detail)?;
+    Ok(Ok(id))
+}
+
+/// Whether the queued update `run` may still start: its agent can still take
+/// the update, and the release Wren offers now is the one that was approved.
+/// The reason it can't.
+pub fn still_ok(
+    c: &Connection,
+    run: &Run,
+    release: Option<&Release>,
+) -> rusqlite::Result<Result<(), String>> {
+    let standing = standing_with(c, run.server_id, release, None)?;
+    let (State::Available, Some(release)) = (standing.state, release) else {
+        let state = serde_json::to_value(standing.state)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let why = if standing.reason.is_empty() {
+            state
+        } else {
+            format!("{state}, {}", standing.reason)
+        };
+        return Ok(Err(format!("the agent can no longer be updated: {why}")));
+    };
+    if run.to_key != key_of(release) {
+        return Ok(Err(
+            "Wren's agent release changed before the run started; approve it again".to_string(),
+        ));
+    }
+    Ok(Ok(()))
+}
+
+/// The job the agent gets for `run`: the version and digest to move to, and
+/// nothing else (the agent decides the rest from its own state).
+pub fn job_json(run: &Run) -> serde_json::Value {
+    let (version, digest) = run.to_key.split_once('@').unwrap_or((&run.to_key, ""));
+    serde_json::json!({
+        "run_id": run.id,
+        "kind": KIND,
+        "target": { "kind": TARGET_KIND, "name": run.target_name },
+        "from_key": run.from_key,
+        "to_key": run.to_key,
+        "to_version": version,
+        "to_digest": digest,
+    })
 }
 
 /// The agent release Wren offers right now.
@@ -258,8 +409,17 @@ pub fn release(wren: &Wren) -> Option<Release> {
 /// Looks up the digest of the agent image at Wren's own version, and whether
 /// GitHub knows a newer Wren. A lookup that fails leaves what was known.
 pub async fn refresh_release(wren: &Wren) {
-    let version = crate::VERSION;
-    let image = format!("{AGENT_REPO}:{version}");
+    refresh_release_of(wren, AGENT_REPO, crate::VERSION).await;
+}
+
+/// [`refresh_release`] for the agent image `repo` at tag `version` (the
+/// Docker tests look up their own registry).
+///
+/// The digest is the one the registry names for that tag: the index of a
+/// multi-arch image, which is what `docker pull repo:version` puts in the
+/// image's `RepoDigests` and what the agent checks for.
+pub async fn refresh_release_of(wren: &Wren, repo: &str, version: &str) {
+    let image = format!("{repo}:{version}");
     let Ok(parsed) = ImageRef::parse(&image) else {
         return;
     };

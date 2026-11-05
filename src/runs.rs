@@ -129,6 +129,8 @@ pub enum Refusal {
     BadTime,
     /// Only a scheduled run that hasn't started can be moved.
     NotScheduled,
+    /// The server's agent has no update to take right now.
+    NoAgentUpdate,
 }
 
 impl Refusal {
@@ -147,6 +149,7 @@ impl Refusal {
             Refusal::NoWindow => "runs.err_no_window",
             Refusal::BadTime => "runs.err_time",
             Refusal::NotScheduled => "runs.err_not_scheduled",
+            Refusal::NoAgentUpdate => "runs.err_agent_update",
         }
     }
 
@@ -708,15 +711,18 @@ pub fn already_on(c: &Connection, target_id: i64, to_key: &str) -> rusqlite::Res
 /// The next job for a server's agent: its oldest queued run, checked once
 /// more (one run at a time per server). Runs that can't go any more lapse.
 pub fn dispatch(c: &Connection, server_id: i64) -> rusqlite::Result<Option<Value>> {
-    dispatch_to(c, server_id, None)
+    dispatch_to(c, server_id, None, None)
 }
 
 /// [`dispatch`] for the agent process `boot` (its boot id, `None` for an
-/// agent before 0.2.1), which the run remembers.
+/// agent before 0.2.1), which the run remembers. `release` is the agent
+/// release Wren offers now ([`crate::agent_update::release`]), which a queued
+/// agent update is checked against.
 pub fn dispatch_to(
     c: &Connection,
     server_id: i64,
     boot: Option<&str>,
+    release: Option<&crate::agent_update::Release>,
 ) -> rusqlite::Result<Option<Value>> {
     let busy: bool = c.query_row(
         "SELECT EXISTS (SELECT 1 FROM runs WHERE server_id = ?1 AND status = 'running')",
@@ -737,6 +743,21 @@ pub fn dispatch_to(
         .collect::<rusqlite::Result<_>>()?;
     for id in queued {
         let Some(run) = get(c, id)? else { continue };
+        // The agent's own update has no target to look at: its agent and the
+        // release Wren offers are what must still hold.
+        if run.kind == crate::agent_update::KIND {
+            match crate::agent_update::still_ok(c, &run, release)? {
+                Ok(()) => {
+                    let job = crate::agent_update::job_json(&run);
+                    hand_out(c, id, &job, boot)?;
+                    return Ok(Some(job));
+                }
+                Err(why) => {
+                    close(c, id, LAPSED, &why)?;
+                    continue;
+                }
+            }
+        }
         let Some(target_id) = run.target_id else {
             close(c, id, LAPSED, "the target is gone")?;
             continue;
@@ -806,14 +827,20 @@ pub fn dispatch_to(
             continue;
         }
         let job = job_json(c, &run)?;
-        c.execute(
-            "UPDATE runs SET status = 'running', job = ?2, agent_boot = ?3,
-                 started_at = datetime('now'), last_report_at = datetime('now') WHERE id = ?1",
-            params![id, job.to_string(), boot],
-        )?;
+        hand_out(c, id, &job, boot)?;
         return Ok(Some(job));
     }
     Ok(None)
+}
+
+/// Marks the queued run `id` as taken by the agent process `boot`.
+fn hand_out(c: &Connection, id: i64, job: &Value, boot: Option<&str>) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE runs SET status = 'running', job = ?2, agent_boot = ?3,
+             started_at = datetime('now'), last_report_at = datetime('now') WHERE id = ?1",
+        params![id, job.to_string(), boot],
+    )?;
+    Ok(())
 }
 
 /// What the agent reports about one step.
@@ -962,6 +989,9 @@ pub fn close_silent(c: &Connection) -> rusqlite::Result<Vec<Run>> {
 /// reports now), or, for runs from before 0.2.1 that don't know their
 /// process, started before this one did (`uptime` seconds ago). They are
 /// "needs you": the target may be on the new or the old version.
+///
+/// An agent update is left alone: the agent restarting is what it is, and the
+/// new agent finishes it (or the old one, after a roll back).
 pub fn close_interrupted(
     c: &Connection,
     server_id: i64,
@@ -977,7 +1007,7 @@ pub fn close_interrupted(
     });
     let ids: Vec<i64> = c
         .prepare(
-            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'running' AND (
+            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'running' AND kind != 'agent_update' AND (
                  (agent_boot IS NOT NULL AND agent_boot != ?2)
                  OR (agent_boot IS NULL AND ?3 IS NOT NULL AND started_at < datetime('now', ?3)))",
         )?
@@ -1553,6 +1583,8 @@ pub async fn jobs(
         tokio::pin!(notified);
         notified.as_mut().enable();
         let (h, b) = (hash.clone(), boot.clone());
+        // Read each round: the release can change while a poll waits.
+        let release = crate::agent_update::release(&wren);
         let polled = wren
             .core
             .with_conn(move |c| {
@@ -1565,7 +1597,10 @@ pub async fn jobs(
                     Some(b) => close_interrupted(c, server_id, b, None)?,
                     None => Vec::new(),
                 };
-                Ok(Ok((closed, dispatch_to(c, server_id, b.as_deref())?)))
+                Ok(Ok((
+                    closed,
+                    dispatch_to(c, server_id, b.as_deref(), release.as_ref())?,
+                )))
             })
             .await;
         let polled = match polled {

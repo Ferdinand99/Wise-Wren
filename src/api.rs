@@ -1055,12 +1055,12 @@ pub(crate) fn body_of(body: &Bytes) -> Result<Body, ApiError> {
     serde_json::from_slice(body).map_err(|e| ApiError::bad_request(format!("not JSON: {e}")))
 }
 
-fn time_of(raw: Option<&str>) -> Result<jiff::Timestamp, ApiError> {
+pub(crate) fn time_of(raw: Option<&str>) -> Result<jiff::Timestamp, ApiError> {
     raw.and_then(|a| crate::schedule::parse_at(a, &jiff::tz::TimeZone::UTC))
         .ok_or_else(|| ApiError::bad_request(runs::Refusal::BadTime.message()))
 }
 
-fn changed(wren: &crate::Wren) {
+pub(crate) fn changed(wren: &crate::Wren) {
     wren.jobs.notify_waiters();
     wren.vv_sync.notify_one();
     let _ = wren.changes.send(());
