@@ -19,7 +19,7 @@ pub const SELF_UPDATE_REPO: &str = match option_env!("WW_SU_TEST_REPO") {
 
 /// Label on the helper container that carries out the update.
 pub const HELPER_LABEL: &str = "tools.hedgerow.wren.selfupdate";
-/// Label on a container the agent runs a job for, so Wren can tell it apart.
+/// Label that carries the run id on the helper container.
 pub const RUN_LABEL: &str = "tools.hedgerow.wren.run";
 /// The run's state, in the agent's config folder.
 pub const STATE_FILE: &str = "selfupdate.json";
@@ -53,8 +53,8 @@ pub fn old_name(container: &str, run: i64) -> String {
     format!("{container}-wren-old-{run}")
 }
 
-/// How long the new agent must stay healthy: what the target asks for, but
-/// at least [`MIN_STABLE`].
+/// How long the new agent must stay healthy: the agent's own
+/// `min_health_seconds`, but at least [`MIN_STABLE`].
 pub fn stable_seconds(min_health: u64) -> u64 {
     min_health.max(MIN_STABLE)
 }

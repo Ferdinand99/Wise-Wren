@@ -45,10 +45,12 @@ pub fn target_ok(to: &str, current: &str) -> Result<Semver, &'static str> {
     }
 }
 
-/// The reference is the official agent repository (any case; a digest-only
+/// The reference is the official agent repository (any case; a digest after
+/// `@` is ignored here, [`tag_rule`] calls it pinned; a digest-only
 /// reference names no repository).
 pub fn repo_rule(reference: &str) -> Result<(), &'static str> {
-    match repo_of(reference) {
+    let name = reference.split('@').next().unwrap_or("");
+    match repo_of(name) {
         Some(repo) if repo.to_lowercase() == SELF_UPDATE_REPO => Ok(()),
         _ => Err("selfupdate.foreign_repo"),
     }
@@ -157,6 +159,22 @@ mod tests {
     }
 
     #[test]
+    fn an_official_image_pinned_by_digest_is_pinned_not_foreign() {
+        let digest = format!("@sha256:{}", "0".repeat(64));
+        let cur = parse("0.10.0").unwrap();
+        for reference in [format!("{R}{digest}"), format!("{R}:0.10{digest}")] {
+            assert_eq!(repo_rule(&reference), Ok(()), "{reference}");
+            assert_eq!(
+                tag_rule(&reference, &cur),
+                Err("selfupdate.pinned"),
+                "{reference}"
+            );
+        }
+        let other = format!("ghcr.io/someone/wise-wren-agent{digest}");
+        assert_eq!(repo_rule(&other), Err("selfupdate.foreign_repo"));
+    }
+
+    #[test]
     fn an_untagged_reference_counts_as_latest() {
         let cur = parse("0.10.0").unwrap();
         assert_eq!(tag_rule(R, &cur), Ok(()));
@@ -166,8 +184,8 @@ mod tests {
             "wise-wren-agent:dev".to_string(),
             "ghcr.io/someone/wise-wren-agent:latest".to_string(),
             format!("{R}-fork:latest"),
-            format!("{R}@sha256:{}", "0".repeat(64)),
             "sha256:abc".to_string(),
+            String::new(),
         ] {
             assert_eq!(
                 repo_rule(&foreign),
