@@ -2,8 +2,9 @@
 //! `agent_update` job with a released version and its digest; this module
 //! holds the names, labels, deadlines and codes the parts of that job share.
 //! [`version`] has the rules for which version and which image reference
-//! may be updated.
+//! may be updated; [`report`] tells Wren whether this agent can do it.
 
+pub mod report;
 pub mod state;
 pub mod version;
 
@@ -43,6 +44,16 @@ pub const HARD: u64 = 1800;
 pub const ROLLBACK_CHECK: u64 = 30;
 /// Seconds after which a finished run's leftovers are swept.
 pub const SWEEP: u64 = 600;
+
+/// The agent's config folder: where `agent.toml`, the ledger and the state
+/// file live (the folder of `config.ledger`).
+pub fn config_dir(config: &crate::config::Config) -> &std::path::Path {
+    config
+        .ledger
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+}
 
 /// The helper container of run `run`.
 pub fn helper_name(run: i64) -> String {

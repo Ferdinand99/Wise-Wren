@@ -127,7 +127,21 @@ pub async fn scan(config: &Config, root: &Path) -> Inventory {
         policy: Policy::of(config),
         ..Inventory::default()
     };
-    match containers(&config.docker_socket).await {
+    // A run of the agent's own update that is still going: its leftovers
+    // are not targets.
+    let pending = crate::selfupdate::state::load(
+        &crate::selfupdate::config_dir(config).join(crate::selfupdate::STATE_FILE),
+    )
+    .ok()
+    .flatten()
+    .filter(|s| !s.phase.terminal())
+    .map(|s| (s.container, s.run_id));
+    match containers(
+        &config.docker_socket,
+        pending.as_ref().map(|(c, run)| (c.as_str(), *run)),
+    )
+    .await
+    {
         Ok(list) => inv.containers = list,
         Err(err) => inv.error = err,
     }
@@ -142,9 +156,22 @@ fn text(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+/// A container the agent's self-update left behind: the helper (by its
+/// label), or the old agent's renamed container while run `pending.1` of
+/// `pending.0` is going. Neither is something Wren may update.
+pub fn hidden(name: &str, labels: &Value, pending: Option<(&str, i64)>) -> bool {
+    labels.get(crate::selfupdate::HELPER_LABEL).is_some()
+        || pending
+            .is_some_and(|(container, run)| name == crate::selfupdate::old_name(container, run))
+}
+
 /// Every container (running or not) with its configured image and the
-/// repo digests of the image it runs.
-pub async fn containers(socket: &str) -> Result<Vec<Container>, String> {
+/// repo digests of the image it runs, except the self-update's leftovers
+/// ([`hidden`]).
+pub async fn containers(
+    socket: &str,
+    pending: Option<(&str, i64)>,
+) -> Result<Vec<Container>, String> {
     let list = get_json(socket, "/containers/json?all=1").await?;
     let mut images: HashMap<String, Vec<String>> = HashMap::new();
     let mut out = Vec::new();
@@ -159,6 +186,9 @@ pub async fn containers(socket: &str) -> Result<Vec<Container>, String> {
         };
         let name = text(&inspect, "Name").trim_start_matches('/').to_string();
         let config = inspect.get("Config").cloned().unwrap_or(Value::Null);
+        if hidden(&name, config.get("Labels").unwrap_or(&Value::Null), pending) {
+            continue;
+        }
         let image_id = text(&inspect, "Image");
         let repo_digests = match images.get(&image_id) {
             Some(d) => d.clone(),
@@ -409,6 +439,27 @@ mod tests {
             Some("A & B")
         );
         assert_eq!(template_name("<Name></Name>"), None);
+    }
+
+    #[test]
+    fn self_update_leftovers_are_not_targets() {
+        let helper = serde_json::json!({"tools.hedgerow.wren.selfupdate": "helper"});
+        assert!(hidden("wren-agent-selfupdate-57", &helper, None));
+        assert!(hidden(
+            "wren-agent-wren-old-57",
+            &serde_json::json!({}),
+            Some(("wren-agent", 57))
+        ));
+        assert!(!hidden(
+            "wren-agent-wren-old-57",
+            &serde_json::json!({}),
+            None
+        ));
+        assert!(!hidden(
+            "postiz",
+            &serde_json::json!({}),
+            Some(("wren-agent", 57))
+        ));
     }
 
     #[cfg(unix)]

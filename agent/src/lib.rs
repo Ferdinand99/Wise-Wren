@@ -210,6 +210,7 @@ pub async fn run(
         let mut beat = heartbeat::collect(&config.docker_socket, Path::new("/")).await;
         let mounts = managed::own_mounts(&config.docker_socket, Path::new("/")).await;
         beat.settings = Some(live.report(&mounts));
+        beat.self_update = Some(selfupdate::report::report(&config).await);
         if !beat.docker_error.is_empty() {
             tracing::warn!(error = %beat.docker_error, "can't read Docker");
         }
