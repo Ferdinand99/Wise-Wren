@@ -3,7 +3,10 @@
 //! 5057) holds test builds of the agent (`--features selfupdate-test`, version
 //! and label chosen per image); a fake Wren in this process answers the agent;
 //! the agent runs in a container on the same Docker and updates itself from
-//! one test version to the next.
+//! one test version to the next. Two scenarios use the real server instead
+//! (`wise-wren`, in this process on its own thread): an admin approves the
+//! update through its API, and the server's own digest lookup, job and run
+//! records are what the agent works with.
 //!
 //! Needs the Docker CLI with a socket, a Rust toolchain (the test compiles the
 //! agent) and `WW_DOCKER_TESTS=1`. Everything the tests make is named
@@ -589,6 +592,19 @@ fn start_agent_with(
     extra: &[&str],
     config_mode: &str,
 ) -> String {
+    let token = format!("wwa_{}", "t".repeat(43));
+    start_agent_at(name, &wren.url, &token, image, extra, config_mode)
+}
+
+/// [`start_agent_with`] against the Wren at `url`, with its agent `token`.
+fn start_agent_at(
+    name: &str,
+    url: &str,
+    token: &str,
+    image: &str,
+    extra: &[&str],
+    config_mode: &str,
+) -> String {
     let container = format!("ww-test-su-{name}");
     // Made here with the label (`-v` would make it without one), so that the
     // volume can be told from anyone else's by its label.
@@ -600,8 +616,8 @@ fn start_agent_with(
         &volume(name),
     ]);
     let config = format!("{}:/config{config_mode}", volume(name));
-    let server = format!("WW_SERVER_URL={}", wren.url);
-    let token = format!("WW_AGENT_TOKEN=wwa_{}", "t".repeat(43));
+    let server = format!("WW_SERVER_URL={url}");
+    let token = format!("WW_AGENT_TOKEN={token}");
     let mut args = vec![
         "run",
         "-d",
@@ -1415,4 +1431,393 @@ volumes:
         Some("0.90.1")
     );
     compose.down().unwrap();
+}
+
+// --- Against a real Wren -------------------------------------------------------
+
+/// The real server (`wise-wren`) in this process, on a thread and a runtime of
+/// its own, listening on all addresses so that the agent's container reaches it
+/// like any Wren. It has one server record, with an agent token, and one admin
+/// with an API token that may write.
+struct RealWren {
+    wren: wise_wren::Wren,
+    /// Where the agent reaches it.
+    url: String,
+    /// Where this test reaches it.
+    local: String,
+    server_id: i64,
+    /// The agent's token.
+    token: String,
+    /// An admin's API token.
+    admin: String,
+    stop: Arc<AtomicBool>,
+    dir: std::path::PathBuf,
+}
+
+impl RealWren {
+    async fn start() -> RealWren {
+        let dir = std::env::temp_dir().join(format!("ww-test-su-wren-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (data, halt) = (dir.clone(), stop.clone());
+        // Not joined: the thread ends when the stop flag is set, or with the
+        // test process.
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                let mut wren = wise_wren::start(&data, None).await.unwrap();
+                // Nothing from GitHub in a test: no newer Wren, no waiting.
+                wren.github = Arc::new(wise_wren::versions::GitHub::new("http://127.0.0.1:9"));
+                let agent = wise_wren::db::new_agent_token();
+                let token = agent.token.clone();
+                let api = vole_kit::auth::tokens::generate();
+                let (api_hash, api_prefix) = (
+                    vole_kit::auth::tokens::hash(&api),
+                    vole_kit::auth::tokens::display_prefix(&api),
+                );
+                let server_id = wren
+                    .core
+                    .with_conn(move |c| {
+                        let server = wise_wren::db::insert_server(c, "ww-test", &agent)?;
+                        c.execute(
+                            "INSERT INTO users (username, password_hash, role) VALUES (?1, ?2, ?3)",
+                            ("ww-test-admin", "not a password hash", "admin"),
+                        )?;
+                        vole_kit::db::api_tokens::insert(
+                            c,
+                            c.last_insert_rowid(),
+                            "ww-test",
+                            &api_prefix,
+                            &api_hash,
+                            vole_kit::auth::TokenScope::Write,
+                            None,
+                        )?;
+                        Ok(server)
+                    })
+                    .await
+                    .unwrap();
+                tx.send((wren.clone(), server_id, token, api)).unwrap();
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let app = wise_wren::router(wren)
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>();
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        while !halt.load(Ordering::Relaxed) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await
+                    .unwrap();
+            });
+        });
+        let (wren, server_id, token, admin) = rx.recv().expect("the real Wren didn't start");
+        RealWren {
+            wren,
+            url: format!("http://host.docker.internal:{port}"),
+            local: format!("http://127.0.0.1:{port}"),
+            server_id,
+            token,
+            admin,
+            stop,
+            dir,
+        }
+    }
+
+    /// Lets Wren look up the release `REPO:<version>` in the test registry,
+    /// with its own lookup; the release it offers then.
+    async fn offer(&self, version: &str) -> wise_wren::agent_update::Release {
+        wise_wren::agent_update::refresh_release_of(&self.wren, REPO, version).await;
+        wise_wren::agent_update::release(&self.wren)
+            .unwrap_or_else(|| panic!("Wren couldn't look up {REPO}:{version}"))
+    }
+
+    /// What Wren says the agent may do.
+    async fn standing(&self) -> wise_wren::agent_update::Standing {
+        let (id, release) = (self.server_id, wise_wren::agent_update::release(&self.wren));
+        self.wren
+            .core
+            .with_conn(move |c| wise_wren::agent_update::standing_of(c, id, release.as_ref()))
+            .await
+            .unwrap()
+    }
+
+    /// Waits until the agent has reported in and may be updated.
+    async fn wait_available(&self, within: Duration) {
+        self.wait_state(wise_wren::agent_update::State::Available, within)
+            .await;
+    }
+
+    async fn wait_state(&self, wanted: wise_wren::agent_update::State, within: Duration) {
+        let end = Instant::now() + within;
+        loop {
+            let st = self.standing().await;
+            if st.state == wanted {
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "Wren never saw the agent as {wanted:?}: {st:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// An admin approves the update to `version` through the API: the status
+    /// and the answer.
+    async fn approve(&self, version: &str) -> (u16, Value) {
+        let res = reqwest::Client::new()
+            .post(format!(
+                "{}/api/v1/servers/{}/agent-update",
+                self.local, self.server_id
+            ))
+            .bearer_auth(&self.admin)
+            .json(&json!({"version": version, "at": null}))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or(Value::Null))
+    }
+
+    async fn run(&self, id: i64) -> wise_wren::runs::Run {
+        self.wren
+            .core
+            .with_conn(move |c| wise_wren::runs::get(c, id))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no run {id}"))
+    }
+
+    /// The run's steps as (step, status); the maintenance step Wren adds for
+    /// Vigilant Vole is none of the agent's.
+    async fn steps(&self, id: i64) -> Vec<(String, String)> {
+        self.wren
+            .core
+            .with_conn(move |c| wise_wren::runs::steps(c, id))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.step != "maintenance")
+            .map(|s| (s.step, s.status))
+            .collect()
+    }
+
+    /// Waits until the run is over; the run.
+    async fn ended(&self, id: i64, within: Duration) -> wise_wren::runs::Run {
+        let end = Instant::now() + within;
+        loop {
+            let run = self.run(id).await;
+            if !matches!(run.status.as_str(), "queued" | "running") {
+                return run;
+            }
+            assert!(
+                Instant::now() < end,
+                "run {id} is still {} after {within:?}; steps {:?}",
+                run.status,
+                self.steps(id).await
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+}
+
+impl Drop for RealWren {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// The digest of a release that is an index (a manifest list), as a multi-arch
+/// release is. What `docker push` makes of a built image depends on the
+/// Docker's image store (an index with the platform, or the bare manifest):
+/// when `manifest_digest` is already an index it is returned; otherwise
+/// `REPO:<version>` is made an index of the image and the index's digest is
+/// returned.
+fn index_digest(version: &str, manifest_digest: &str) -> String {
+    let own = format!("{REPO}@{manifest_digest}");
+    let media = |reference: &str| {
+        let text = docker(&["manifest", "inspect", "--insecure", reference]);
+        let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        // A manifest list prints as itself; a plain manifest has a config.
+        json.get("manifests").is_some()
+    };
+    if media(&own) {
+        return manifest_digest.to_string();
+    }
+    let list = format!("{REPO}:{version}");
+    let _ = try_docker(&["manifest", "rm", &list]);
+    docker(&["manifest", "create", "--insecure", &list, &own]);
+    let pushed = docker(&["manifest", "push", "--insecure", "--purge", &list]);
+    pushed
+        .split_whitespace()
+        .rev()
+        .find(|word| word.starts_with("sha256:"))
+        .unwrap_or_else(|| panic!("`docker manifest push` named no digest: {pushed}"))
+        .to_string()
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn an_admin_approves_and_a_real_wren_sees_the_update_through() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("real");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = RealWren::start().await;
+    // Halved deadlines, not a tenth: the new agent's probation heartbeats come
+    // every `scaled(10)` seconds, and the real Wren allows one heartbeat every
+    // 3 seconds (the fake has no limit).
+    let old_id = start_agent_at(
+        "real",
+        &wren.url,
+        &wren.token,
+        &format!("{REPO}:latest"),
+        &["-e", "TZ=Europe/Oslo", "-e", "WW_SU_TEST_TIME_PCT=50"],
+        "",
+    );
+    let before = inspect("ww-test-su-real");
+    let built = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    // The release is an index, as a multi-arch release is: the digest the
+    // agent can find in its `RepoDigests` after a pull is the index's.
+    let index = index_digest("0.90.1", &built);
+    let release = wren.offer("0.90.1").await;
+    assert_eq!(
+        release.digest, index,
+        "Wren's lookup must name the index the tag points to"
+    );
+    wren.wait_available(Duration::from_secs(60)).await;
+    let (status, answer) = wren.approve("0.90.1").await;
+    assert_eq!(status, 200, "{answer}");
+    let run_id = answer["run_id"].as_i64().unwrap();
+    let run = wren.ended(run_id, Duration::from_secs(600)).await;
+    assert_eq!(
+        (run.status.as_str(), run.detail_code.as_str()),
+        ("succeeded", "selfupdate.done"),
+        "{}",
+        run.detail
+    );
+    assert_eq!(
+        (run.kind.as_str(), run.target_kind.as_str()),
+        ("agent_update", "agent")
+    );
+    assert_eq!(run.to_key, format!("0.90.1@{index}"));
+    assert_eq!(run.from_key, "0.90.0");
+    assert_eq!(run.requested_by, "ww-test-admin");
+    assert_eq!(
+        wren.steps(run_id).await,
+        [
+            ("preflight".into(), "ok".into()),
+            ("update".into(), "ok".into()),
+            ("health".into(), "ok".into())
+        ]
+    );
+    // The container is the old one's replacement.
+    let after = inspect("ww-test-su-real");
+    assert_ne!(after["Id"], old_id);
+    for p in [
+        "/Config/Env",
+        "/HostConfig/Binds",
+        "/HostConfig/Mounts",
+        "/HostConfig/RestartPolicy",
+    ] {
+        assert_eq!(after.pointer(p), before.pointer(p), "{p}");
+    }
+    assert_eq!(
+        after
+            .pointer("/Config/Labels/org.opencontainers.image.version")
+            .and_then(Value::as_str),
+        Some("0.90.1")
+    );
+    // Pulled by the index digest, so that is what the image holds.
+    let digests = docker(&[
+        "image",
+        "inspect",
+        "-f",
+        "{{json .RepoDigests}}",
+        after["Image"].as_str().unwrap(),
+    ]);
+    assert!(
+        digests.contains(&format!("{REPO}@{index}")),
+        "the new agent's image has {digests}, not {REPO}@{index}"
+    );
+    assert!(running("ww-test-su-real"));
+    wait_gone(
+        &format!("wren-agent-selfupdate-{run_id}"),
+        Duration::from_secs(30),
+    )
+    .await;
+    assert_eq!(containers_named("ww-test-su-real-wren-old-"), "");
+    let st = state("real");
+    assert_eq!((st.phase, st.reported), (Phase::Done, true));
+    // Wren now sees the agent on the release.
+    wren.wait_state(
+        wise_wren::agent_update::State::Current,
+        Duration::from_secs(60),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "needs Docker: WW_DOCKER_TESTS=1"]
+async fn a_new_agent_that_never_comes_back_is_a_rolled_back_run_in_a_real_wren() {
+    if !on() {
+        return;
+    }
+    let _scope = Scope::new("realback");
+    ensure_registry();
+    build("0.90.0", "0.90.0");
+    publish("0.90.0");
+    let wren = RealWren::start().await;
+    // The new agent exits before it asks Wren anything (the fault is copied
+    // to it with the rest of the old agent's environment).
+    let old_id = start_agent_at(
+        "realback",
+        &wren.url,
+        &wren.token,
+        &format!("{REPO}:latest"),
+        &["-e", "WW_SU_FAULT=exit2"],
+        "",
+    );
+    let digest = build("0.90.1", "0.90.1");
+    publish("0.90.1");
+    let release = wren.offer("0.90.1").await;
+    assert_eq!(release.digest, digest);
+    wren.wait_available(Duration::from_secs(60)).await;
+    let (status, answer) = wren.approve("0.90.1").await;
+    assert_eq!(status, 200, "{answer}");
+    let run_id = answer["run_id"].as_i64().unwrap();
+    let run = wren.ended(run_id, Duration::from_secs(600)).await;
+    assert_eq!(
+        (run.status.as_str(), run.detail_code.as_str()),
+        ("rolled_back", "selfupdate.rolled_back"),
+        "{}",
+        run.detail
+    );
+    assert_eq!(
+        wren.steps(run_id).await,
+        [
+            ("preflight".into(), "ok".into()),
+            ("update".into(), "failed".into()),
+            ("rollback".into(), "ok".into())
+        ]
+    );
+    // The old agent is back, and Wren still sees it as the one to update.
+    assert_eq!(id_of("ww-test-su-realback"), old_id);
+    assert!(running("ww-test-su-realback"));
+    let st = state("realback");
+    assert_eq!(st.phase, Phase::RolledBack);
+    assert!(st.reason.contains("the new agent stopped"), "{}", st.reason);
+    wren.wait_available(Duration::from_secs(60)).await;
 }

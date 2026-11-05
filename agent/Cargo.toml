@@ -27,3 +27,11 @@ tokio = { version = "1.53.1", features = ["rt", "macros", "net", "time", "signal
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Only the Docker self-update tests use these: they serve a real Wren (the
+# server crate, in this process) to the agent. Nothing here is in the agent
+# binary.
+[dev-dependencies]
+axum = "0.8.9"
+vole-kit = { git = "https://github.com/Ferdinand99/Vigilant-Vole", tag = "vole-kit-v0.8.0" }
+wise-wren = { path = ".." }
