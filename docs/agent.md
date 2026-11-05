@@ -410,13 +410,14 @@ Wren never moves a tag that promises a version, so the tag the agent runs from h
 | `:latest` (or no tag) | yes |
 | `:0` (the major version) | yes, within that major version |
 | `:0.10` (major and minor) | yes, to patch releases of 0.10 only; 0.11.0 is refused until you change the tag |
-| `:0.10.1` (exact) or `@sha256:…` | no: "change the tag to :latest or :0" |
+| `:0.10.1` (exact) or `@sha256:…` | no: the card says the tag pins a version and asks you to change it to `:latest` or `:0` |
 | `:edge`, a local tag | no |
 
 ### What happens
 
 1. The old agent checks everything (opt-in, own container, repository, tag, version, digest, config folder) before
-   anything changes, pulls the new image and keeps the old one as `wren-rollback/agent-<name>:<run>-<name>`. It
+   anything changes, pulls the new image and keeps the old one tagged `wren-rollback/agent-<name>:<run>-<name>` (the
+   repository part is the lower-cased name; see [below](#going-back-by-hand-after-a-good-update)). It
    copies `managed.json` and `runs.json` aside and writes `selfupdate.json` in the config folder.
 2. It starts a **helper container**, `wren-agent-selfupdate-<run>`, made from the *old* image (known to work on this
    host, so a broken release can't break its own rollback). The helper has the Docker socket and the config folder,
@@ -427,8 +428,8 @@ Wren never moves a tag that promises a version, so the tag the agent runs from h
 4. The new agent is on **probation**: it reports to Wren as usual but takes no jobs and no settings. It confirms
    when Wren answers with the same server id, Docker is readable, one job poll worked and it has run without a
    restart for `max(min_health_seconds, 60 s)`.
-5. Confirmed: the helper removes the old container and the backup, then itself, and the new agent reports "updated
-   to X" to Wren. Not confirmed in time, or the new agent crashes or restarts in a loop: the helper **rolls back**
+5. Confirmed: the helper removes the old container and the backup, then itself, and the new agent reports the
+   finished update to Wren. Not confirmed in time, or the new agent stops or restarts: the helper **rolls back**
    (below).
 
 Wren has no contact with the host for about a minute while this runs. The run page shows it, and the notification
@@ -458,40 +459,50 @@ doesn't know; that is expected, and both go away after a good update.
 - **`docker run`:** add `-e WW_AGENT_SELF_UPDATE=1` and recreate the container once.
 - **Compose:** the new container keeps its Compose labels, so `docker compose ps` knows it. The compose file must use
   `:latest`, `:0` or `:0.10`, not an exact version: the next `docker compose up -d` would put the old version back,
-  so Wren refuses it ("pinned"). During an update `compose ps` shows the extra stopped `-wren-old-` container; a
+  so Wren refuses it (the card says the tag pins a version). During an update `compose ps` shows the extra stopped `-wren-old-` container; a
   later `docker compose up -d` either does nothing or recreates the agent once with the same tag. An agent in the
   same Compose project as the server is fine: only the agent's container is touched.
 - **Unraid:** the container's repository must be `ghcr.io/ferdinand99/wise-wren-agent:latest` (or `:0`); add the
   variable `WW_AGENT_SELF_UPDATE` with the value `1` to the container. The agent keeps its name, so Unraid's template
   link and autostart keep working. The helper also gets the `/var/lib/docker` mount (the `docker run` line for
-  Unraid has it already) so that Wren can write Unraid's update status for the new image and the Docker tab stays in
+  Unraid has it already) so that the helper can write Unraid's update status for the new image and the Docker tab stays in
   sync.
 
 ### When something goes wrong
 
-The helper rolls back when the new agent never confirms, crashes, restarts in a loop, or can't be created or
+The helper rolls back when the new agent never confirms, stops or restarts, or can't be created or
 started: it removes the new container, renames `<name>-wren-old-<run>` back to `<name>`, restores `managed.json` and
-`runs.json`, points the image tag back at the old image and starts the old agent. That agent reports "rolled back"
-and the reason to Wren. Nothing is deleted before the new agent has proved it can talk to Wren.
+`runs.json`, points the image tag back at the old image and starts the old agent. That agent reports the rollback
+and its reason to Wren. Nothing is deleted before the new agent has proved it can talk to Wren.
 
 **Break glass.** If the helper itself can't finish (the rollback failed, or the helper is stuck), Wren closes the run
-as "needs you" and shows this command; it is also in the agent's log and in `selfupdate.json`. Run it on the host
-(`<name>` is the agent's container name, `<run>` the run number Wren shows):
+as one that needs you and shows the command below; it is also in the agent's log and in `selfupdate.json`. Run it on
+the host (`<name>` is the agent's container name, `<run>` the run number Wren shows). **Remove the helper first**, or
+it keeps working on the containers while you do:
 
 ```bash
+docker rm -f wren-agent-selfupdate-<run>
 docker rm -f <name> && docker rename <name>-wren-old-<run> <name> && docker start <name>
 ```
 
-Then remove the helper (`docker rm -f wren-agent-selfupdate-<run>`) and read the agent's log before you try again.
+Then read the agent's log before you try again.
 
 ### Going back by hand after a good update
 
 The old image stays tagged `wren-rollback/agent-<name>:<run>-<name>` (the newest `[retention] rollback_images` of
-them, default 1). To go back, tag it as the reference the container uses and recreate the container with the same
-options as before (your `docker run` line, Compose file or Unraid template):
+them, default 1). The repository part is the **lower-cased** container name (anything but letters and digits becomes
+`-`), while the tag after the colon keeps the name as it is: for an Unraid container called `Wise-Wren-Agent` the tag
+is `wren-rollback/agent-wise-wren-agent:57-Wise-Wren-Agent`. Look up the exact tag:
 
 ```bash
-docker tag wren-rollback/agent-<name>:<run>-<name> ghcr.io/ferdinand99/wise-wren-agent:latest
+docker image ls 'wren-rollback/agent-*'
+```
+
+To go back, tag that image as the reference the container uses and recreate the container with the same options as
+before (your `docker run` line, Compose file or Unraid template):
+
+```bash
+docker tag <the tag you found> ghcr.io/ferdinand99/wise-wren-agent:latest
 docker rm -f <name>
 ```
 

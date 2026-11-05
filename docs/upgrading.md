@@ -100,16 +100,16 @@ manual agent update.
   alternative is `[self_update] enabled = true` in `agent.toml`, but an agent before 0.10 refuses to start on that
   section, so the variable is the better choice if you may need to go back.
 - **Keep the agent's image tag at `:latest` or `:0`** (`:0.10` follows 0.10.x only). Wren never moves a tag that
-  promises a version: an exact tag such as `:0.10.0` or a digest shows "the tag pins a version" and the agent
+  promises a version: an exact tag such as `:0.10.0` or a digest pins one, the card says so and the agent
   isn't offered the update. Compose files and Unraid templates need the same.
 - **The agent's config folder** (`/config`) must be a writable mount from the host: the agent keeps its update state
   there. Mounted read-only, the agent shows why it can't update itself.
 - **The first real self-update is 0.10.0 → 0.10.1.** An agent is only ever offered Wren's own version, so update
   Wren first, then approve the agent on the server's page (**Agent version**). Update agents one at a time, and don't
   update Wren while an agent update runs.
-- On the server's page the agent card says "Self-update is off on this server" until the variable is set, and "Older
-  agent: update it by hand once" for agents before 0.10.
-- The images are signed with cosign from this release; the agent doesn't verify the signature yet
+- On the server's page the agent card says that self-update is off on that server until the variable is set, and
+  that an older agent has to be updated by hand once (agents before 0.10).
+- The release images are signed with cosign from this release; the agent doesn't verify the signature yet
   ([Security notes](security.md#agent-self-update)).
 
 ## Agents

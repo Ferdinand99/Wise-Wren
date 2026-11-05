@@ -208,8 +208,8 @@ Script stacks that handle their own stop, backup and verification skip steps 3â€
 
 **Wren and Vigilant Vole are not updated by Wren** (decided by the owner). Wren runs on **Tower**. Updating
 itself would end the run in progress, and updating VV removes the maintenance and health source mid-run. For
-these Wren only **notifies** about new versions, and the owner updates them by hand. Later, the agent can
-update the server (one at a time, never both).
+these Wren only **notifies** about new versions, and the owner updates them by hand. Later, the agent on the same
+host can update the server; a server update and an agent update never run at the same time.
 
 **Agents can be updated by Wren since 0.10, where the host's owner allows it.** An agent can't snapshot or
 roll back itself the way the run pipeline does for a target, so this is a separate kind of run: the owner

@@ -105,10 +105,11 @@ After that a helper made from the old image replaces the agent, and the old agen
 one has reached Wren. A new agent that can't talk to Wren is rolled back. The helper has the Docker socket and the
 config folder, no network and none of the agent's secrets.
 
-**There is no signature check yet.** The images are signed with cosign (keyless, through GitHub's OIDC identity of
-this repository's release workflow) from 0.10.0, so you can verify them by hand with `cosign verify`, but the agent
-doesn't check the signature: today the checks above end in trusting what the maintainer's GitHub account publishes
-under a release tag. Verification in the agent may follow later.
+**There is no signature check yet.** The release images (the version tags, not `:edge`) are signed with cosign from
+0.10.0, keyless, with the GitHub OIDC identity of this repository's Docker images workflow
+(`.github/workflows/docker-publish.yml`), so you can verify them by hand with `cosign verify`. The agent doesn't check
+the signature: today the checks above end in trusting what the maintainer's GitHub account publishes under a release
+tag. Verification in the agent may follow later.
 
 ## Tokens and secrets
 

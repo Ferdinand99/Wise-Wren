@@ -331,12 +331,8 @@ parse (`v1.2` counts as `1.2.0`), otherwise any difference counts as newer.
 
 ### The dev instance on an Unraid test host
 
-LANBox, the owner's test server, used to be an Unraid host and is now a Proxmox host. Docker builds and test runs
-(`cargo test`, the Docker scenarios, workflow linting) happen in its Docker build VM, reached through the Docker
-context `lanbox` (VM 120): `docker --context lanbox …`, never a local Docker Desktop and never the production
-server. That VM is a plain Docker host with no Unraid paths. The dev instance below was set up while LANBox ran
-Unraid; it is the recipe for testing against a real Unraid host (Unraid template containers, `/boot/config`,
-Compose Manager), with that host's paths.
+LANBox is no longer an Unraid host. The dev instance below was set up while it was one, and it needs an Unraid test host
+(Unraid template containers, `/boot/config`, Compose Manager) with that host's paths.
 
 `wise-wren-dev` (port 3003, host network so it reaches the test registry on `localhost:5056` like the daemon does,
 data in `/mnt/user/appdata/wise-wren-dev`) and `wren-agent-dev`, started with:
