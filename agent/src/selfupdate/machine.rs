@@ -61,6 +61,15 @@ fn fell_over(c: &Ctr0) -> bool {
     c.restart_count > 0 || matches!(c.status.as_str(), "exited" | "dead" | "restarting")
 }
 
+/// A host reboot was seen, the confirm window still runs and the new container
+/// is down without ever having restarted: it has not come back yet.
+fn rebooting_grace(s: &StateFile, c: &Ctr0, now: u64) -> bool {
+    s.reboots_seen > 0
+        && now <= s.confirm_deadline
+        && c.restart_count == 0
+        && matches!(c.status.as_str(), "exited" | "created")
+}
+
 /// The next step of run `s` given what was seen. Rules are checked top to
 /// bottom; the first match wins.
 pub fn next(s: &StateFile, seen: &Seen) -> Action {
@@ -95,6 +104,9 @@ pub fn next(s: &StateFile, seen: &Seen) -> Action {
         }
         match new {
             None => return Action::RollBack("the new agent's container is gone".into()),
+            // After a reboot the new agent may not be back yet (no restart
+            // policy): until the extended deadline that is waiting, not failing.
+            Some(c) if rebooting_grace(s, c, now) => return Action::Wait,
             Some(c) if fell_over(c) => {
                 return Action::RollBack(format!(
                     "the new agent stopped or restarted ({}, restarts {})",
@@ -104,7 +116,10 @@ pub fn next(s: &StateFile, seen: &Seen) -> Action {
             Some(_) => {}
         }
     }
-    let late = now > s.updated_at + scaled(CREATE_START);
+    // Too slow to create and start it: only when it was not started at all
+    // (one that was started and fell over is rule 6 once seen as started).
+    let late = now > s.updated_at + scaled(CREATE_START)
+        && new.is_none_or(|c| !c.running && c.status == "created");
     match s.phase {
         Prepared => Action::Advance(HelperStarted),
         HelperStarted => match old {
@@ -158,6 +173,8 @@ pub fn apply(s: &mut StateFile, a: &Action, seen: &Seen) {
         Action::StartNew => apply(s, &Action::Advance(Phase::NewStarted), seen),
         Action::ExtendDeadline => {
             s.confirm_deadline = s.confirm_deadline.max(window);
+            // Stability is measured from after the extension, not from before.
+            s.updated_at = seen.now;
             s.reboots_seen += u32::from(seen.boot_changed);
         }
         _ => {}
@@ -167,7 +184,6 @@ pub fn apply(s: &mut StateFile, a: &Action, seen: &Seen) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::selfupdate::state::{Phase, StateFile};
 
     fn st(phase: Phase) -> StateFile {
         StateFile {
@@ -194,7 +210,7 @@ mod tests {
         })
     }
 
-    fn seen(now: u64) -> Seen {
+    fn at(now: u64) -> Seen {
         Seen {
             now,
             ..Seen::default()
@@ -213,7 +229,7 @@ mod tests {
                 Prepared,
                 Seen {
                     named: old_up.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(HelperStarted),
             ),
@@ -221,7 +237,7 @@ mod tests {
                 HelperStarted,
                 Seen {
                     named: old_up.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::StopOld,
             ),
@@ -229,7 +245,7 @@ mod tests {
                 HelperStarted,
                 Seen {
                     named: old_down.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(OldStopped),
             ),
@@ -237,7 +253,7 @@ mod tests {
                 OldStopped,
                 Seen {
                     named: old_down.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::RenameOld,
             ),
@@ -245,7 +261,7 @@ mod tests {
                 OldStopped,
                 Seen {
                     renamed: old_down.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(OldRenamed),
             ),
@@ -253,7 +269,7 @@ mod tests {
                 OldRenamed,
                 Seen {
                     renamed: old_down.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::CreateNew,
             ),
@@ -261,7 +277,7 @@ mod tests {
                 NewCreated,
                 Seen {
                     named: c("new", false, "created", 0),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::StartNew,
             ),
@@ -269,7 +285,7 @@ mod tests {
                 NewCreated,
                 Seen {
                     named: new_up.clone(),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(NewStarted),
             ),
@@ -279,7 +295,7 @@ mod tests {
                 NewCreated,
                 Seen {
                     named: c("new", false, "restarting", 1),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(NewStarted),
             ),
@@ -287,7 +303,7 @@ mod tests {
                 NewCreated,
                 Seen {
                     named: c("new", false, "exited", 2),
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::Advance(NewStarted),
             ),
@@ -295,7 +311,7 @@ mod tests {
                 NewStarted,
                 Seen {
                     named: c("new", false, "restarting", 1),
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::RollBack(
                     "the new agent stopped or restarted (restarting, restarts 1)".into(),
@@ -305,7 +321,7 @@ mod tests {
                 NewStarted,
                 Seen {
                     named: c("new", false, "exited", 3),
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::RollBack("the new agent stopped or restarted (exited, restarts 3)".into()),
             ),
@@ -314,7 +330,7 @@ mod tests {
                 Seen {
                     named: new_up.clone(),
                     confirmed: true,
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::Advance(Confirmed),
             ),
@@ -322,7 +338,7 @@ mod tests {
                 NewStarted,
                 Seen {
                     named: new_up.clone(),
-                    ..seen(1301)
+                    ..at(1301)
                 },
                 Action::RollBack("the new agent didn't reach Wren within 5 min".into()),
             ),
@@ -330,7 +346,7 @@ mod tests {
                 NewStarted,
                 Seen {
                     named: c("new", true, "running", 1),
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::RollBack("the new agent stopped or restarted (running, restarts 1)".into()),
             ),
@@ -338,20 +354,20 @@ mod tests {
                 Confirmed,
                 Seen {
                     named: c("new", false, "exited", 0),
-                    ..seen(1030)
+                    ..at(1030)
                 },
                 Action::RollBack("the new agent stopped or restarted (exited, restarts 0)".into()),
             ),
             (
                 NewStarted,
-                seen(1100),
+                at(1100),
                 Action::RollBack("the new agent's container is gone".into()),
             ),
             (
                 Confirmed,
                 Seen {
                     named: new_up.clone(),
-                    ..seen(1060)
+                    ..at(1060)
                 },
                 Action::CleanUp,
             ),
@@ -359,7 +375,7 @@ mod tests {
                 Confirmed,
                 Seen {
                     named: new_up.clone(),
-                    ..seen(1059)
+                    ..at(1059)
                 },
                 Action::Wait,
             ),
@@ -368,7 +384,7 @@ mod tests {
                 Seen {
                     named: new_up.clone(),
                     fresh_start: true,
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::ExtendDeadline,
             ),
@@ -377,7 +393,7 @@ mod tests {
                 Seen {
                     named: new_up.clone(),
                     boot_changed: true,
-                    ..seen(1100)
+                    ..at(1100)
                 },
                 Action::ExtendDeadline,
             ),
@@ -385,24 +401,65 @@ mod tests {
                 OldRenamed,
                 Seen {
                     boot_changed: true,
-                    ..seen(1001)
+                    ..at(1001)
                 },
                 Action::RollBack("the host restarted during the update".into()),
             ),
             (
                 OldStopped,
-                seen(2801),
+                at(2801),
                 Action::RollBack("the self-update took longer than 30 min".into()),
             ),
             (
                 NewCreated,
                 Seen {
                     named: c("new", false, "created", 0),
-                    ..seen(1121)
+                    ..at(1121)
                 },
                 Action::RollBack("the new agent couldn't be created or started".into()),
             ),
-            (RollingBack, seen(1001), Action::RollBack(String::new())),
+            // Rule 9, second branch: the old agent is already renamed away.
+            (
+                HelperStarted,
+                Seen {
+                    renamed: old_down.clone(),
+                    ..at(1001)
+                },
+                Action::Advance(OldStopped),
+            ),
+            // Rule 14: the new container exists.
+            (
+                OldRenamed,
+                Seen {
+                    named: c("new", false, "created", 0),
+                    renamed: old_down.clone(),
+                    ..at(1001)
+                },
+                Action::Advance(NewCreated),
+            ),
+            // Rule 12 in OldRenamed: no new container in time.
+            (
+                OldRenamed,
+                Seen {
+                    renamed: old_down.clone(),
+                    ..at(1121)
+                },
+                Action::RollBack("the new agent couldn't be created or started".into()),
+            ),
+            // ... but a new agent that was started and fell over is not "late".
+            (
+                NewCreated,
+                Seen {
+                    named: c("new", false, "exited", 2),
+                    ..at(1121)
+                },
+                Action::Advance(NewStarted),
+            ),
+            // Nothing to act on yet: wait.
+            (HelperStarted, at(1001), Action::Wait),
+            (OldStopped, at(1001), Action::Wait),
+            (NewCreated, at(1001), Action::Wait),
+            (RollingBack, at(1001), Action::RollBack(String::new())),
         ];
         for (phase, seen, want) in rows {
             assert_eq!(next(&st(phase), &seen), want, "{phase:?} {seen:?}");
@@ -416,7 +473,7 @@ mod tests {
         // Past the hard deadline and after a reboot too: the first reason stays.
         let seen = Seen {
             boot_changed: true,
-            ..seen(9999)
+            ..at(9999)
         };
         assert_eq!(
             next(&s, &seen),
@@ -431,7 +488,7 @@ mod tests {
         let mut s = st(Phase::OldStopped);
         let renamed_world = Seen {
             renamed: c("old", false, "exited", 0),
-            ..seen(1001)
+            ..at(1001)
         };
         let a = next(&s, &renamed_world);
         assert_eq!(a, Action::Advance(Phase::OldRenamed));
@@ -441,7 +498,7 @@ mod tests {
         let started = Seen {
             named: c("new", true, "running", 0),
             fresh_start: true,
-            ..seen(1100)
+            ..at(1100)
         };
         apply(&mut s, &Action::ExtendDeadline, &started);
         assert_eq!(s.confirm_deadline, 1400);
@@ -449,7 +506,7 @@ mod tests {
 
     #[test]
     fn a_started_new_agent_opens_the_confirm_window() {
-        let seen = seen(1100);
+        let seen = at(1100);
         for a in [Action::StartNew, Action::Advance(Phase::NewStarted)] {
             let mut s = st(Phase::NewCreated);
             apply(&mut s, &a, &seen);
@@ -467,13 +524,13 @@ mod tests {
         s.confirm_deadline = 5000;
         let boot = Seen {
             boot_changed: true,
-            ..seen(1100)
+            ..at(1100)
         };
         apply(&mut s, &Action::ExtendDeadline, &boot);
         assert_eq!((s.confirm_deadline, s.reboots_seen), (5000, 1));
         let fresh = Seen {
             fresh_start: true,
-            ..seen(1100)
+            ..at(1100)
         };
         apply(&mut s, &Action::ExtendDeadline, &fresh);
         assert_eq!(s.reboots_seen, 1);
@@ -482,7 +539,7 @@ mod tests {
     #[test]
     fn a_plain_advance_only_moves_the_phase() {
         let mut s = st(Phase::Prepared);
-        let seen = seen(1234);
+        let seen = at(1234);
         apply(&mut s, &Action::Advance(Phase::HelperStarted), &seen);
         assert_eq!(
             (s.phase, s.updated_at, s.confirm_deadline),
@@ -490,5 +547,76 @@ mod tests {
         );
         apply(&mut s, &Action::Wait, &seen);
         assert_eq!(s.updated_at, 1234);
+    }
+
+    #[test]
+    fn after_a_reboot_a_new_agent_without_restart_policy_gets_until_the_extended_deadline() {
+        // The host restarted; the helper is back first and the new container
+        // is still down (no restart policy): not back yet, not a failure.
+        for phase in [Phase::NewStarted, Phase::Confirmed] {
+            let mut s = st(phase);
+            s.reboots_seen = 1;
+            s.confirm_deadline = 1400;
+            for down in [c("new", false, "exited", 0), c("new", false, "created", 0)] {
+                let within = Seen {
+                    named: down.clone(),
+                    ..at(1400)
+                };
+                assert_eq!(next(&s, &within), Action::Wait, "{phase:?} {down:?}");
+            }
+            // Past the extended deadline rule 6 applies as before.
+            let past = Seen {
+                named: c("new", false, "exited", 0),
+                ..at(1401)
+            };
+            assert_eq!(
+                next(&s, &past),
+                Action::RollBack("the new agent stopped or restarted (exited, restarts 0)".into()),
+                "{phase:?}"
+            );
+            // A new agent that restarted, or a gone container, is no grace case.
+            let flapping = Seen {
+                named: c("new", false, "exited", 1),
+                ..at(1100)
+            };
+            assert!(
+                matches!(next(&s, &flapping), Action::RollBack(_)),
+                "{phase:?}"
+            );
+            assert_eq!(
+                next(&s, &at(1100)),
+                Action::RollBack("the new agent's container is gone".into()),
+                "{phase:?}"
+            );
+            // Without a reboot the grace does not exist.
+            s.reboots_seen = 0;
+            let down = Seen {
+                named: c("new", false, "exited", 0),
+                ..at(1100)
+            };
+            assert!(matches!(next(&s, &down), Action::RollBack(_)), "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn an_extension_restarts_the_stability_window() {
+        // Confirmed, stable long enough before the reboot: after the reboot the
+        // stability is measured from the extension, not from before.
+        let mut s = st(Phase::Confirmed);
+        s.hard_deadline = 9000;
+        let reboot = Seen {
+            named: c("new", true, "running", 0),
+            boot_changed: true,
+            ..at(5000)
+        };
+        assert_eq!(next(&s, &reboot), Action::ExtendDeadline);
+        apply(&mut s, &Action::ExtendDeadline, &reboot);
+        assert_eq!(s.updated_at, 5000);
+        let up = |now| Seen {
+            named: c("new", true, "running", 0),
+            ..at(now)
+        };
+        assert_eq!(next(&s, &up(5059)), Action::Wait);
+        assert_eq!(next(&s, &up(5060)), Action::CleanUp);
     }
 }
