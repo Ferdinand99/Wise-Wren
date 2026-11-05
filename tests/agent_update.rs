@@ -418,3 +418,196 @@ async fn a_new_agent_process_does_not_close_an_agent_update() {
     );
     assert_eq!(runs_get(&app, run).await.status, "succeeded");
 }
+
+#[tokio::test]
+async fn an_agent_update_may_be_silent_for_45_minutes() {
+    let (app, id, token) = setup().await;
+    let run = approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    app.exec(format!(
+        "UPDATE runs SET last_report_at = datetime('now', '-30 minutes'); \
+         UPDATE servers SET last_seen_at = datetime('now', '-1 hour') WHERE id = {id}"
+    ))
+    .await;
+    assert!(close_silent(&app).await.is_empty());
+    app.exec("UPDATE runs SET last_report_at = datetime('now', '-50 minutes')".into())
+        .await;
+    assert_eq!(close_silent(&app).await.len(), 1);
+    let r = runs_get(&app, run).await;
+    assert_eq!(r.status, "rollback_failed");
+    assert!(
+        r.detail.contains("stopped reporting for 45 min"),
+        "{}",
+        r.detail
+    );
+    assert!(
+        r.detail.contains("docker rename wren-agent-wren-old-"),
+        "{}",
+        r.detail
+    );
+}
+
+#[tokio::test]
+async fn an_agent_update_is_closed_after_45_minutes_even_online() {
+    let (app, id, token) = setup().await;
+    let run = approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    app.exec("UPDATE runs SET last_report_at = datetime('now', '-50 minutes')".into())
+        .await;
+    // The agent is online: its heartbeats do not count as the run's report.
+    assert_eq!(close_silent(&app).await.len(), 1);
+    assert_eq!(runs_get(&app, run).await.status, "rollback_failed");
+}
+
+async fn close_silent(app: &App) -> Vec<runs::Run> {
+    app.wren
+        .core
+        .with_conn(|c| runs::close_silent(c))
+        .await
+        .unwrap()
+}
+
+/// A heartbeat of process `boot` with a settings report that says it runs
+/// settings version `version`.
+async fn beat_with_settings_report(app: &App, token: &str, boot: &str, version: i64) -> Value {
+    let settings = json!({
+        "supported": true, "locked": false, "version": version, "error": "",
+        "error_version": null, "mounts": ["/srv"], "presets": [], "custom_stacks": [],
+        "current": null,
+    });
+    let body = json!({"agent_version": "0.10.1", "boot_id": boot, "uptime_seconds": 100,
+                      "settings": settings});
+    let res = post_json(app, "/api/agent/v1/heartbeat", token, body).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    res.json()
+}
+
+#[tokio::test]
+async fn settings_wait_while_the_agent_updates() {
+    let (app, id, token) = setup().await;
+    // Version 1 stored (as if imported), then an admin saves version 2.
+    app.wren
+        .core
+        .with_conn(move |c| {
+            let mut s = wren_agent::managed::Settings {
+                version: 1,
+                ..Default::default()
+            };
+            c.execute(
+                "INSERT INTO agent_settings (server_id, version, settings, updated_at)
+                 VALUES (?1, 1, ?2, datetime('now'))",
+                rusqlite::params![id, serde_json::to_string(&s).unwrap()],
+            )?;
+            s.updates.min_health_seconds = 90;
+            wise_wren::agent_settings::save_settings(c, id, s, "admin", Some(1)).map(|_| ())
+        })
+        .await
+        .unwrap();
+    let run = approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    // The new agent's probation heartbeat: version 2 waits, the report is kept.
+    let reply = beat_with_settings_report(&app, &token, "boot-b", 1).await;
+    assert!(reply.get("settings").is_none(), "{reply}");
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM servers WHERE settings_report IS NOT NULL")
+            .await,
+        1
+    );
+    // Without a report the stored one stays too.
+    beat(&app, &token, "0.10.1", "boot-b", None).await;
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM servers WHERE settings_report IS NOT NULL")
+            .await,
+        1
+    );
+    common::finish(&app, &token, run, "succeeded").await;
+    let reply = beat_with_settings_report(&app, &token, "boot-b", 1).await;
+    assert_eq!(reply["settings"]["version"], 2, "{reply}");
+}
+
+#[tokio::test]
+async fn no_offline_notice_during_an_agent_update() {
+    let (app, id, token) = setup().await;
+    approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    app.exec(format!(
+        "UPDATE servers SET last_seen_at = datetime('now', '-5 minutes') WHERE id = {id}"
+    ))
+    .await;
+    let take = || {
+        app.wren
+            .core
+            .with_conn(|c| wise_wren::run_notify::take_agent_changes(c))
+    };
+    assert!(take().await.unwrap().is_empty());
+    // Past the 45 minutes the run is overdue and the notice may go.
+    app.exec("UPDATE runs SET started_at = datetime('now', '-50 minutes')".into())
+        .await;
+    assert_eq!(take().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_offline_agent_is_told_after_an_agent_update_ended() {
+    let (app, id, token) = setup().await;
+    approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    app.exec(format!(
+        "UPDATE servers SET last_seen_at = datetime('now', '-5 minutes') WHERE id = {id}; \
+         UPDATE runs SET status = 'succeeded'"
+    ))
+    .await;
+    let changes = app
+        .wren
+        .core
+        .with_conn(|c| wise_wren::run_notify::take_agent_changes(c))
+        .await
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+}
+
+#[tokio::test]
+async fn no_maintenance_window_for_an_agent_update() {
+    let (app, id, token) = setup().await;
+    let run = approve_as_admin(&app, id, "0.10.1").await;
+    poll(&app, &token, "boot-a").await;
+    assert_eq!(
+        common::step(&app, &token, run, "preflight", "ok")
+            .await
+            .json()["cancel"],
+        false
+    );
+    wise_wren::vv::before_stop(&app.wren, run).await.unwrap();
+    assert_eq!(
+        app.count_sql(format!(
+            "SELECT COUNT(*) FROM run_steps WHERE run_id = {run} AND step = 'maintenance'"
+        ))
+        .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_scheduled_agent_update_gets_no_maintenance_step() {
+    let (app, id, _token) = setup().await;
+    let ad = admin_token(&app).await;
+    let at = jiff::Timestamp::now()
+        .checked_add(jiff::SignedDuration::from_hours(2))
+        .unwrap();
+    let res = post_json(
+        &app,
+        &format!("/api/v1/servers/{id}/agent-update"),
+        &ad,
+        json!({"version": "0.10.1", "at": at.to_string()}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let run = res.json()["run_id"].as_i64().unwrap();
+    wise_wren::vv::sync(&app.wren).await;
+    assert_eq!(
+        app.count_sql(format!(
+            "SELECT COUNT(*) FROM run_steps WHERE run_id = {run}"
+        ))
+        .await,
+        0
+    );
+}

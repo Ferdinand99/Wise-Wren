@@ -566,6 +566,10 @@ fn run_info(c: &Connection, run_id: i64) -> rusqlite::Result<Option<RunInfo>> {
     let Some(run) = crate::runs::get(c, run_id)? else {
         return Ok(None);
     };
+    // The agent's own update has no target to put in maintenance.
+    if run.kind == crate::agent_update::KIND {
+        return Ok(None);
+    }
     let tid = run.target_id.unwrap_or_default();
     let (require_vv, health): (bool, Option<i64>) = c
         .query_row(
@@ -806,7 +810,8 @@ pub async fn sync(wren: &Wren) -> bool {
             c.prepare(
                 "SELECT id FROM runs WHERE
                     (vv_state IN ('open', 'planned', 'replan') AND status NOT IN ('queued', 'running'))
-                 OR (status = 'queued' AND scheduled_for IS NOT NULL AND vv_state IN ('', 'replan'))
+                 OR (status = 'queued' AND scheduled_for IS NOT NULL AND kind != 'agent_update'
+                     AND vv_state IN ('', 'replan'))
                  ORDER BY id",
             )?
             .query_map([], |r| r.get::<_, i64>(0))?

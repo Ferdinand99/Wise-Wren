@@ -96,6 +96,15 @@ impl App {
             .unwrap()
     }
 
+    /// [`App::count`] for a query built at run time.
+    pub async fn count_sql(&self, sql: String) -> i64 {
+        self.wren
+            .core
+            .with_conn(move |c| c.query_row(&sql, [], |r| r.get(0)))
+            .await
+            .unwrap()
+    }
+
     /// Runs SQL on the database.
     pub async fn exec(&self, sql: String) {
         self.wren

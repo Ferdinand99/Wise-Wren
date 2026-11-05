@@ -301,12 +301,22 @@ pub fn agent_alert(server_id: i64, server: &str, back: bool, base: Option<&str>)
 
 /// Servers whose agent went offline (not told yet) and ones back online
 /// (told they were offline); both are marked before anything is sent.
+///
+/// An agent replacing itself is not reported offline while its update runs
+/// (until the update has taken longer than its silence limit).
 pub fn take_agent_changes(c: &rusqlite::Connection) -> rusqlite::Result<Vec<(i64, String, bool)>> {
     let window = crate::db::ONLINE_WINDOW_SECONDS;
+    let (kind, limit) = (
+        crate::agent_update::KIND,
+        crate::agent_update::SILENT_MINUTES,
+    );
     let mut out: Vec<(i64, String, bool)> = c
         .prepare(&format!(
             "SELECT id, name, 0 FROM servers WHERE token_hash IS NOT NULL AND last_seen_at IS NOT NULL
                  AND last_seen_at < datetime('now', '-{window} seconds') AND offline_notified_at IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.server_id = servers.id
+                     AND r.kind = '{kind}' AND r.status = 'running'
+                     AND r.started_at >= datetime('now', '-{limit} minutes'))
              UNION ALL
              SELECT id, name, 1 FROM servers WHERE offline_notified_at IS NOT NULL
                  AND last_seen_at >= datetime('now', '-{window} seconds')"

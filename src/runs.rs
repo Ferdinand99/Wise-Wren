@@ -957,26 +957,46 @@ pub fn record_finish_coded(
 /// Closes running runs whose agent went silent (offline and no report for
 /// [`SILENT_MINUTES`], or no report for [`MAX_SILENT_HOURS`]); they are
 /// failed with "needs you" and never retried.
+///
+/// An agent update has its own limit: no report for
+/// [`crate::agent_update::SILENT_MINUTES`], whether the agent is online or
+/// not (it restarts during the run, and a probation that never reports must
+/// not hang). It is closed with the command that puts the old agent back.
 pub fn close_silent(c: &Connection) -> rusqlite::Result<Vec<Run>> {
     let ids: Vec<i64> = c
         .prepare(&format!(
             "SELECT r.id FROM runs r JOIN servers s ON s.id = r.server_id
-             WHERE r.status = 'running' AND (
+             WHERE r.status = 'running' AND r.kind != '{kind}' AND (
                  (r.last_report_at < datetime('now', '-{SILENT_MINUTES} minutes')
                   AND COALESCE(s.last_seen_at < datetime('now', '-{} seconds'), 1))
                  OR r.last_report_at < datetime('now', '-{MAX_SILENT_HOURS} hours'))",
-            crate::db::ONLINE_WINDOW_SECONDS
+            crate::db::ONLINE_WINDOW_SECONDS,
+            kind = crate::agent_update::KIND,
+        ))?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let update_ids: Vec<i64> = c
+        .prepare(&format!(
+            "SELECT id FROM runs WHERE status = 'running' AND kind = '{}'
+             AND last_report_at < datetime('now', '-{} minutes')",
+            crate::agent_update::KIND,
+            crate::agent_update::SILENT_MINUTES
         ))?
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
-    for id in ids {
-        close(
-            c,
-            id,
-            ROLLBACK_FAILED,
-            "the agent stopped reporting during the run; check the target by hand",
-        )?;
+    for id in ids.into_iter().chain(update_ids) {
+        let Some(run) = get(c, id)? else { continue };
+        let detail = if run.kind == crate::agent_update::KIND {
+            format!(
+                "The agent update stopped reporting for {} min; check the agent by hand. To go back: {}",
+                crate::agent_update::SILENT_MINUTES,
+                wren_agent::selfupdate::state::break_glass(&run.target_name, id)
+            )
+        } else {
+            "the agent stopped reporting during the run; check the target by hand".to_string()
+        };
+        close(c, id, ROLLBACK_FAILED, &detail)?;
         if let Some(r) = get(c, id)? {
             out.push(r);
         }

@@ -1595,8 +1595,7 @@ impl RealWren {
             .unwrap_or_else(|| panic!("no run {id}"))
     }
 
-    /// The run's steps as (step, status); the maintenance step Wren adds for
-    /// Vigilant Vole is none of the agent's.
+    /// The run's steps as (step, status).
     async fn steps(&self, id: i64) -> Vec<(String, String)> {
         self.wren
             .core
@@ -1604,7 +1603,6 @@ impl RealWren {
             .await
             .unwrap()
             .into_iter()
-            .filter(|s| s.step != "maintenance")
             .map(|s| (s.step, s.status))
             .collect()
     }

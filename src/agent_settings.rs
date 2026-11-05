@@ -392,11 +392,19 @@ pub fn save_settings(
 /// agent with no managed settings and nothing stored yet, its own
 /// `agent.toml` as version 1 (an import; the agent applies the same values).
 /// An agent that sends no report (before 0.8) gets nothing.
+///
+/// While the server's agent update runs, the stored report is kept and
+/// nothing is sent or imported: the probation heartbeats of the new agent
+/// carry no report, and the settings go on afterwards.
 pub fn on_heartbeat(
     c: &Connection,
     id: i64,
     report: Option<Report>,
 ) -> rusqlite::Result<Option<Settings>> {
+    let updating = crate::agent_update::running_run(c, id)?.is_some();
+    if updating && !report.as_ref().is_some_and(|r| r.supported) {
+        return Ok(None);
+    }
     let Some(report) = report.filter(|r| r.supported).map(Report::clean) else {
         c.execute(
             "UPDATE servers SET settings_report = NULL WHERE id = ?1",
@@ -408,7 +416,7 @@ pub fn on_heartbeat(
         "UPDATE servers SET settings_report = ?2 WHERE id = ?1",
         params![id, serde_json::to_string(&report).unwrap_or_default()],
     )?;
-    if report.locked {
+    if updating || report.locked {
         return Ok(None);
     }
     match current(c, id)? {
