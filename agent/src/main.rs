@@ -97,6 +97,7 @@ fn main() -> ExitCode {
                 "required only when Wren asks"
             }
         );
+        println!("{}", config.self_update.describe());
         println!(
             "run ledger {}: {}",
             config.ledger.display(),

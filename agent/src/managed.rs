@@ -1049,6 +1049,16 @@ update = { command = "./secret-update.sh --key hunter2" }
     }
 
     #[test]
+    fn a_self_update_field_from_wren_is_refused() {
+        let mut v = serde_json::to_value(settings()).unwrap();
+        v["self_update"] = serde_json::json!({ "enabled": true });
+        assert!(Settings::parse(&v).is_err());
+        let live = live_in(&tmp("su-field"), false);
+        assert!(live.offer(&v, &mounts()).is_err());
+        assert!(!live.config().self_update.enabled);
+    }
+
+    #[test]
     fn offers_are_written_atomically_applied_and_reloaded() {
         let dir = tmp("offer");
         let live = live_in(&dir, false);
