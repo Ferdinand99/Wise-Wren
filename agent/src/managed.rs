@@ -685,7 +685,16 @@ impl Live {
 /// the old one (mode 0600).
 fn write_atomic(path: &Path, s: &Settings) -> Result<(), String> {
     let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
+    write_private(path, text.as_bytes())
+}
+
+/// Writes `bytes` to a temporary file beside `path` (the file name plus
+/// `.tmp`), syncs it and renames it over `path`, mode 0600. The folder is
+/// created when it is missing. A failed write leaves no temporary file.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
     let write = || -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -698,7 +707,7 @@ fn write_atomic(path: &Path, s: &Settings) -> Result<(), String> {
             options.mode(0o600);
         }
         let mut f = options.open(&tmp)?;
-        f.write_all(text.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
     };

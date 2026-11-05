@@ -4,6 +4,7 @@
 //! [`version`] has the rules for which version and which image reference
 //! may be updated.
 
+pub mod state;
 pub mod version;
 
 /// The one repository the agent updates itself from.
