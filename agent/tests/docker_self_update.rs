@@ -220,6 +220,19 @@ fn inspect(name: &str) -> Value {
     all[0].clone()
 }
 
+/// The container's log (stdout and stderr).
+fn logs_of(name: &str) -> String {
+    let out = Command::new("docker")
+        .args(["logs", name])
+        .output()
+        .unwrap_or_else(|e| panic!("docker logs: {e}"));
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
 /// The ids of the containers whose name contains `part` (empty: none).
 fn containers_named(part: &str) -> String {
     docker(&["ps", "-aq", "--filter", &format!("name={part}")])
@@ -746,6 +759,15 @@ fn cleanup(name: &str) {
     for tag in tags.split_whitespace() {
         let _ = try_docker(&["rmi", tag]);
     }
+    // The foreign-repository image the refusals test makes.
+    if name == "refuse" {
+        let _ = try_docker(&["rmi", &other_image()]);
+    }
+}
+
+/// The image name of the refusals test's foreign repository.
+fn other_image() -> String {
+    format!("{REG}/ww-test-su/other:latest")
 }
 
 /// Cleans up before the test (what an earlier, killed run left) and after it;
@@ -984,6 +1006,9 @@ async fn a_crash_right_after_confirming_is_rolled_back() {
         wren.finish_of(130, Duration::from_secs(240)).await,
         ("rolled_back".into(), "selfupdate.rolled_back".into())
     );
+    // The new agent ran and was answered (it confirms only after that), and
+    // the old one is back.
+    assert!(wren.beats_from("0.90.1") > 0, "the new agent never beat");
     assert_eq!(id_of("ww-test-su-crash"), old_id);
     assert!(running("ww-test-su-crash"));
     let st = state("crash");
@@ -1015,31 +1040,40 @@ async fn a_killed_helper_comes_back_and_finishes() {
     // `docker kill` counts as a stop by hand, which `unless-stopped` does not
     // undo. A kill from the host's process space is a crash.
     let helper = "wren-agent-selfupdate-140";
+    let helper_id = id_of(helper);
     let pid = docker(&["inspect", "-f", "{{.State.Pid}}", helper]);
     assert_ne!(pid, "0", "the helper isn't running any more");
+    // Only if the pid still belongs to the helper's container (a pid can be
+    // reused between the inspect and the kill).
+    let kill = format!("grep -q {helper_id} /proc/{pid}/cgroup && kill -9 {pid}");
     docker(&[
         "run",
         "--rm",
         "--pid",
+        "host",
+        "--cgroupns",
         "host",
         "--name",
         "ww-test-su-killer",
         "--label",
         "owner=wise-wren",
         ALPINE,
-        "kill",
-        "-9",
-        &pid,
+        "sh",
+        "-c",
+        &kill,
     ]);
-    // Docker starts it again (or the run is already over and it is gone).
+    // Docker starts it again. If it did not, the new agent would remove the
+    // dead helper and finish the run itself, and the rest would still hold.
     let end = Instant::now() + Duration::from_secs(30);
     loop {
-        match try_docker(&["inspect", "-f", "{{.RestartCount}}", helper]) {
-            Ok(n) if n != "0" => break,
-            Err(_) => break,
-            Ok(_) => {}
+        let restarts = try_docker(&["inspect", "-f", "{{.RestartCount}}", helper]);
+        if matches!(&restarts, Ok(n) if n != "0") {
+            break;
         }
-        assert!(Instant::now() < end, "the helper wasn't restarted");
+        assert!(
+            Instant::now() < end,
+            "the helper wasn't restarted: {restarts:?}"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert_eq!(
@@ -1049,6 +1083,12 @@ async fn a_killed_helper_comes_back_and_finishes() {
     assert_eq!(state("killed").phase, Phase::Done);
     assert!(wren.beats_from("0.90.1") > 0, "the new agent never beat");
     assert!(running("ww-test-su-killed"));
+    // The helper finished the run, not the new agent in its place.
+    let logs = logs_of("ww-test-su-killed");
+    assert!(
+        !logs.contains("the self-update helper is gone; finishing the update here"),
+        "the new agent finished the run without the helper: {logs}"
+    );
 }
 
 #[tokio::test]
@@ -1072,6 +1112,8 @@ async fn wren_down_during_probation_rolls_back_and_reports_later() {
     wren.set_mode(Mode::Down);
     let st = wait_phase("down", |p| p == Phase::RolledBack, Duration::from_secs(240)).await;
     assert_eq!(st.server_id, wren.server_id);
+    assert!(st.reason.contains("didn't reach Wren"), "{}", st.reason);
+    assert_eq!(wren.beats_from("0.90.1"), 0, "the new agent got an answer");
     assert_eq!(id_of("ww-test-su-down"), old_id);
     assert!(running("ww-test-su-down"));
     // Rolled back, but Wren hasn't heard: the result waits for it.
@@ -1158,7 +1200,7 @@ async fn refusals_change_nothing() {
         },
         Refusal {
             name: "foreign repo",
-            image: format!("{REG}/ww-test-su/other:latest"),
+            image: other_image(),
             retag: true,
             to_version: "0.90.1",
             to_digest: d1.clone(),
@@ -1238,9 +1280,6 @@ async fn refusals_change_nothing() {
             "row {}: a helper exists",
             row.name
         );
-        if row.retag {
-            let _ = try_docker(&["rmi", &image]);
-        }
     }
 }
 
@@ -1320,6 +1359,10 @@ async fn a_compose_agent_stays_in_its_project() {
       WW_AGENT_TOKEN: \"wwa_{token}\"
       WW_AGENT_SELF_UPDATE: \"1\"
       WW_SU_TEST_TIME_PCT: \"10\"
+networks:
+  default:
+    labels:
+      owner: wise-wren
 volumes:
   {vol}:
     name: {vol}
@@ -1349,6 +1392,8 @@ volumes:
     assert_ne!(new_id, old_id);
     assert_eq!(new_id.lines().count(), 1, "{new_id}");
     let after = inspect(&new_id);
+    let new_full = after["Id"].as_str().unwrap().to_string();
+    assert_eq!(state("compose").new_container_id, new_full);
     assert_eq!(
         after
             .pointer("/Config/Labels/com.docker.compose.project")
@@ -1356,10 +1401,18 @@ volumes:
         Some(COMPOSE)
     );
     assert!(running(&new_id));
-    // Compose still owns it: `up -d` leaves one running agent.
+    // Compose still owns it: `up -d` leaves one running agent. It may make
+    // the container again (the labels still name the old image: the design
+    // calls that harmless), but then from the new release.
     compose.compose(&["up", "-d"]).unwrap();
     let all = compose.compose(&["ps", "-q", "agent"]).unwrap();
     assert_eq!(all.lines().count(), 1, "{all}");
     assert!(running(all.trim()));
+    assert_eq!(
+        inspect(all.trim())
+            .pointer("/Config/Labels/org.opencontainers.image.version")
+            .and_then(Value::as_str),
+        Some("0.90.1")
+    );
     compose.down().unwrap();
 }
