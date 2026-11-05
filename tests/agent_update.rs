@@ -6,7 +6,9 @@ mod common;
 use axum::http::StatusCode;
 use std::sync::{Arc, Mutex};
 
-use common::{App, add_hook, add_user, api_token, hooks, poll_as, post_json};
+use common::{
+    App, Web, add_hook, add_user, api_token, hooks, poll_as, post_json, set_remote, step,
+};
 use serde_json::{Value, json};
 use vole_kit::auth::TokenScope;
 use wise_wren::agent_update::{self, Release};
@@ -195,11 +197,13 @@ async fn approve_as_admin(app: &App, id: i64, version: &str) -> i64 {
     res.json()["run_id"].as_i64().unwrap()
 }
 
-/// An inventory with one container.
+/// An inventory with one container, running an older digest of `image`.
 async fn send_inventory_with(app: &App, token: &str, name: &str, image: &str) {
+    let repo = image.rsplit_once(':').map_or(image, |(repo, _)| repo);
     let inv = json!({"containers": [{
         "name": name, "image": image, "image_id": "sha256:1",
-        "repo_digests": [], "state": "running", "labels": {},
+        "repo_digests": [format!("{repo}@sha256:{}", "a".repeat(64))],
+        "state": "running", "labels": {},
     }]});
     let res = post_json(app, "/api/agent/v1/inventory", token, inv).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
@@ -810,4 +814,212 @@ async fn agent_update_results_are_announced() {
             assert!(msg.to_string().contains(l), "{msg}");
         }
     }
+}
+
+// --- Pages -------------------------------------------------------------------
+
+const AGENT_IMAGE: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+
+/// The server page's text, as `web` sees it now.
+async fn server_page(web: &mut Web<'_>, id: i64) -> String {
+    web.get(&format!("/servers/{id}")).await.body
+}
+
+#[tokio::test]
+async fn the_server_page_offers_the_agent_update_to_admins_only() {
+    let (app, id, _) = setup().await;
+    let mut admin = Web::new(&app, "ad", "admin").await;
+    let page = admin.get(&format!("/servers/{id}")).await.body;
+    assert!(page.contains("Update the agent to 0.10.1"), "{page}");
+    assert!(page.contains(&format!("action=\"/servers/{id}/agent-update\"")));
+    assert!(page.contains("0.10.0 → 0.10.1"));
+    // The notification links to /servers/{id}#agent-update: the card has it.
+    assert!(page.contains("id=\"agent-update\""));
+    let mut ed = Web::new(&app, "ed", "editor").await;
+    let page = ed.get(&format!("/servers/{id}")).await.body;
+    assert!(page.contains("0.10.0 → 0.10.1") && !page.contains("Update the agent to 0.10.1"));
+    assert!(!page.contains("/agent-update\""), "an editor gets no form");
+    assert_eq!(
+        ed.post(
+            &format!("/servers/{id}/agent-update"),
+            &[("version", "0.10.1"), ("when", "now")]
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE kind = 'agent_update'")
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn the_card_says_why_not() {
+    let (app, id, token) = setup().await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(true, "pinned"))).await;
+    assert!(
+        server_page(&mut web, id)
+            .await
+            .contains("change it to :latest or :0")
+    );
+    // A reason only a newer agent knows gets the generic text, with its code.
+    let odd = su(true, "from_the_future");
+    beat(&app, &token, "0.10.0", "boot-a", Some(odd)).await;
+    let page = server_page(&mut web, id).await;
+    assert!(page.contains("reports a reason it can"), "{page}");
+    assert!(page.contains("from_the_future"), "{page}");
+    assert!(!page.contains("au_blocked"), "{page}");
+    beat(&app, &token, "0.10.0", "boot-a", Some(su(false, ""))).await;
+    assert!(
+        server_page(&mut web, id)
+            .await
+            .contains("WW_AGENT_SELF_UPDATE=1")
+    );
+    beat(&app, &token, "0.9.2", "boot-a", None).await;
+    assert!(server_page(&mut web, id).await.contains("Older agent"));
+    beat(&app, &token, "0.9.2", "boot-a", Some(su(true, ""))).await;
+    assert!(
+        server_page(&mut web, id)
+            .await
+            .contains("older than 0.10.0")
+    );
+    beat(&app, &token, "0.10.1", "boot-a", Some(su(true, ""))).await;
+    let page = server_page(&mut web, id).await;
+    assert!(
+        page.contains("Running 0.10.1") && page.contains("Up to date"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
+async fn the_card_names_a_newer_wren() {
+    let (app, id, _) = setup().await;
+    *app.wren.agent_release.write().unwrap() = Some(Release {
+        version: "0.10.1".into(),
+        digest: D.into(),
+        newest_wren: Some("0.11.0".into()),
+    });
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let page = server_page(&mut web, id).await;
+    assert!(page.contains("Wren 0.11.0 is out"), "{page}");
+}
+
+#[tokio::test]
+async fn posting_the_form_queues_the_run_and_the_run_page_names_it() {
+    let (app, id, token) = setup().await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let res = web
+        .post(
+            &format!("/servers/{id}/agent-update"),
+            &[("version", "0.10.1"), ("when", "now")],
+        )
+        .await;
+    let to = res.header("location").to_string();
+    assert!(to.starts_with("/runs/"), "{to}");
+    let run: i64 = to.trim_start_matches("/runs/").parse().unwrap();
+    poll(&app, &token, "boot-a").await;
+    step(&app, &token, run, "update", "running").await;
+    let page = web.get(&to).await.body;
+    assert!(
+        page.contains("Agent update") && page.contains("Helper started; the agent restarts"),
+        "{page}"
+    );
+    assert!(
+        web.get("/servers")
+            .await
+            .body
+            .contains("Agent update running")
+    );
+    let card = server_page(&mut web, id).await;
+    assert!(
+        card.contains(&format!("href=\"/runs/{run}\"")) && card.contains("Last agent update"),
+        "{card}"
+    );
+}
+
+#[tokio::test]
+async fn the_form_schedules_and_refuses_in_words() {
+    let (app, id, _) = setup().await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let url = format!("/servers/{id}/agent-update");
+    let back = format!("/servers/{id}");
+    let queued = || app.count("SELECT COUNT(*) FROM runs WHERE kind = 'agent_update'");
+    // No time, an unknown choice, an old version, the past, too far ahead.
+    for form in [
+        vec![("version", "0.10.1"), ("when", "at"), ("at", "")],
+        vec![("version", "0.10.1"), ("when", "later")],
+        vec![("version", "0.10.0"), ("when", "now")],
+        vec![
+            ("version", "0.10.1"),
+            ("when", "at"),
+            ("at", "2020-01-01T03:00"),
+        ],
+        vec![
+            ("version", "0.10.1"),
+            ("when", "at"),
+            ("at", "2999-01-01T03:00"),
+        ],
+    ] {
+        let res = web.post(&url, &form).await;
+        assert_eq!(res.header("location"), back, "{form:?}");
+    }
+    assert_eq!(queued().await, 0);
+    let page = server_page(&mut web, id).await;
+    assert!(page.contains("Update the agent to 0.10.1"), "{page}");
+    // A set time that is fine.
+    let soon = (jiff::Timestamp::now() + std::time::Duration::from_secs(2 * 3600)).to_string();
+    let res = web
+        .post(
+            &url,
+            &[("version", "0.10.1"), ("when", "at"), ("at", &soon)],
+        )
+        .await;
+    assert!(res.header("location").starts_with("/runs/"), "{soon}");
+    assert_eq!(
+        app.count(
+            "SELECT COUNT(*) FROM runs WHERE kind = 'agent_update' AND scheduled_for IS NOT NULL"
+        )
+        .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn the_updates_page_points_the_agent_to_its_server() {
+    let (app, id, token) = setup().await;
+    send_inventory_with(&app, &token, "wren-agent", AGENT_IMAGE).await;
+    set_remote(&app, AGENT_IMAGE, D).await;
+    let mut web = Web::new(&app, "ad", "admin").await;
+    let page = web.get("/updates").await.body;
+    assert!(
+        page.contains(&format!("href=\"/servers/{id}#agent-update\""))
+            && page.contains("Update it from its server page"),
+        "{page}"
+    );
+    let tid = app
+        .count("SELECT id FROM targets WHERE name = 'wren-agent'")
+        .await;
+    let page = web.get(&format!("/targets/{tid}")).await.body;
+    assert!(
+        page.contains(&format!("href=\"/servers/{id}#agent-update\"")),
+        "{page}"
+    );
+    // An agent that can't update itself has nothing to point to.
+    beat(&app, &token, "0.9.2", "boot-a", None).await;
+    let page = web.get("/updates").await.body;
+    assert!(!page.contains("Update it from its server page"), "{page}");
+}
+
+#[tokio::test]
+async fn the_servers_list_shows_the_next_version() {
+    let (app, _, _) = setup().await;
+    let mut web = Web::new(&app, "ed", "editor").await;
+    let page = web.get("/servers").await.body;
+    assert!(
+        page.contains("0.10.0 → 0.10.1") && page.contains("Agent update"),
+        "{page}"
+    );
 }

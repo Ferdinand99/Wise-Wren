@@ -24,6 +24,7 @@ use vole_kit::state::Core;
 
 use crate::Wren;
 use crate::agent_api::{Snippets, snippets};
+use crate::agent_update::{self, Release, Standing, State as AgentState};
 use crate::db::{self, Server, Status};
 
 /// Longest server name.
@@ -72,10 +73,12 @@ pub struct ServerView {
     pub has_token: bool,
     pub token_prefix: String,
     pub created_at: String,
+    /// Where the agent stands on updating itself.
+    pub agent_update: Standing,
 }
 
 impl ServerView {
-    fn new(s: Server) -> Self {
+    fn new(s: Server, agent_update: Standing) -> Self {
         let status: Status = s.status();
         ServerView {
             id: s.id,
@@ -93,7 +96,21 @@ impl ServerView {
             has_token: s.has_token,
             token_prefix: s.token_prefix,
             created_at: s.created_at,
+            agent_update,
         }
+    }
+
+    /// The version the agent can be updated to.
+    pub fn agent_available(&self) -> Option<&str> {
+        match self.agent_update.state {
+            AgentState::Available => self.agent_update.available.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// An agent update is queued or running.
+    pub fn agent_running(&self) -> bool {
+        self.agent_update.state == AgentState::Running
     }
 
     /// The line under the name in lists: host and Docker, when known.
@@ -121,9 +138,17 @@ pub struct Counts {
     pub updates: i64,
 }
 
-async fn views(core: &Core) -> ApiResult<Vec<ServerView>> {
-    let rows = core.with_conn(|c| db::servers(c)).await?;
-    Ok(rows.into_iter().map(ServerView::new).collect())
+async fn views(core: &Core, release: Option<Release>) -> ApiResult<Vec<ServerView>> {
+    core.with_conn(move |c| {
+        db::servers(c)?
+            .into_iter()
+            .map(|s| {
+                let standing = agent_update::standing_of(c, s.id, release.as_ref())?;
+                Ok(ServerView::new(s, standing))
+            })
+            .collect()
+    })
+    .await
 }
 
 fn counts(rows: &[ServerView], updates: i64) -> Counts {
@@ -190,6 +215,7 @@ struct DetailPage {
     ctx: PageCtx,
     server: ServerView,
     agent: AgentCard,
+    agent_update: AgentUpdateCard,
     delete_url: String,
     delete_question: String,
     targets: Vec<crate::pages::TargetView>,
@@ -230,16 +256,58 @@ pub struct AgentCard {
     pub snippets: Option<Snippets>,
 }
 
+/// The agent's version and self-update: what it may do, and what an admin
+/// may do about it.
+pub struct AgentUpdateCard {
+    pub standing: Standing,
+    /// The signed-in person may approve the update (admins).
+    pub can_approve: bool,
+    /// The newest agent update run of the server: its id and status.
+    pub last_run: Option<(i64, String)>,
+    /// A newer Wren than this one is out (the agent can't be offered it yet).
+    pub newest_wren: Option<String>,
+    /// The first agent version that can update itself.
+    pub floor: &'static str,
+}
+
+impl AgentUpdateCard {
+    /// Why the agent can't update itself, in words. A reason this Wren
+    /// doesn't know (a newer agent's) gets the generic text with the code.
+    pub fn blocked_text(&self) -> String {
+        let key = match self.standing.reason.as_str() {
+            "foreign_repo" => "servers.au_blocked_foreign_repo",
+            "pinned" => "servers.au_blocked_pinned",
+            "not_container" => "servers.au_blocked_not_container",
+            "no_own_id" => "servers.au_blocked_no_own_id",
+            "autoremove" => "servers.au_blocked_autoremove",
+            "network_mode" => "servers.au_blocked_network_mode",
+            "config_ro" => "servers.au_blocked_config_ro",
+            code => {
+                return i18n::tf("servers.au_blocked_other", &[("code", code)]);
+            }
+        };
+        i18n::t(key).to_string()
+    }
+
+    /// The last agent update run's status as a pill: class and label.
+    pub fn last_look(&self) -> Option<(&'static str, &'static str)> {
+        self.last_run
+            .as_ref()
+            .map(|(_, status)| crate::run_pages::run_look(status))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pages
 // ---------------------------------------------------------------------------
 
 async fn overview(
     State(core): State<Core>,
+    Extension(wren): Extension<Wren>,
     user: CurrentUser,
     jar: SignedCookieJar,
 ) -> ApiResult<impl IntoResponse> {
-    let rows = views(&core).await?;
+    let rows = views(&core, agent_update::release(&wren)).await?;
     let (ctx, jar) = PageCtx::build(
         &core,
         Some(&user),
@@ -264,10 +332,11 @@ async fn overview(
 
 async fn list(
     State(core): State<Core>,
+    Extension(wren): Extension<Wren>,
     user: CurrentUser,
     jar: SignedCookieJar,
 ) -> ApiResult<impl IntoResponse> {
-    let rows = views(&core).await?;
+    let rows = views(&core, agent_update::release(&wren)).await?;
     let (ctx, jar) = PageCtx::build(
         &core,
         Some(&user),
@@ -341,6 +410,7 @@ fn form_value(body: &[u8], key: &str) -> String {
 /// Adds a server and shows its page with the new token, once.
 async fn create(
     State(core): State<Core>,
+    Extension(wren): Extension<Wren>,
     user: CurrentUser,
     headers: HeaderMap,
     jar: SignedCookieJar,
@@ -371,14 +441,19 @@ async fn create(
         "success",
         i18n::tf("servers.added", &[("name", &name)]),
     );
-    render_detail(&core, &user, &jar, &headers, id, Some(token.token)).await
+    render_detail(&wren, &user, &jar, &headers, id, Some(token.token)).await
 }
 
-async fn load(core: &Core, id: i64) -> ApiResult<ServerView> {
-    core.with_conn(move |c| db::server(c, id))
-        .await?
-        .map(ServerView::new)
-        .ok_or(ApiError::NotFound)
+async fn load(core: &Core, id: i64, release: Option<Release>) -> ApiResult<ServerView> {
+    core.with_conn(move |c| match db::server(c, id)? {
+        Some(s) => {
+            let standing = agent_update::standing_of(c, id, release.as_ref())?;
+            Ok(Some(ServerView::new(s, standing)))
+        }
+        None => Ok(None),
+    })
+    .await?
+    .ok_or(ApiError::NotFound)
 }
 
 async fn agent_card(
@@ -401,15 +476,38 @@ async fn agent_card(
     }
 }
 
-async fn render_detail(
+/// The agent's version card for `server`'s page.
+async fn agent_update_card(
     core: &Core,
+    server: &ServerView,
+    user: &CurrentUser,
+    release: Option<Release>,
+) -> ApiResult<AgentUpdateCard> {
+    let id = server.id;
+    let last_run = core
+        .with_conn(move |c| agent_update::last_run(c, id))
+        .await?;
+    Ok(AgentUpdateCard {
+        standing: server.agent_update.clone(),
+        can_approve: user.is_admin(),
+        last_run,
+        newest_wren: release.and_then(|r| r.newest_wren),
+        floor: agent_update::AGENT_SELF_UPDATE_FLOOR,
+    })
+}
+
+async fn render_detail(
+    wren: &Wren,
     user: &CurrentUser,
     jar: &SignedCookieJar,
     headers: &HeaderMap,
     id: i64,
     token: Option<String>,
 ) -> ApiResult<Response> {
-    let server = load(core, id).await?;
+    let core = &wren.core;
+    let release = agent_update::release(wren);
+    let server = load(core, id, release.clone()).await?;
+    let agent_update = agent_update_card(core, &server, user, release).await?;
     let agent = agent_card(core, user, headers, token).await;
     let (ctx, jar) =
         PageCtx::build(core, Some(user), jar, server.name.clone(), "servers", "").await;
@@ -431,6 +529,7 @@ async fn render_detail(
         ctx,
         server,
         agent,
+        agent_update,
         delete_url,
         delete_question,
         targets,
@@ -448,13 +547,13 @@ async fn render_detail(
 }
 
 async fn detail(
-    State(core): State<Core>,
+    Extension(wren): Extension<Wren>,
     user: CurrentUser,
     headers: HeaderMap,
     jar: SignedCookieJar,
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
-    render_detail(&core, &user, &jar, &headers, id, None).await
+    render_detail(&wren, &user, &jar, &headers, id, None).await
 }
 
 /// A new token for the server: the old one stops working at once. Answers
@@ -467,14 +566,14 @@ async fn new_token(
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
     user.require_admin()?;
-    load(&core, id).await?;
+    load(&core, id, None).await?;
     let token = db::new_agent_token();
     let t = token.clone();
     core.with_conn(move |c| db::set_token(c, id, Some(&t)))
         .await?;
     tracing::info!(user = %user.username, server_id = id, "agent token replaced");
     let _ = wren.changes.send(());
-    let server = load(&core, id).await?;
+    let server = load(&core, id, None).await?;
     let agent = agent_card(&core, &user, &headers, Some(token.token)).await;
     Ok(HtmlTemplate(AgentPartial { server, agent }).into_response())
 }
@@ -494,7 +593,7 @@ async fn revoke(
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
     user.require_admin()?;
-    let server = load(&core, id).await?;
+    let server = load(&core, id, None).await?;
     core.with_conn(move |c| db::set_token(c, id, None)).await?;
     tracing::info!(user = %user.username, server_id = id, "agent token revoked");
     let _ = wren.changes.send(());
@@ -519,7 +618,7 @@ async fn remove(
     Path(id): Path<i64>,
 ) -> ApiResult<Response> {
     user.require_admin()?;
-    let server = load(&core, id).await?;
+    let server = load(&core, id, None).await?;
     core.with_conn(move |c| db::delete_server(c, id)).await?;
     tracing::info!(user = %user.username, server_id = id, "server deleted");
     let _ = wren.changes.send(());
@@ -552,8 +651,13 @@ static RENDERS: LazyLock<SharedRenders<(View, bool, Lang)>> =
 /// How long a burst of heartbeats is merged into one update.
 pub const LIVE_QUIET: Duration = Duration::from_millis(500);
 
-async fn render_view(core: Core, view: View, can_add: bool) -> Result<String, ApiError> {
-    let rows = views(&core).await?;
+async fn render_view(
+    core: Core,
+    release: Option<Release>,
+    view: View,
+    can_add: bool,
+) -> Result<String, ApiError> {
+    let rows = views(&core, release).await?;
     let html = match view {
         View::Overview => OverviewBody {
             counts: counts(&rows, crate::pages::update_count(&core).await?),
@@ -586,8 +690,9 @@ fn stream(wren: Wren, view: View, can_add: bool) -> Response {
             loop {
                 let since = changes.next().await?;
                 let core = wren.core.clone();
+                let release = agent_update::release(&wren);
                 let render = RENDERS.get((view, can_add, lang), since, || {
-                    render_view(core, view, can_add)
+                    render_view(core, release, view, can_add)
                 });
                 if let Ok(html) = i18n::scope(lang, render).await {
                     return Some((live::html_event(event, &html), (changes, wren, slot)));

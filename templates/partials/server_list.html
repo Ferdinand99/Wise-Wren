@@ -21,6 +21,9 @@
         </span>
       </span>
       <span class="list-trail">
+        {%- if s.agent_running() %}<span class="badge status-update hide-sm" data-agent-update="running">{{ tr("servers.au_running") }}</span>
+        {%- else if let Some(to) = s.agent_available() %}<span class="mono hide-sm" data-agent-version="{{ s.agent_update.current }}">{{ s.agent_update.current }} → {{ to }}</span> <span class="badge status-update hide-sm" data-agent-update="available">{{ tr("servers.au_badge") }}</span>
+        {%- else if !s.agent_version.is_empty() %}<span class="mono hide-sm" data-agent-version="{{ s.agent_version }}">{{ s.agent_version }}</span>{% endif %}
         {%- if s.unraid %}<span class="badge badge-unraid hide-sm">{{ tr("servers.unraid") }}</span>{% endif %}
         <span class="pill status-{{ s.status_class }}"><span class="dot" aria-hidden="true"></span>{{ s.status_label }}</span>
         {{- m::icon("chevron-right", "list-chevron") }}

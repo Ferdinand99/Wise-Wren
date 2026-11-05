@@ -284,6 +284,25 @@ pub fn own_target(
     .optional()
 }
 
+/// Whether `image` is the official agent image (any tag, or pinned by digest).
+pub fn is_agent_image(image: &str) -> bool {
+    let image = image.split('@').next().unwrap_or_default();
+    ImageRef::parse(image)
+        .is_ok_and(|r| format!("{}/{}", r.registry, r.repo).eq_ignore_ascii_case(AGENT_REPO))
+}
+
+/// The newest agent update run of `server_id` (queued or finished): its id
+/// and status.
+pub fn last_run(c: &Connection, server_id: i64) -> rusqlite::Result<Option<(i64, String)>> {
+    c.query_row(
+        "SELECT id, status FROM runs WHERE server_id = ?1 AND kind = ?2
+         ORDER BY id DESC LIMIT 1",
+        params![server_id, KIND],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
 /// Approves the update of `server_id`'s agent to `version` now, or at `at`.
 /// Only an admin may; `version` must be the one the person saw. The run's id.
 pub fn approve(

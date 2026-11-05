@@ -1,0 +1,54 @@
+{#- The agent's version and its self-update: why it can or can't, and for admins the form that approves it. Needs: server, agent_update, tz. -#}
+{%- import "kit/macros.html" as m -%}
+<section class="card stack-sm" id="agent-update" aria-labelledby="agent-update-title">
+  <div class="card-head">
+    <h2 class="card-title" id="agent-update-title">{{ tr("servers.au_title") }}</h2>
+  </div>
+
+  {%- match agent_update.standing.state %}
+  {%- when AgentState::Available %}
+  {%- if let Some(to) = agent_update.standing.available %}
+  <p data-au-state="available"><span class="mono">{{ tr2("servers.au_available", "from", agent_update.standing.current, "to", to) }}</span></p>
+  <p class="help">{{ tr("servers.au_explain") }}</p>
+  <p class="help">{{ tr("servers.au_same_host") }}</p>
+  {%- if agent_update.can_approve %}
+  <form method="post" action="/servers/{{ server.id }}/agent-update" class="stack-sm">
+    <input type="hidden" name="version" value="{{ to }}">
+    <div class="stack-sm">
+      <label class="check"><input type="radio" name="when" value="now" checked><span class="check-text"><span class="check-label">{{ tr("servers.au_now") }}</span></span></label>
+      <label class="check"><input type="radio" name="when" value="at"><span class="check-text"><span class="check-label">{{ tr("servers.au_at") }}</span></span></label>
+    </div>
+    <div class="field">
+      <label class="label" for="f-au-at">{{ tr("runs.schedule_at") }}</label>
+      <input id="f-au-at" type="datetime-local" name="at">
+      <p class="help">{{ tr1("runs.schedule_help", "tz", tz) }}</p>
+    </div>
+    <div><button type="submit" class="btn btn-primary btn-sm">{{ tr1("servers.au_button", "version", to) }}</button></div>
+  </form>
+  {%- endif %}
+  {%- endif %}
+  {%- when AgentState::Current %}
+  <p data-au-state="current">{{ tr1("servers.au_current", "version", agent_update.standing.current) }} <span class="badge status-up">{{ tr("servers.au_current_badge") }}</span></p>
+  {%- when AgentState::Running %}
+  <p data-au-state="running">{{ tr("servers.au_running") }}{% if let Some(run) = agent_update.standing.run_id %} · <a href="/runs/{{ run }}">{{ tr1("runs.title_short", "id", run) }}</a>{% endif %}</p>
+  {%- when AgentState::Off %}
+  <p class="help" data-au-state="off">{{ tr("servers.au_off") }}</p>
+  {%- when AgentState::Unsupported %}
+  <p class="help" data-au-state="unsupported">{{ tr("servers.au_unsupported") }}</p>
+  {%- when AgentState::BelowFloor %}
+  <p class="help" data-au-state="below_floor">{{ tr1("servers.au_below_floor", "floor", agent_update.floor) }}</p>
+  {%- when AgentState::Blocked %}
+  <p class="help" data-au-state="blocked">{{ agent_update.blocked_text() }}</p>
+  {%- when AgentState::Unknown %}
+  <p class="help" data-au-state="unknown">{{ tr("servers.au_unknown") }}</p>
+  {%- endmatch %}
+
+  {%- if let Some(version) = agent_update.newest_wren %}
+  <p class="help" data-au-newer-wren="1">{{ tr1("servers.au_newer_wren", "version", version) }}</p>
+  {%- endif %}
+  {%- if let Some((run, _)) = agent_update.last_run %}
+  {%- if let Some((class, label)) = agent_update.last_look() %}
+  <p class="help" data-au-last="1">{{ tr("servers.au_last") }}: <a href="/runs/{{ run }}">{{ tr1("runs.title_short", "id", run) }}</a> <span class="pill status-{{ class }}"><span class="dot" aria-hidden="true"></span>{{ label }}</span></p>
+  {%- endif %}
+  {%- endif %}
+</section>

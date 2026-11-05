@@ -9,7 +9,7 @@
   {%- endif %}
   <section class="card" aria-labelledby="run-title">
     <div class="card-head">
-      <h2 class="card-title" id="run-title">{% if run.is_rollback %}{{ tr("runs.kind_rollback") }}{% else %}{{ tr("runs.kind_update") }}{% endif %}</h2>
+      <h2 class="card-title" id="run-title">{% if run.is_rollback %}{{ tr("runs.kind_rollback") }}{% else if run.is_agent_update %}{{ tr("runs.kind_agent_update") }}{% else %}{{ tr("runs.kind_update") }}{% endif %}</h2>
       <div class="toolbar">
         <span class="pill pill-lg status-{{ run.status_class }}" data-status="{{ run.status }}"><span class="dot" aria-hidden="true"></span>{{ run.status_label }}</span>
         {%- if can_act && run.active() && !run.cancel_requested %}

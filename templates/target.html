@@ -32,6 +32,9 @@
   {%- endif %}
   {%- if row.own %}
   {{ m::callout("info", tr("runs.own_help"), tr("runs.own")) }}
+  {%- if let Some(link) = target.agent_link %}
+  <p><a href="{{ link }}" data-own-agent="1">{{ tr("runs.own_agent") }}</a></p>
+  {%- endif %}
   {%- else if row.auto %}
   {%- if let Some((a, b)) = window %}
   {{ m::callout("info", tr2("runs.auto_help", "from", a, "to", b), tr("runs.auto_badge")) }}
