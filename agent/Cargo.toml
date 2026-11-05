@@ -13,6 +13,11 @@ publish = false
 name = "wren-agent"
 path = "src/main.rs"
 
+[features]
+# Test builds for the Docker self-update scenarios (scaled deadlines, test
+# registry and version); never part of a release.
+selfupdate-test = []
+
 # Small on purpose: no vole-kit, no web framework, no Docker client crate.
 [dependencies]
 reqwest = { workspace = true }

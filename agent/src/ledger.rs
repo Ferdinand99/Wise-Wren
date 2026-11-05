@@ -210,6 +210,9 @@ impl Ledger {
                     }
                 }
             }
+            // The run-id rule above is all an agent update needs: the
+            // refusals that are its own come from its preflight.
+            JobKind::AgentUpdate => {}
             JobKind::Rollback => {
                 let of = job.rollback_of.unwrap_or_default();
                 let Some(update) = self.newest_succeeded(&key).filter(|e| e.run_id == of) else {
@@ -248,6 +251,7 @@ impl Ledger {
             kind: match job.kind {
                 JobKind::Update => "update",
                 JobKind::Rollback => "rollback",
+                JobKind::AgentUpdate => "agent_update",
             }
             .into(),
             outcome: RUNNING.into(),
@@ -377,6 +381,8 @@ mod tests {
             keep_snapshots: 2,
             rollback_of: of,
             require_snapshot: false,
+            to_version: String::new(),
+            to_digest: String::new(),
         }
     }
 
@@ -570,5 +576,23 @@ mod tests {
             l.begin(&j, 1000 + n as u64).unwrap();
         }
         assert_eq!(l.file.targets.len(), MAX_TARGETS);
+    }
+
+    #[test]
+    fn agent_update_run_ids_must_grow() {
+        let au = |id| Job {
+            run_id: id,
+            kind: JobKind::AgentUpdate,
+            target: TargetRef {
+                kind: "agent".into(),
+                name: "wren-agent".into(),
+            },
+            ..job(id, JobKind::Update, None)
+        };
+        let (mut l, _) = Ledger::load(&dir("au").join("runs.json"));
+        run(&mut l, &au(5), 100, "succeeded");
+        assert_eq!(code(l.check(&au(5), None, 200)), "refused.run_old");
+        assert!(l.check(&au(6), None, 200).is_ok());
+        assert_eq!(l.entries("agent", "wren-agent")[0].kind, "agent_update");
     }
 }

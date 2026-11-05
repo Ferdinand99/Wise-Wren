@@ -19,6 +19,7 @@ pub mod presets;
 pub mod process;
 pub mod redact;
 pub mod run;
+pub mod selfupdate;
 pub mod snapshot;
 
 use std::path::Path;

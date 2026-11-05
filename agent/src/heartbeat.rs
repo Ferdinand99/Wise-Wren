@@ -15,7 +15,15 @@ use crate::docker;
 
 pub const PATH: &str = "/api/agent/v1/heartbeat";
 /// This agent's version.
+#[cfg(not(feature = "selfupdate-test"))]
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This agent's version; a test build may claim another one
+/// (`WW_SU_TEST_VERSION` at build time) to look like an older release.
+#[cfg(feature = "selfupdate-test")]
+pub const VERSION: &str = match option_env!("WW_SU_TEST_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// This agent process: a random id and when it started. Wren closes a run
 /// handed to another process (the agent restarted mid-run: nothing will

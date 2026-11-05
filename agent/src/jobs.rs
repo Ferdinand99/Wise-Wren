@@ -38,6 +38,11 @@ pub enum JobKind {
     Update,
     /// Roll back an earlier, successful run of the target (`rollback_of`).
     Rollback,
+    /// Update the agent itself to a released version (`to_version`,
+    /// `to_digest`). Data only: the image comes from the agent's own
+    /// container, never from the job.
+    #[serde(rename = "agent_update")]
+    AgentUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -75,6 +80,12 @@ pub struct Job {
     /// (the target's "Require a snapshot").
     #[serde(default)]
     pub require_snapshot: bool,
+    /// The release an `agent_update` moves to, as `major.minor.patch`.
+    #[serde(default)]
+    pub to_version: String,
+    /// The digest that release's tag must point at (`sha256:<64 hex>`).
+    #[serde(default)]
+    pub to_digest: String,
 }
 
 /// A message Wren shows in the reader's language: a code and its values.
@@ -169,6 +180,43 @@ fn english(code: &str) -> Option<&'static str> {
         "path.root" => "{path} is a root itself",
         "path.shared" => "{path} is also used by {with}",
         "path.volume" => "volume {volume} of {container} is a named Docker volume",
+        "selfupdate.off" => {
+            "refused: self-update is off on this host; set WW_AGENT_SELF_UPDATE=1 (or [self_update] enabled = true) to allow it"
+        }
+        "selfupdate.no_own_id" => "refused: the agent can't find its own container id",
+        "selfupdate.not_container" => "refused: the agent can't read its own container from Docker",
+        "selfupdate.foreign_repo" => {
+            "refused: the agent runs {image}, not an official Wise Wren agent image"
+        }
+        "selfupdate.pinned" => {
+            "refused: the agent's tag pins a version ({image}); change it to :latest or :{major}"
+        }
+        "selfupdate.autoremove" => {
+            "refused: the agent's container was started with --rm, so stopping it would delete it"
+        }
+        "selfupdate.network_mode" => {
+            "refused: the agent shares another container's network ({mode})"
+        }
+        "selfupdate.config_ro" => "refused: the agent's config folder {folder} is not writable",
+        "selfupdate.bad_version" => {
+            "refused: {version} is not a newer release than this agent's {current}"
+        }
+        "selfupdate.bad_digest" => "refused: the job's digest is not a sha256 digest",
+        "selfupdate.busy" => "refused: self-update run {run} is not finished on this host yet",
+        "selfupdate.label_mismatch" => {
+            "failed before anything changed: the pulled image says version {label}, not {version}"
+        }
+        "selfupdate.not_release" => {
+            "failed before anything changed: {digest} is not what the release tag {version} points at"
+        }
+        "selfupdate.helper_failed" => {
+            "failed before anything changed: the helper didn't start ({error})"
+        }
+        "selfupdate.done" => "the agent now runs {version}",
+        "selfupdate.rolled_back" => "rolled back to {version}: {reason}",
+        "selfupdate.rollback_failed" => {
+            "the rollback failed: {reason}; to go back by hand: {break_glass}"
+        }
         "snapshot.none" => {
             "nothing was snapshotted: this target has no data folder Wren can snapshot"
         }
@@ -785,7 +833,9 @@ pub struct JobClient {
     server: String,
 }
 
-/// What a poll brought.
+/// What a poll brought. One value per poll (every 25 s), so the size gap
+/// between the variants costs nothing worth boxing for.
+#[allow(clippy::large_enum_variant)]
 pub enum Polled {
     Nothing,
     /// A job, or the reason it can't be read (refused as such).
@@ -992,6 +1042,8 @@ mod tests {
             keep_snapshots: 2,
             rollback_of: None,
             require_snapshot: false,
+            to_version: String::new(),
+            to_digest: String::new(),
         }
     }
 
@@ -1534,5 +1586,26 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_agent_update_job_is_data_only() {
+        let j: Job = serde_json::from_value(serde_json::json!({
+            "run_id": 57, "kind": "agent_update",
+            "target": {"kind": "agent", "name": "Wise-Wren-Agent"},
+            "to_version": "0.10.1", "to_digest": format!("sha256:{}", "a".repeat(64)),
+            "image": "evil/x:latest", "command": "rm -rf /"
+        }))
+        .unwrap();
+        assert_eq!(j.kind, JobKind::AgentUpdate);
+        assert_eq!(j.to_version, "0.10.1");
+        assert!(j.images.is_empty());
+    }
+
+    #[test]
+    fn every_selfupdate_code_has_english() {
+        for code in crate::selfupdate::CODES {
+            assert!(!Note::new(code, &[]).text().is_empty(), "{code}");
+        }
     }
 }
