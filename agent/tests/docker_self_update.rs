@@ -8,17 +8,14 @@
 //! Needs the Docker CLI with a socket, a Rust toolchain (the test compiles the
 //! agent) and `WW_DOCKER_TESTS=1`. Everything the tests make is named
 //! `ww-test-su-…` and labelled `owner=wise-wren`, except the helper containers
-//! the agent itself makes (`wren-agent-selfupdate-<run>`, found by name and
-//! by the test's config volume). Each test removes only its own.
+//! the agent itself makes (`wren-agent-selfupdate-<run>`, found by the test's
+//! config volume, which only the test's own containers mount). Each test
+//! removes only its own, and the scenarios run one at a time.
 //! `ww-test-su-registry` and the test images stay for the next run.
 //!
 //! ```sh
 //! WW_DOCKER_TESTS=1 cargo test -p wren-agent --test docker_self_update -- --ignored --test-threads=1
 //! ```
-
-// The harness is shared with the tests that come later; not every helper is
-// used by every test file revision.
-#![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -26,12 +23,14 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use wren_agent::selfupdate::state::{Phase, StateFile};
 
+// The registry address; the scenarios of Task 10 use it.
+#[allow(dead_code)]
 const REG: &str = "localhost:5057";
 const REPO: &str = "localhost:5057/ww-test-su/agent";
 const REGISTRY: &str = "ww-test-su-registry";
@@ -101,17 +100,22 @@ fn ensure_registry() {
     }
 }
 
-fn built() -> &'static Mutex<HashMap<String, String>> {
-    static BUILT: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+/// Version to (label, digest) of the images this test process has built.
+fn built() -> &'static Mutex<HashMap<String, (String, String)>> {
+    static BUILT: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
     BUILT.get_or_init(Mutex::default)
 }
 
 /// Builds the agent as version `version` with the image label `label`,
 /// pushes it as `REPO:<version>` and returns its digest. Once per test
-/// process and version.
+/// process and version: the tag is the version, so a version has one label
+/// (a variant with another label needs a tag of its own).
 fn build(version: &str, label: &str) -> String {
-    let key = format!("{version}/{label}");
-    if let Some(digest) = built().lock().unwrap().get(&key) {
+    if let Some((built_label, digest)) = built().lock().unwrap().get(version) {
+        assert_eq!(
+            built_label, label,
+            "{version} was built with another label; give a variant its own tag"
+        );
         return digest.clone();
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -166,7 +170,10 @@ fn build(version: &str, label: &str) -> String {
         .find_map(|d| d.strip_prefix(&prefix))
         .unwrap_or_else(|| panic!("{tag} has no digest in {REPO}: {digests:?}"))
         .to_string();
-    built().lock().unwrap().insert(key, digest.clone());
+    built()
+        .lock()
+        .unwrap()
+        .insert(version.to_string(), (label.to_string(), digest.clone()));
     digest
 }
 
@@ -203,8 +210,17 @@ async fn wait_gone(part: &str, within: Duration) {
     }
 }
 
+/// The container runs and is not just between two restarts (Docker says
+/// "running" during a restart backoff too).
 fn running(name: &str) -> bool {
-    try_docker(&["inspect", "-f", "{{.State.Running}}", name]).as_deref() == Ok("true")
+    try_docker(&[
+        "inspect",
+        "-f",
+        "{{.State.Running}} {{.State.Restarting}}",
+        name,
+    ])
+    .as_deref()
+        == Ok("true false")
 }
 
 // --- The fake Wren -----------------------------------------------------------
@@ -218,6 +234,8 @@ enum Mode {
         agent_version: String,
     },
     /// Closes every connection without an answer.
+    // Used by the Wren-down scenario of Task 10.
+    #[allow(dead_code)]
     Down,
 }
 
@@ -252,6 +270,8 @@ struct Shared {
 /// `docker` and `cargo` for minutes, and the agent must still be answered.
 struct FakeWren {
     url: String,
+    // The id the fake answers with; Task 10 reads it.
+    #[allow(dead_code)]
     server_id: i64,
     port: u16,
     shared: Arc<Shared>,
@@ -515,15 +535,19 @@ fn volume(name: &str) -> String {
     format!("ww-test-su-{name}-config")
 }
 
-fn used_runs() -> &'static Mutex<Vec<i64>> {
-    static RUNS: OnceLock<Mutex<Vec<i64>>> = OnceLock::new();
-    RUNS.get_or_init(Mutex::default)
-}
-
 /// Starts the agent `ww-test-su-<name>` from `image` against the fake Wren;
 /// its id. `extra` goes before the image (more `-e`, `--label`, …).
 fn start_agent(name: &str, wren: &FakeWren, image: &str, extra: &[&str]) -> String {
     let container = format!("ww-test-su-{name}");
+    // Made here with the label (`-v` would make it without one), so that the
+    // volume can be told from anyone else's by its label.
+    docker(&[
+        "volume",
+        "create",
+        "--label",
+        "owner=wise-wren",
+        &volume(name),
+    ]);
     let config = format!("{}:/config", volume(name));
     let server = format!("WW_SERVER_URL={}", wren.url);
     let token = format!("WW_AGENT_TOKEN=wwa_{}", "t".repeat(43));
@@ -560,7 +584,6 @@ fn start_agent(name: &str, wren: &FakeWren, image: &str, extra: &[&str]) -> Stri
 
 /// An `agent_update` job as Wren sends it.
 fn job(run: i64, to_version: &str, to_digest: &str) -> Value {
-    used_runs().lock().unwrap().push(run);
     json!({
         "run_id": run,
         "kind": "agent_update",
@@ -592,36 +615,55 @@ fn state(name: &str) -> StateFile {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("selfupdate.json: {e}: {text}"))
 }
 
+/// The ids of the containers that mount this volume.
+fn users_of(volume: &str) -> Vec<String> {
+    try_docker(&["ps", "-aq", "--filter", &format!("volume={volume}")])
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
 /// Removes what the test `name` made: every container on its config volume
-/// (the agent, the renamed old one, helpers, the reader), the containers by
-/// name, the helpers of the runs it used, the volume and the rollback tags.
+/// (the agent, the renamed old and the new one, the helper of any run, the
+/// reader: the helpers carry no owner label, but they mount this volume and
+/// nobody else's container does), the containers by name, the volume and the
+/// rollback tags. A volume that can't be removed is reported, not forgotten.
 fn cleanup(name: &str) {
     let volume = volume(name);
-    let mut doomed: Vec<String> =
-        try_docker(&["ps", "-aq", "--filter", &format!("volume={volume}")])
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-    doomed.push(format!("ww-test-su-{name}"));
-    doomed.push(format!("ww-test-su-{name}-read"));
-    let old = try_docker(&[
-        "ps",
-        "-a",
-        "--filter",
-        &format!("name=ww-test-su-{name}-wren-old-"),
-        "--format",
-        "{{.Names}}",
-    ])
-    .unwrap_or_default();
-    doomed.extend(old.split_whitespace().map(str::to_string));
-    for run in used_runs().lock().unwrap().iter() {
-        doomed.push(format!("wren-agent-selfupdate-{run}"));
+    for _ in 0..2 {
+        let mut doomed = users_of(&volume);
+        doomed.push(format!("ww-test-su-{name}"));
+        doomed.push(format!("ww-test-su-{name}-read"));
+        let old = try_docker(&[
+            "ps",
+            "-a",
+            "--filter",
+            &format!("name=ww-test-su-{name}-wren-old-"),
+            "--format",
+            "{{.Names}}",
+        ])
+        .unwrap_or_default();
+        doomed.extend(old.split_whitespace().map(str::to_string));
+        for each in doomed {
+            let _ = try_docker(&["rm", "-f", &each]);
+        }
+        // A container that appeared meanwhile (a restarting helper) gets one
+        // more round.
+        if users_of(&volume).is_empty() {
+            break;
+        }
     }
-    for each in doomed {
-        let _ = try_docker(&["rm", "-f", &each]);
+    if try_docker(&["volume", "inspect", &volume]).is_ok()
+        && let Err(e) = try_docker(&["volume", "rm", &volume])
+    {
+        let msg = format!("cleanup of {name} left the volume {volume}: {e}");
+        if std::thread::panicking() {
+            eprintln!("{msg}");
+        } else {
+            panic!("{msg}");
+        }
     }
-    let _ = try_docker(&["volume", "rm", &volume]);
     let tags = try_docker(&[
         "image",
         "ls",
@@ -638,12 +680,16 @@ fn cleanup(name: &str) {
 
 /// Cleans up before the test (what an earlier, killed run left) and after it;
 /// when the test failed, prints the logs of its containers first.
-struct Scope(&'static str);
+/// It also holds the lock that keeps the scenarios one at a time: they share
+/// the registry, the `:latest` tag and the Docker host's names.
+struct Scope(&'static str, #[allow(dead_code)] MutexGuard<'static, ()>);
 
 impl Scope {
     fn new(name: &'static str) -> Scope {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let lock = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
         cleanup(name);
-        Scope(name)
+        Scope(name, lock)
     }
 }
 
@@ -676,8 +722,8 @@ async fn a_good_update_keeps_name_mounts_env_and_labels() {
     if !on() {
         return;
     }
-    ensure_registry();
     let _scope = Scope::new("good");
+    ensure_registry();
     build("0.90.0", "0.90.0");
     publish("0.90.0");
     let wren = FakeWren::start(3).await;
@@ -706,10 +752,17 @@ async fn a_good_update_keeps_name_mounts_env_and_labels() {
     ] {
         assert_eq!(after.pointer(p), before.pointer(p), "{p}");
     }
+    // The replacement is the new release, and it is up and talking to Wren
+    // (`:latest` points at 0.90.1 locally before the update, so the image
+    // name proves nothing; the image's version label does).
     assert_eq!(
-        after.pointer("/Config/Image").and_then(Value::as_str),
-        Some(format!("{REPO}:latest").as_str())
+        after
+            .pointer("/Config/Labels/org.opencontainers.image.version")
+            .and_then(Value::as_str),
+        Some("0.90.1")
     );
+    assert!(running("ww-test-su-good"));
+    assert!(wren.beats_from("0.90.1") > 0, "the new agent never beat");
     assert_eq!(containers_named("ww-test-su-good-wren-old-"), "");
     wait_gone("wren-agent-selfupdate-100", Duration::from_secs(30)).await;
     assert!(
@@ -735,8 +788,8 @@ async fn a_new_agent_wren_refuses_is_rolled_back() {
     if !on() {
         return;
     }
-    ensure_registry();
     let _scope = Scope::new("refused");
+    ensure_registry();
     build("0.90.0", "0.90.0");
     publish("0.90.0");
     let wren = FakeWren::start(3).await;
@@ -755,6 +808,14 @@ async fn a_new_agent_wren_refuses_is_rolled_back() {
     let after = inspect("ww-test-su-refused");
     assert_eq!(after["Id"], old_id);
     assert!(running("ww-test-su-refused"));
+    assert_eq!(
+        wren.steps_of(110),
+        [
+            ("preflight".into(), "ok".into()),
+            ("update".into(), "failed".into()),
+            ("rollback".into(), "ok".into())
+        ]
+    );
     let st = state("refused");
     assert_eq!(st.phase, Phase::RolledBack);
     assert!(st.reason.contains("didn't reach Wren"), "{}", st.reason);
@@ -766,8 +827,8 @@ async fn a_new_agent_that_exits_at_once_is_rolled_back_fast() {
     if !on() {
         return;
     }
-    ensure_registry();
     let _scope = Scope::new("exits");
+    ensure_registry();
     build("0.90.0", "0.90.0");
     publish("0.90.0");
     let wren = FakeWren::start(3).await;
@@ -794,6 +855,14 @@ async fn a_new_agent_that_exits_at_once_is_rolled_back_fast() {
     let after = inspect("ww-test-su-exits");
     assert_eq!(after["Id"], old_id);
     assert!(running("ww-test-su-exits"));
+    assert_eq!(
+        wren.steps_of(120),
+        [
+            ("preflight".into(), "ok".into()),
+            ("update".into(), "failed".into()),
+            ("rollback".into(), "ok".into())
+        ]
+    );
     let st = state("exits");
     assert_eq!(st.phase, Phase::RolledBack);
     assert!(st.reason.contains("the new agent stopped"), "{}", st.reason);
