@@ -1010,8 +1010,10 @@ pub fn close_silent(c: &Connection) -> rusqlite::Result<Vec<Run>> {
 /// process, started before this one did (`uptime` seconds ago). They are
 /// "needs you": the target may be on the new or the old version.
 ///
-/// An agent update is left alone: the agent restarting is what it is, and the
-/// new agent finishes it (or the old one, after a roll back).
+/// An agent update that was handed over (its `preflight` is `ok`) is left
+/// alone: the agent restarting is what it is, and the new agent finishes it
+/// (or the old one, after a roll back). One that wasn't is `failed`: the old
+/// agent restarted during its checks, and nothing changed.
 pub fn close_interrupted(
     c: &Connection,
     server_id: i64,
@@ -1027,7 +1029,10 @@ pub fn close_interrupted(
     });
     let ids: Vec<i64> = c
         .prepare(
-            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'running' AND kind != 'agent_update' AND (
+            "SELECT id FROM runs WHERE server_id = ?1 AND status = 'running'
+             AND NOT (kind = 'agent_update' AND EXISTS (SELECT 1 FROM run_steps
+                 WHERE run_id = runs.id AND step = 'preflight' AND status = 'ok'))
+             AND (
                  (agent_boot IS NOT NULL AND agent_boot != ?2)
                  OR (agent_boot IS NULL AND ?3 IS NOT NULL AND started_at < datetime('now', ?3)))",
         )?
@@ -1036,6 +1041,18 @@ pub fn close_interrupted(
     let mut out = Vec::new();
     for id in ids {
         let Some(run) = get(c, id)? else { continue };
+        if run.kind == crate::agent_update::KIND {
+            close(
+                c,
+                id,
+                FAILED,
+                "The agent restarted before it handed over; nothing changed.",
+            )?;
+            if let Some(r) = get(c, id)? {
+                out.push(r);
+            }
+            continue;
+        }
         let name = &run.target_name;
         let mut detail = format!(
             "The agent restarted during the run; check {name}: it may be on the new or the old version."

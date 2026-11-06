@@ -438,6 +438,31 @@ async fn a_new_agent_process_does_not_close_an_agent_update() {
 }
 
 #[tokio::test]
+async fn a_new_agent_process_closes_an_agent_update_that_was_not_handed_over() {
+    for (name, preflight) in [
+        ("none", None),
+        ("running", Some("running")),
+        ("failed", Some("failed")),
+    ] {
+        let (app, id, token) = setup().await;
+        let run = approve_as_admin(&app, id, "0.10.1").await;
+        poll(&app, &token, "boot-a").await;
+        if let Some(status) = preflight {
+            common::step(&app, &token, run, "preflight", status).await;
+        }
+        // The old agent restarted before its preflight was through.
+        beat(&app, &token, "0.10.0", "boot-b", Some(su(true, ""))).await;
+        poll(&app, &token, "boot-b").await;
+        let r = runs_get(&app, run).await;
+        assert_eq!(r.status, "failed", "{name}");
+        assert_eq!(
+            r.detail, "The agent restarted before it handed over; nothing changed.",
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_agent_update_may_be_silent_for_45_minutes() {
     let (app, id, token) = setup().await;
     let run = approve_as_admin(&app, id, "0.10.1").await;
@@ -523,6 +548,7 @@ async fn settings_wait_while_the_agent_updates() {
         .unwrap();
     let run = approve_as_admin(&app, id, "0.10.1").await;
     poll(&app, &token, "boot-a").await;
+    step(&app, &token, run, "preflight", "ok").await;
     // The new agent's probation heartbeat: version 2 waits, the report is kept.
     let reply = beat_with_settings_report(&app, &token, "boot-b", 1).await;
     assert!(reply.get("settings").is_none(), "{reply}");
@@ -636,8 +662,9 @@ async fn a_scheduled_agent_update_is_left_alone_by_the_maintenance_sync() {
 async fn a_probation_report_during_an_agent_update_imports_nothing() {
     let (app, id, token) = setup().await;
     assert_eq!(app.count("SELECT COUNT(*) FROM agent_settings").await, 0);
-    approve_as_admin(&app, id, "0.10.1").await;
+    let run = approve_as_admin(&app, id, "0.10.1").await;
     poll(&app, &token, "boot-a").await;
+    step(&app, &token, run, "preflight", "ok").await;
     // A report with settings in force, as an unlocked agent without stored
     // settings would see imported: not while the update runs.
     let settings = json!({
