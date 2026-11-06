@@ -366,6 +366,31 @@ fn save_checked(path: &Path, s: &StateFile) -> Result<(), String> {
     }
 }
 
+/// Writes the run down, then moves the reference onto `release` with `tag`
+/// (source, target). The backups and the `prepared` state, which names the
+/// old image, are saved before the tag moves: an agent that dies in between
+/// leaves a run that [`settle_prepared`](super::probation::settle_prepared)
+/// puts back. On an error the caller [`undo`]es (which also puts back a tag
+/// that did move).
+async fn record_then_retag<T, F>(
+    tag: T,
+    dir: &Path,
+    prepared: &StateFile,
+    release: &str,
+    log: &mut Vec<String>,
+) -> Result<(), String>
+where
+    T: Fn(String, String) -> F,
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    back_up(dir, prepared.run_id)?;
+    save_checked(&dir.join(STATE_FILE), prepared)?;
+    log.push(format!("state saved, hard limit in {} s", scaled(HARD)));
+    tag(release.to_string(), prepared.reference.clone()).await?;
+    log.push(format!("{} now names {release}", prepared.reference));
+    Ok(())
+}
+
 /// Everything from the pulls to the hand-over. Runs after the ledger has
 /// admitted the job.
 async fn prepare_and_hand_over<R: Report>(
@@ -468,18 +493,9 @@ async fn prepare_and_hand_over<R: Report>(
         .await;
     }
     log.push(format!("old image kept as {keep}"));
-    if let Err(e) = tag(release.clone(), own.reference.clone()).await {
-        return failed(
-            report,
-            &e,
-            Note::plain(format!("failed before anything changed: {e}")),
-        )
-        .await;
-    }
-    log.push(format!("{} now names {release}", own.reference));
 
-    // From here the tag has moved: every way out puts it back.
-    let backed_up = back_up(dir, run);
+    // The run is written down before the reference moves; from here every
+    // way out puts the tag back.
     let engine = DockerEngine {
         socket: socket.to_string(),
     };
@@ -496,8 +512,8 @@ async fn prepare_and_hand_over<R: Report>(
         config_dir: dir,
     });
     let path = dir.join(STATE_FILE);
-    let saved = backed_up.and_then(|()| save_checked(&path, &prepared));
-    if let Err(e) = saved {
+    let retag = |from: String, to: String| async move { tag(from, to).await.map(|_| ()) };
+    if let Err(e) = record_then_retag(retag, dir, &prepared, &release, &mut log).await {
         undo(config, own, run).await;
         return failed(
             report,
@@ -506,7 +522,6 @@ async fn prepare_and_hand_over<R: Report>(
         )
         .await;
     }
-    log.push(format!("state saved, hard limit in {} s", scaled(HARD)));
 
     let ms = u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX);
     let posted = report
@@ -1007,6 +1022,53 @@ mod tests {
         assert!(!wait_started(&path, 58, short, poll).await, "another run");
         std::fs::write(&path, "nonsense").unwrap();
         assert!(!wait_started(&path, 57, short, poll).await, "unreadable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // An agent that dies right after the reference moved must leave a
+    // `prepared` run naming the old image, which `settle_prepared` puts back.
+    #[tokio::test]
+    async fn the_run_is_written_down_before_the_reference_moves() {
+        let dir = temp("retag");
+        let path = dir.join(crate::selfupdate::STATE_FILE);
+        std::fs::write(dir.join("runs.json"), "{}").unwrap();
+        let s = StateFile {
+            format: state::FORMAT,
+            run_id: 57,
+            phase: Phase::Prepared,
+            reference: "ghcr.io/ferdinand99/wise-wren-agent:latest".into(),
+            old_image_id: "sha256:old".into(),
+            ..StateFile::default()
+        };
+        let release = "ghcr.io/ferdinand99/wise-wren-agent@sha256:new";
+        // Each tag, and the state file as it was when the tag moved.
+        let seen = std::sync::Mutex::new(Vec::new());
+        let (seen_ref, path_ref) = (&seen, path.as_path());
+        let tag = move |from: String, to: String| async move {
+            let on_disk = state::load(path_ref).ok().flatten();
+            seen_ref.lock().unwrap().push((from, to, on_disk));
+            Ok::<(), String>(())
+        };
+        let mut log = Vec::new();
+        record_then_retag(tag, &dir, &s, release, &mut log)
+            .await
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(release.to_string(), s.reference.clone(), Some(s.clone()))]
+        );
+        assert!(dir.join("selfupdate").join("57").join("runs.json").exists());
+        assert_eq!(log.len(), 2);
+
+        // A run that can't be written down never moves the reference.
+        let blocked = dir.join("not-a-folder");
+        std::fs::write(&blocked, "x").unwrap();
+        assert!(
+            record_then_retag(tag, &blocked, &s, release, &mut log)
+                .await
+                .is_err()
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
