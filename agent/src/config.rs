@@ -60,6 +60,14 @@
 //! snapshots = 2         # data snapshots (1-10; default: what Wren asks, 2)
 //! ```
 //!
+//! ```toml
+//! # Optional: let Wren replace this agent with a newer release. Off unless
+//! # the host turns it on: WW_AGENT_SELF_UPDATE=1 (which wins when set) or here.
+//! [self_update]
+//! enabled = true
+//! confirm_minutes = 5   # a new agent must reach Wren within this many minutes (2-30)
+//! ```
+//!
 //! Every problem names the field it is about; the agent refuses to start
 //! with any of them.
 
@@ -82,6 +90,9 @@ pub const TOKEN_BODY_LEN: usize = 43;
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 /// Where Unraid's Compose Manager plugin keeps its stacks.
 pub const COMPOSE_MANAGER: &str = "/boot/config/plugins/compose.manager/projects";
+/// The environment variable that switches agent self-update on or off; it
+/// wins over `[self_update] enabled`.
+pub const SELF_UPDATE_ENV: &str = "WW_AGENT_SELF_UPDATE";
 /// Where Docker listens unless `docker_socket` says otherwise.
 pub const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 
@@ -113,6 +124,8 @@ pub struct Config {
     pub updates: UpdatePolicy,
     /// How many rollback points stay per target (`[retention]`).
     pub retention: Retention,
+    /// Whether Wren may replace this agent (`[self_update]`, local only).
+    pub self_update: SelfUpdateConfig,
     /// The run ledger (`runs.json`), beside `agent.toml`.
     pub ledger: PathBuf,
 }
@@ -132,6 +145,55 @@ impl Default for Retention {
             rollback_images: 1,
             snapshots: None,
         }
+    }
+}
+
+/// `[self_update]`: the host's own switch for letting Wren replace the agent.
+/// Only the host sets it (agent.toml or `WW_AGENT_SELF_UPDATE`); settings
+/// from Wren are refused when they try to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelfUpdateConfig {
+    pub enabled: bool,
+    /// How long a new agent has to reach Wren before the old one is put back.
+    pub confirm_minutes: u64,
+}
+
+/// The default time a new agent has to reach Wren, in minutes.
+pub const CONFIRM_MINUTES: u64 = 5;
+/// The shortest and longest `confirm_minutes`.
+pub const CONFIRM_MINUTES_RANGE: std::ops::RangeInclusive<u64> = 2..=30;
+
+impl Default for SelfUpdateConfig {
+    fn default() -> SelfUpdateConfig {
+        SelfUpdateConfig {
+            enabled: false,
+            confirm_minutes: CONFIRM_MINUTES,
+        }
+    }
+}
+
+impl SelfUpdateConfig {
+    /// The `--check` line.
+    pub fn describe(&self) -> String {
+        if self.enabled {
+            format!(
+                "self-update: on (a new agent must reach Wren within {} min)",
+                self.confirm_minutes
+            )
+        } else {
+            format!("self-update: off (set {SELF_UPDATE_ENV}=1 to let Wren update this agent)")
+        }
+    }
+}
+
+/// Reads an on/off value: `1 true yes on` and `0 false no off` (any case);
+/// empty counts as not set.
+pub(crate) fn switch(raw: &str) -> Result<Option<bool>, ()> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "1" | "true" | "yes" | "on" => Ok(Some(true)),
+        "0" | "false" | "no" | "off" => Ok(Some(false)),
+        _ => Err(()),
     }
 }
 
@@ -276,6 +338,14 @@ struct RawConfig {
     scan_interval: Option<String>,
     updates: Option<RawUpdates>,
     retention: Option<RawRetention>,
+    self_update: Option<RawSelfUpdate>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSelfUpdate {
+    enabled: Option<bool>,
+    confirm_minutes: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -772,10 +842,34 @@ impl Config {
             snapshots: count(raw_retention.snapshots, "snapshots"),
         };
 
+        let raw_self_update = raw.self_update.unwrap_or_default();
+        let from_env = match env(SELF_UPDATE_ENV) {
+            Some(v) => switch(&v).unwrap_or_else(|()| {
+                problems.push(format!("{SELF_UPDATE_ENV} must be 1 or 0 (got \"{v}\")"));
+                None
+            }),
+            None => None,
+        };
+        let confirm_minutes = match raw_self_update.confirm_minutes {
+            None => CONFIRM_MINUTES,
+            Some(n) => match u64::try_from(n) {
+                Ok(n) if CONFIRM_MINUTES_RANGE.contains(&n) => n,
+                _ => {
+                    problems.push("[self_update] confirm_minutes must be 2–30".to_string());
+                    CONFIRM_MINUTES
+                }
+            },
+        };
+        let self_update = SelfUpdateConfig {
+            enabled: from_env.or(raw_self_update.enabled).unwrap_or(false),
+            confirm_minutes,
+        };
+
         if problems.is_empty() {
             Ok(Config {
                 updates,
                 retention,
+                self_update,
                 server,
                 token,
                 roots,
@@ -847,6 +941,74 @@ mod tests {
         format!(
             "server = \"http://10.0.3.26:3003/\"\ntoken = \"{TOKEN}\"\nroots = [\"/mnt/user/appdata\", \"/mnt/cache/appdata\"]\n"
         )
+    }
+
+    fn env_su(v: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |k| (k == "WW_AGENT_SELF_UPDATE").then(|| v.to_string())
+    }
+
+    #[test]
+    fn self_update_is_off_unless_the_host_turns_it_on() {
+        let c = Config::from_parts(Some(&base()), no_env).unwrap();
+        assert!(!c.self_update.enabled);
+        assert_eq!(c.self_update.confirm_minutes, 5);
+        assert!(
+            Config::from_parts(Some(&base()), env_su("1"))
+                .unwrap()
+                .self_update
+                .enabled
+        );
+        let toml = format!(
+            "{}\n[self_update]\nenabled = true\nconfirm_minutes = 10\n",
+            base()
+        );
+        let c = Config::from_parts(Some(&toml), no_env).unwrap();
+        assert!(c.self_update.enabled);
+        assert_eq!(c.self_update.confirm_minutes, 10);
+        // The variable wins when set; empty counts as unset.
+        assert!(
+            !Config::from_parts(Some(&toml), env_su("off"))
+                .unwrap()
+                .self_update
+                .enabled
+        );
+        assert!(
+            Config::from_parts(Some(&toml), env_su(""))
+                .unwrap()
+                .self_update
+                .enabled
+        );
+    }
+
+    #[test]
+    fn bad_self_update_values_name_the_field() {
+        for (extra, field) in [
+            ("[self_update]\nconfirm_minutes = 1\n", "confirm_minutes"),
+            ("[self_update]\nconfirm_minutes = 31\n", "confirm_minutes"),
+            ("[self_update]\nauto = true\n", "auto"),
+        ] {
+            let text = format!("{}\n{extra}", base());
+            let e = Config::from_parts(Some(&text), no_env).unwrap_err();
+            assert!(e.to_string().contains(field), "{e}");
+        }
+        let e = Config::from_parts(Some(&base()), env_su("maybe")).unwrap_err();
+        assert!(e.to_string().contains("WW_AGENT_SELF_UPDATE"), "{e}");
+    }
+
+    #[test]
+    fn check_says_whether_self_update_is_on() {
+        assert_eq!(
+            SelfUpdateConfig {
+                enabled: true,
+                confirm_minutes: 5
+            }
+            .describe(),
+            "self-update: on (a new agent must reach Wren within 5 min)"
+        );
+        assert_eq!(
+            SelfUpdateConfig::default().describe(),
+            "self-update: off (set WW_AGENT_SELF_UPDATE=1 to let Wren update this agent)"
+        );
     }
 
     fn problems(extra: &str) -> Vec<String> {

@@ -3,11 +3,11 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use common::{App, Web, api_token, bearer};
+use common::{
+    App, Web, add_hook, api_token, bearer, finish, hooks, poll_as, post_json, set_remote, step,
+};
 use serde_json::{Value, json};
 use vole_kit::auth::TokenScope;
 use wise_wren::{runs, targets};
@@ -22,15 +22,6 @@ fn container(name: &str, image: &str, labels: Value) -> Value {
         "name": name, "image": image, "image_id": "sha256:1",
         "repo_digests": [format!("{repo}@{OLD}")], "state": "running", "labels": labels,
     })
-}
-
-async fn post_json(app: &App, path: &str, token: &str, body: Value) -> common::Res {
-    let req = Request::post(path)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    app.send(req).await
 }
 
 /// LANBox with two plain containers and a Compose stack whose files the
@@ -64,24 +55,6 @@ async fn send_inventory(app: &App, token: &str, a_digests: &[&str]) {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 }
 
-async fn set_remote(app: &App, image: &'static str, digest: &'static str) {
-    app.wren
-        .core
-        .with_conn(move |c| {
-            targets::set_remote(
-                c,
-                image,
-                &Ok(wise_wren::registry::Remote {
-                    digest: digest.into(),
-                    media_type: String::new(),
-                }),
-            )?;
-            targets::refresh_all(c)
-        })
-        .await
-        .unwrap();
-}
-
 async fn target(app: &App, name: &'static str) -> targets::Target {
     app.wren
         .core
@@ -107,26 +80,6 @@ async fn run(app: &App, id: i64) -> runs::Run {
 /// The agent's long poll, without waiting.
 async fn poll(app: &App, token: &str) -> common::Res {
     bearer(app, "GET", "/api/agent/v1/jobs?wait=0", token).await
-}
-
-async fn step(app: &App, token: &str, run: i64, step: &str, status: &str) -> common::Res {
-    post_json(
-        app,
-        &format!("/api/agent/v1/runs/{run}/steps"),
-        token,
-        json!({"step": step, "status": status, "log": "…", "duration_ms": 120}),
-    )
-    .await
-}
-
-async fn finish(app: &App, token: &str, run: i64, outcome: &str) -> common::Res {
-    post_json(
-        app,
-        &format!("/api/agent/v1/runs/{run}/finish"),
-        token,
-        json!({"outcome": outcome, "detail": "x"}),
-    )
-    .await
 }
 
 async fn approve(web: &mut Web<'_>, id: i64, key: &str) -> common::Res {
@@ -434,39 +387,6 @@ async fn silent_agent_fails_the_run() {
     assert_eq!(poll(&app, &token).await.status, StatusCode::NO_CONTENT);
 }
 
-/// A webhook receiver: what it got.
-async fn hooks() -> (String, Arc<Mutex<Vec<Value>>>) {
-    let got: Arc<Mutex<Vec<Value>>> = Arc::default();
-    let g = got.clone();
-    let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
-        let g = g.clone();
-        async move {
-            g.lock()
-                .unwrap()
-                .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
-            StatusCode::OK
-        }
-    });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{addr}/hook"), got)
-}
-
-async fn add_hook(app: &App, url: String) {
-    let config = json!({"url": url, "method": "POST"}).to_string();
-    app.wren
-        .core
-        .with_conn(move |c| {
-            c.execute(
-                "INSERT INTO notification_channels (name, kind, config) VALUES ('hook', 'webhook', ?1)",
-                [config],
-            )
-        })
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn run_results_notify() {
     let (app, _, _) = setup().await;
@@ -711,17 +631,6 @@ async fn revoked_token_gets_no_job_from_a_waiting_poll() {
 async fn heartbeat(app: &App, token: &str, beat: Value) {
     let res = post_json(app, "/api/agent/v1/heartbeat", token, beat).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-}
-
-/// The job poll of the agent process `boot`, without waiting.
-async fn poll_as(app: &App, token: &str, boot: &str) -> common::Res {
-    bearer(
-        app,
-        "GET",
-        &format!("/api/agent/v1/jobs?wait=0&boot={boot}"),
-        token,
-    )
-    .await
 }
 
 async fn approve_both(app: &App) {

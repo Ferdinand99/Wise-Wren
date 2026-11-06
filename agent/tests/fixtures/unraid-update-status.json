@@ -1,0 +1,12 @@
+{
+  "ghcr.io/ferdinand99/wise-wren-agent:latest": {
+    "local": "sha256:old",
+    "remote": "sha256:old",
+    "status": "true"
+  },
+  "lscr.io/linuxserver/sonarr:latest": {
+    "local": "sha256:5e9a1c0b7d3f2468ace0b1d3f5a7c9e1b3d5f7092a4c6e8f0b1d3f5a7c9e0b2d",
+    "remote": "sha256:5e9a1c0b7d3f2468ace0b1d3f5a7c9e1b3d5f7092a4c6e8f0b1d3f5a7c9e0b2d",
+    "status": "true"
+  }
+}

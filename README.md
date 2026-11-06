@@ -73,6 +73,8 @@ limits of its own (folders only inside what is mounted into it, never system fol
 presets) before it applies it, and widening changes notify your channels. Lock an agent with `WW_AGENT_LOCKED=1` and
 only its local `agent.toml` counts.
 
+From 0.10 Wren can also update its own agents, but only where the host's owner switches that on locally (`WW_AGENT_SELF_UPDATE=1`), only to Wren's own version and only from the official image, with a rollback if the new agent can't reach Wren ([Agent self-update](docs/agent.md#agent-self-update)).
+
 
 ## Notifications in the Hedgerow app
 

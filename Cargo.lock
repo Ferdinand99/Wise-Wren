@@ -3144,6 +3144,7 @@ dependencies = [
 name = "wren-agent"
 version = "0.9.2"
 dependencies = [
+ "axum",
  "reqwest",
  "serde",
  "serde_json",
@@ -3151,6 +3152,8 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "vole-kit",
+ "wise-wren",
 ]
 
 [[package]]

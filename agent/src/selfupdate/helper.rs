@@ -1,0 +1,1344 @@
+//! The self-update helper: a short-lived container (the old agent's image,
+//! `wren-agent --self-update-helper`) that swaps the agent's own container
+//! for one on the new image, waits for the new agent to confirm and puts the
+//! old one back if it doesn't. It never talks to Wren; the state file is its
+//! only memory ([`machine`](super::machine) decides, this module does).
+//!
+//! Every step looks at the world first, so a helper that was restarted (a
+//! crash, a daemon restart, a reboot) carries on without repeating a
+//! destructive step. While it lives, the helper alone writes the state file.
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use serde_json::Value;
+
+use super::machine::{Action, Ctr0, Seen, apply, next};
+use super::state::{FORMAT, Phase, StateFile, break_glass, confirmed, load, now, save};
+use super::{BACKUP_DIR, ROLLBACK_CHECK, SELF_UPDATE_REPO, STOP, helper_name, old_name, scaled};
+use crate::docker::{cli, get_json, post_json};
+use crate::managed::write_private;
+use crate::run::{UNRAID_STATUS, create_body, write_unraid_status};
+
+/// The files a rollback puts back from the run's backup folder.
+const RESTORED: [&str; 2] = ["managed.json", "runs.json"];
+
+/// Puts `managed.json` and `runs.json` back from run `run`'s backup folder
+/// in `dir`; a file without a backup is left as it is.
+pub fn restore_backup(dir: &Path, run: i64) -> Result<(), String> {
+    let backup = dir.join(BACKUP_DIR).join(run.to_string());
+    for name in RESTORED {
+        match std::fs::read(backup.join(name)) {
+            Ok(bytes) => write_private(&dir.join(name), &bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("can't read {}: {e}", backup.join(name).display())),
+        }
+    }
+    Ok(())
+}
+
+/// What the helper needs of the Docker host. [`DockerEngine`] is the real
+/// one; the tests use a fake.
+pub trait Engine {
+    /// `GET /containers/<name>/json`: `Ok(None)` only when Docker says there
+    /// is no such container; any other failure is an error (the helper then
+    /// decides nothing, because it can't tell a gone container from a
+    /// Docker that didn't answer).
+    fn inspect(&self, name: &str) -> impl Future<Output = Result<Option<Value>, String>> + Send;
+    /// The `Config` of image `image_id` (`Null` when it can't be read).
+    fn image_config(&self, image_id: &str) -> impl Future<Output = Value> + Send;
+    /// The id of the image `reference` names: `Ok(None)` only when Docker
+    /// says there is no such image.
+    fn image_id(
+        &self,
+        reference: &str,
+    ) -> impl Future<Output = Result<Option<String>, String>> + Send;
+    fn stop(&self, name: &str, seconds: u64) -> impl Future<Output = Result<(), String>> + Send;
+    fn rename(&self, from: &str, to: &str) -> impl Future<Output = Result<(), String>> + Send;
+    /// Creates container `name` and returns its id.
+    fn create(
+        &self,
+        name: &str,
+        body: &Value,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+    fn start(&self, name: &str) -> impl Future<Output = Result<(), String>> + Send;
+    fn remove(&self, name: &str, force: bool) -> impl Future<Output = Result<(), String>> + Send;
+    fn tag(&self, source: &str, target: &str) -> impl Future<Output = Result<(), String>> + Send;
+    /// The host's kernel boot id (`/proc/sys/kernel/random/boot_id`).
+    fn host_boot(&self) -> String;
+    /// The id of the container this process runs in (empty when unknown).
+    fn own_id(&self) -> String;
+    /// Unraid's update-status file ([`UNRAID_STATUS`]).
+    fn unraid_status_file(&self) -> PathBuf;
+    /// Seconds since the epoch.
+    fn now(&self) -> u64;
+    fn sleep(&self, d: Duration) -> impl Future<Output = ()> + Send;
+}
+
+/// Docker over its Unix socket.
+pub struct DockerEngine {
+    pub socket: String,
+}
+
+impl DockerEngine {
+    async fn docker(&self, args: &[&str], timeout: Duration) -> Result<(), String> {
+        cli(&self.socket, args, timeout).await.map(|_| ())
+    }
+}
+
+impl Engine for DockerEngine {
+    async fn inspect(&self, name: &str) -> Result<Option<Value>, String> {
+        match get_json(&self.socket, &format!("/containers/{name}/json")).await {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn image_config(&self, image_id: &str) -> Value {
+        get_json(&self.socket, &format!("/images/{image_id}/json"))
+            .await
+            .ok()
+            .and_then(|i| i.get("Config").cloned())
+            .unwrap_or(Value::Null)
+    }
+
+    async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+        match get_json(&self.socket, &format!("/images/{reference}/json")).await {
+            Ok(v) => Ok(v.get("Id").and_then(Value::as_str).map(str::to_string)),
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn stop(&self, name: &str, seconds: u64) -> Result<(), String> {
+        let secs = seconds.to_string();
+        self.docker(
+            &["stop", "-t", &secs, name],
+            Duration::from_secs(seconds + 30),
+        )
+        .await
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<(), String> {
+        self.docker(&["rename", from, to], Duration::from_secs(30))
+            .await
+    }
+
+    async fn create(&self, name: &str, body: &Value) -> Result<String, String> {
+        let answer = post_json(
+            &self.socket,
+            &format!("/containers/create?name={name}"),
+            body,
+        )
+        .await?;
+        answer
+            .get("Id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "Docker created the container but sent no id".to_string())
+    }
+
+    async fn start(&self, name: &str) -> Result<(), String> {
+        self.docker(&["start", name], Duration::from_secs(120))
+            .await
+    }
+
+    async fn remove(&self, name: &str, force: bool) -> Result<(), String> {
+        let mut args = vec!["rm"];
+        if force {
+            args.push("-f");
+        }
+        args.push(name);
+        self.docker(&args, Duration::from_secs(60)).await
+    }
+
+    async fn tag(&self, source: &str, target: &str) -> Result<(), String> {
+        self.docker(&["tag", source, target], Duration::from_secs(30))
+            .await
+    }
+
+    fn host_boot(&self) -> String {
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    fn own_id(&self) -> String {
+        crate::jobs::own_id()
+    }
+
+    fn unraid_status_file(&self) -> PathBuf {
+        PathBuf::from(UNRAID_STATUS)
+    }
+
+    fn now(&self) -> u64 {
+        now()
+    }
+
+    async fn sleep(&self, d: Duration) {
+        tokio::time::sleep(d).await;
+    }
+}
+
+/// Whether `get_json`'s error is Docker's 404 (no such container). It words a
+/// non-200 answer "Docker answered <status line>"; a test holds this to that
+/// wording, because a miss here makes every 404 a failed look.
+fn is_not_found(error: &str) -> bool {
+    error.starts_with("Docker answered") && error.contains(" 404")
+}
+
+/// What the helper makes of a container's inspect.
+pub fn observe(inspect: Option<&Value>) -> Option<Ctr0> {
+    let v = inspect?;
+    Some(Ctr0 {
+        id: v
+            .get("Id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        running: v
+            .pointer("/State/Running")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        status: v
+            .pointer("/State/Status")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        restart_count: v.get("RestartCount").and_then(Value::as_i64).unwrap_or(0),
+    })
+}
+
+/// The helper container's whole life: carries out the run in `state_path`.
+/// `true` when the helper's process may end well (the run is done or rolled
+/// back, or there is no run), `false` when it ends in a state that needs a
+/// person.
+///
+/// A helper whose state file is gone has no run to carry out, and its
+/// restart policy would only start it again to find the same: it removes
+/// its own container.
+pub async fn carry_out<E: Engine>(engine: &E, state_path: &Path) -> bool {
+    if matches!(load(state_path), Ok(None)) {
+        tracing::warn!(
+            "{} doesn't exist: there is no run to carry out; removing this helper",
+            state_path.display()
+        );
+        let own = engine.own_id();
+        if own.is_empty() {
+            tracing::warn!("can't find this helper's own container; remove it by hand");
+        } else if let Err(e) = engine.remove(&own, true).await {
+            tracing::warn!("couldn't remove this helper's container {own}: {e}");
+        }
+        return true;
+    }
+    match run(engine, state_path).await {
+        Ok(Phase::Done | Phase::RolledBack) => true,
+        Ok(phase) => {
+            tracing::error!("the self-update ended as {phase:?}");
+            false
+        }
+        Err(err) => {
+            tracing::error!("{err}");
+            false
+        }
+    }
+}
+
+/// Carries out the run in `state_path` to its end and returns the last phase.
+/// An error means the file could not be used at all (nothing was touched).
+pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, String> {
+    let mut s =
+        load(state_path)?.ok_or_else(|| format!("{} doesn't exist", state_path.display()))?;
+    if s.format != FORMAT || s.run_id == 0 {
+        return Err(format!(
+            "{} is not a run this helper understands (format {}, run {})",
+            state_path.display(),
+            s.format,
+            s.run_id
+        ));
+    }
+    // The config folder is wherever the state file is (the helper only sees
+    // the folder's mount, under whatever name).
+    let dir = state_path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let old_n = old_name(&s.container, s.run_id);
+    tracing::info!(
+        "self-update helper: run {} of {}, phase {:?}",
+        s.run_id,
+        s.container,
+        s.phase
+    );
+    let mut first = true;
+    let mut told_past_limit = false;
+    loop {
+        let before = s.clone();
+        let now = engine.now();
+        // A pass that can't see the world decides nothing: a Docker that
+        // didn't answer is not a container that is gone.
+        let (renamed, named) = match (
+            engine.inspect(&old_n).await,
+            engine.inspect(&s.container).await,
+        ) {
+            (Ok(renamed), Ok(named)) => (renamed, named),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!("can't look at the containers, trying again: {e}");
+                // Past the hard limit the helper still can't roll back:
+                // say once how to do it by hand.
+                if now > s.hard_deadline && !told_past_limit {
+                    told_past_limit = true;
+                    tracing::error!(
+                        "the self-update is past its time limit and Docker can't be looked at; if that stays so, put the old agent back by hand: {}",
+                        break_glass(&s.container, s.run_id)
+                    );
+                }
+                engine.sleep(Duration::from_secs(scaled(2))).await;
+                continue;
+            }
+        };
+        // The boot id is compared and stored on the first pass only, so a
+        // reboot is seen once.
+        let mut boot_changed = false;
+        if first && !s.phase.terminal() {
+            let boot = engine.host_boot();
+            boot_changed = !boot.is_empty() && !s.host_boot.is_empty() && boot != s.host_boot;
+            if !boot.is_empty() {
+                s.host_boot = boot;
+            }
+        }
+        let seen = Seen {
+            now,
+            named: observe(named.as_ref()),
+            renamed: observe(renamed.as_ref()),
+            confirmed: confirmed(&dir, s.run_id),
+            boot_changed,
+            fresh_start: first,
+        };
+        first = false;
+        // A new container whose id was lost (the reply to `create` never
+        // came) is known by now.
+        if s.new_container_id.is_empty()
+            && matches!(
+                s.phase,
+                Phase::OldRenamed | Phase::NewCreated | Phase::NewStarted | Phase::Confirmed
+            )
+            && let Some(c) = seen.named.as_ref().filter(|c| c.id != s.old_container_id)
+        {
+            s.new_container_id = c.id.clone();
+        }
+        let mut action = next(&s, &seen);
+        match &action {
+            Action::Finish => return Ok(finish(engine, &s).await),
+            Action::Wait | Action::RollBack(_) => {}
+            Action::Advance(_) | Action::ExtendDeadline => apply(&mut s, &action, &seen),
+            // A stop or rename that fails leaves the old agent down or
+            // half-moved: put it back at once.
+            Action::StopOld => {
+                if let Err(e) = engine.stop(&s.container, STOP).await {
+                    action = Action::RollBack(format!("couldn't stop the old agent: {e}"));
+                }
+            }
+            Action::RenameOld => {
+                if let Err(e) = engine.rename(&s.container, &old_n).await {
+                    action = Action::RollBack(format!("couldn't rename the old agent: {e}"));
+                }
+            }
+            // Create and start are retried on the next pass until the time
+            // for creating and starting the new agent is over.
+            Action::CreateNew => match create_new(engine, &s, renamed.as_ref()).await {
+                Ok(id) => s.new_container_id = id,
+                Err(e) => tracing::warn!("couldn't create the new agent: {e}"),
+            },
+            // Only a new container on the release the old agent verified is
+            // started.
+            Action::StartNew => match verified_image(engine, &s, named.as_ref()).await {
+                Ok(()) => match engine.start(&s.container).await {
+                    Ok(()) => apply(&mut s, &action, &seen),
+                    Err(e) => tracing::warn!("couldn't start the new agent: {e}"),
+                },
+                Err(Rb::Retry(e)) => {
+                    tracing::warn!("can't check the new agent's image, trying again: {e}");
+                }
+                Err(Rb::Failed(e)) => action = Action::RollBack(e),
+            },
+            Action::CleanUp => {
+                clean_up(engine, &s, &dir, &old_n).await;
+                s.phase = Phase::Done;
+                s.updated_at = seen.now;
+            }
+        }
+        if let Action::RollBack(reason) = action {
+            // A rollback that was begun keeps its first reason.
+            if s.phase != Phase::RollingBack {
+                s.phase = Phase::RollingBack;
+                s.reason = reason;
+            }
+            tracing::warn!("rolling back: {}", s.reason);
+            s.updated_at = seen.now;
+            // Written before anything is touched, so a restarted helper (and
+            // the old agent once it runs again) knows what is going on.
+            save(state_path, &s)?;
+            match roll_back(engine, &s, &dir, &old_n).await {
+                Ok(()) => s.phase = Phase::RolledBack,
+                // Docker didn't answer: nothing was decided, the next pass
+                // (still `rolling_back`) does it all again.
+                Err(Rb::Retry(e)) => {
+                    tracing::warn!("can't look at the containers, trying the rollback again: {e}");
+                    engine.sleep(Duration::from_secs(scaled(2))).await;
+                    continue;
+                }
+                Err(Rb::Failed(e)) => {
+                    s.phase = Phase::RollbackFailed;
+                    s.reason = format!("{}; {e}", s.reason);
+                    s.break_glass = break_glass(&s.container, s.run_id);
+                    tracing::error!("the rollback failed: {e}");
+                    tracing::error!("put the old agent back by hand: {}", s.break_glass);
+                }
+            }
+            s.updated_at = engine.now();
+            save(state_path, &s)?;
+            continue;
+        }
+        if s != before {
+            save(state_path, &s)?;
+        }
+        engine.sleep(Duration::from_secs(scaled(2))).await;
+    }
+}
+
+/// Creates the new container like the old one (renamed out of the way), on
+/// the new image.
+async fn create_new<E: Engine>(
+    engine: &E,
+    s: &StateFile,
+    renamed_inspect: Option<&Value>,
+) -> Result<String, String> {
+    let inspect = renamed_inspect.ok_or("the old container is gone")?;
+    let image = engine.image_config(&s.old_image_id).await;
+    let body = create_body(inspect, &image, &s.reference);
+    engine.create(&s.container, &body).await
+}
+
+/// The new container (its inspect `named`) was made from the reference, so
+/// check that it runs the image the old agent verified: the one
+/// `SELF_UPDATE_REPO@to_digest` names. A failed look is a retry.
+async fn verified_image<E: Engine>(
+    engine: &E,
+    s: &StateFile,
+    named: Option<&Value>,
+) -> Result<(), Rb> {
+    let release = format!("{SELF_UPDATE_REPO}@{}", s.to_digest);
+    let has = named
+        .and_then(|v| v.get("Image"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match engine.image_id(&release).await.map_err(Rb::Retry)? {
+        Some(want) if want == has => Ok(()),
+        Some(want) => Err(format!(
+            "the new container's image {has} isn't the verified release {release} ({want})"
+        )
+        .into()),
+        None => Err(format!("the verified image {release} is gone").into()),
+    }
+}
+
+/// After `confirmed` and the stable period: the status file says the new
+/// image is the one that runs, the old container and the backups go.
+/// Nothing here is worth failing an update that works for.
+async fn clean_up<E: Engine>(engine: &E, s: &StateFile, dir: &Path, old_n: &str) {
+    if s.unraid {
+        unraid_status(engine, s, &s.to_digest, &s.to_digest);
+    }
+    match engine.inspect(old_n).await {
+        Ok(Some(_)) => {
+            if let Err(e) = engine.remove(old_n, false).await {
+                tracing::warn!("couldn't remove the old container {old_n}: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("couldn't look for the old container {old_n}: {e}"),
+    }
+    let backup = dir.join(BACKUP_DIR).join(s.run_id.to_string());
+    match std::fs::remove_dir_all(&backup) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!("couldn't remove {}: {e}", backup.display()),
+    }
+}
+
+fn unraid_status<E: Engine>(engine: &E, s: &StateFile, local: &str, remote: &str) {
+    if let Err(e) = write_unraid_status(&engine.unraid_status_file(), &s.reference, local, remote) {
+        tracing::warn!("couldn't set Unraid's update status: {e}");
+    }
+}
+
+/// Why a rollback stopped.
+enum Rb {
+    /// Docker couldn't be looked at: nothing was decided, try again.
+    Retry(String),
+    /// A step failed: nothing more is touched.
+    Failed(String),
+}
+
+impl From<String> for Rb {
+    fn from(e: String) -> Rb {
+        Rb::Failed(e)
+    }
+}
+
+impl From<&str> for Rb {
+    fn from(e: &str) -> Rb {
+        Rb::Failed(e.into())
+    }
+}
+
+/// Whatever container has the agent's name now (a failed look is a retry).
+async fn named_now<E: Engine>(engine: &E, s: &StateFile) -> Result<Option<Ctr0>, Rb> {
+    let inspect = engine.inspect(&s.container).await.map_err(Rb::Retry)?;
+    Ok(observe(inspect.as_ref()))
+}
+
+/// Puts the old agent back. Every step looks at what is there first, so it
+/// can be run again after a crash. The first error stops it.
+async fn roll_back<E: Engine>(
+    engine: &E,
+    s: &StateFile,
+    dir: &Path,
+    old_n: &str,
+) -> Result<(), Rb> {
+    // 1. Whatever now has the agent's name is not the old agent.
+    if let Some(c) = named_now(engine, s).await?
+        && c.id != s.old_container_id
+    {
+        engine.remove(&s.container, true).await?;
+    }
+    // 2. The old agent gets its name back.
+    if engine.inspect(old_n).await.map_err(Rb::Retry)?.is_some() {
+        engine.rename(old_n, &s.container).await?;
+    }
+    // Only the old agent may be started from here on.
+    match named_now(engine, s).await? {
+        Some(c) if c.id == s.old_container_id => {}
+        _ => return Err("the old agent's container isn't back under its name".into()),
+    }
+    // 3. managed.json and runs.json as they were.
+    restore_backup(dir, s.run_id)?;
+    // 4. The reference points at the old image again.
+    engine.tag(&s.old_image_id, &s.reference).await?;
+    if s.unraid {
+        unraid_status(engine, s, &s.from_digest, &s.to_digest);
+    }
+    // 5. Start it and see that it stays up.
+    engine.start(&s.container).await?;
+    let until = engine.now() + scaled(ROLLBACK_CHECK);
+    loop {
+        engine.sleep(Duration::from_secs(scaled(2))).await;
+        let up = named_now(engine, s)
+            .await?
+            .is_some_and(|c| c.id == s.old_container_id && c.running && c.status != "restarting");
+        if !up {
+            return Err("the old agent doesn't stay running".into());
+        }
+        if engine.now() >= until {
+            return Ok(());
+        }
+    }
+}
+
+/// The run is over: the helper removes itself (which ends this process).
+async fn finish<E: Engine>(engine: &E, s: &StateFile) -> Phase {
+    tracing::info!("run {} ended as {:?}", s.run_id, s.phase);
+    if let Err(e) = engine.remove(&helper_name(s.run_id), true).await {
+        tracing::warn!("couldn't remove the helper container: {e}");
+    }
+    s.phase
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::selfupdate::state::{Phase, StateFile, break_glass, load, save, write_confirm};
+
+    const REF: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+    const T0: u64 = 1_000_000;
+    /// The image id the verified release (`SELF_UPDATE_REPO@sha256:new`) has.
+    const RELEASE_IMAGE: &str = "sha256:release";
+    /// The helper container's own id.
+    const OWN_ID: &str = "helper-own-id";
+
+    #[derive(Clone)]
+    struct FakeCtr {
+        id: String,
+        running: bool,
+        status: String,
+        restarts: i64,
+        /// The image id the container was made from.
+        image: String,
+    }
+
+    /// A Docker host in memory: containers by name, a log of what the helper
+    /// changed, and a clock that only `sleep` moves.
+    struct Fake {
+        ctrs: Mutex<BTreeMap<String, FakeCtr>>,
+        log: Mutex<Vec<String>>,
+        /// The phase in the state file at each logged call.
+        phases: Mutex<Vec<(String, Phase)>>,
+        clock: AtomicU64,
+        fail_on: Option<&'static str>,
+        /// How many matching calls still fail.
+        fail_left: Mutex<u32>,
+        /// Per name: inspects to let through, then inspects that fail
+        /// (Docker did not answer).
+        inspect_fails: Mutex<BTreeMap<String, (u32, u32)>>,
+        /// `remove` says yes and removes nothing.
+        sticky_remove: bool,
+        /// A sleep puts another container under the agent's name (a start
+        /// that is overtaken while the helper watches it).
+        swap_on_sleep: bool,
+        confirm: bool,
+        unraid: bool,
+        dir: Mutex<PathBuf>,
+        /// The image id `create` makes the new container from (what the
+        /// reference names by then).
+        created_image: &'static str,
+        /// The verified release image is no longer there.
+        release_gone: bool,
+    }
+
+    impl Fake {
+        fn new(confirm: bool) -> Fake {
+            Fake {
+                ctrs: Mutex::new(BTreeMap::new()),
+                log: Mutex::new(Vec::new()),
+                phases: Mutex::new(Vec::new()),
+                clock: AtomicU64::new(T0),
+                fail_on: None,
+                fail_left: Mutex::new(u32::MAX),
+                inspect_fails: Mutex::new(BTreeMap::new()),
+                sticky_remove: false,
+                swap_on_sleep: false,
+                confirm,
+                unraid: false,
+                dir: Mutex::new(PathBuf::new()),
+                created_image: RELEASE_IMAGE,
+                release_gone: false,
+            }
+        }
+        /// The new agent writes the confirm marker as soon as it is started.
+        fn confirming() -> Fake {
+            Fake::new(true)
+        }
+        /// The new agent never reaches Wren.
+        fn silent() -> Fake {
+            Fake::new(false)
+        }
+        fn failing(mut self, prefix: &'static str) -> Fake {
+            self.fail_on = Some(prefix);
+            self
+        }
+        fn failing_times(self, prefix: &'static str, times: u32) -> Fake {
+            *self.fail_left.lock().unwrap() = times;
+            self.failing(prefix)
+        }
+        fn inspect_failing(self, name: &str, skip: u32, times: u32) -> Fake {
+            self.inspect_fails
+                .lock()
+                .unwrap()
+                .insert(name.into(), (skip, times));
+            self
+        }
+        fn swap_on_sleep(mut self) -> Fake {
+            self.swap_on_sleep = true;
+            self
+        }
+        fn sticky_remove(mut self) -> Fake {
+            self.sticky_remove = true;
+            self
+        }
+        fn unraid(mut self) -> Fake {
+            self.unraid = true;
+            self
+        }
+        fn created_from(mut self, image: &'static str) -> Fake {
+            self.created_image = image;
+            self
+        }
+        fn release_gone(mut self) -> Fake {
+            self.release_gone = true;
+            self
+        }
+        fn dir(&self) -> PathBuf {
+            self.dir.lock().unwrap().clone()
+        }
+        fn calls(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+        fn ctr(&self, name: &str) -> Option<FakeCtr> {
+            self.ctrs.lock().unwrap().get(name).cloned()
+        }
+        fn put(&self, name: &str, id: &str, running: bool, status: &str) {
+            let image = match self.ctr(name) {
+                Some(c) if c.id == id => c.image,
+                _ if id == "new" => RELEASE_IMAGE.into(),
+                _ => "sha256:old".into(),
+            };
+            self.ctrs.lock().unwrap().insert(
+                name.into(),
+                FakeCtr {
+                    id: id.into(),
+                    running,
+                    status: status.into(),
+                    restarts: 0,
+                    image,
+                },
+            );
+        }
+        /// Logs the call, then fails it when it is the one set to fail.
+        fn record(&self, call: String) -> Result<(), String> {
+            let phase = load(&self.dir().join("selfupdate.json"))
+                .ok()
+                .flatten()
+                .map(|s| s.phase);
+            if let Some(p) = phase {
+                self.phases.lock().unwrap().push((call.clone(), p));
+            }
+            self.log.lock().unwrap().push(call.clone());
+            let mut left = self.fail_left.lock().unwrap();
+            match self.fail_on {
+                Some(prefix) if call.starts_with(prefix) && *left > 0 => {
+                    *left -= 1;
+                    Err(format!("{call} failed"))
+                }
+                _ => Ok(()),
+            }
+        }
+    }
+
+    /// The test's temporary config folder goes with the fake.
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            if let Ok(dir) = self.dir.lock()
+                && !dir.as_os_str().is_empty()
+            {
+                let _ = std::fs::remove_dir_all(&*dir);
+            }
+        }
+    }
+
+    impl Engine for Fake {
+        async fn inspect(&self, name: &str) -> Result<Option<Value>, String> {
+            // The new agent confirms once the helper has recorded its start.
+            if self.confirm
+                && let Ok(Some(s)) = load(&self.dir().join("selfupdate.json"))
+                && s.phase == Phase::NewStarted
+            {
+                write_confirm(&self.dir(), s.run_id).unwrap();
+            }
+            if let Some((skip, left)) = self.inspect_fails.lock().unwrap().get_mut(name) {
+                if *skip > 0 {
+                    *skip -= 1;
+                } else if *left > 0 {
+                    *left -= 1;
+                    return Err("Docker didn't answer".into());
+                }
+            }
+            let Some(c) = self.ctr(name) else {
+                return Ok(None);
+            };
+            Ok(Some(json!({
+                "Id": c.id,
+                "Image": c.image,
+                "RestartCount": c.restarts,
+                "State": {"Running": c.running, "Status": c.status},
+                "Config": {"Image": "old-image", "Env": ["A=1"]},
+                "HostConfig": {"NetworkMode": "bridge"},
+            })))
+        }
+        async fn image_config(&self, _image_id: &str) -> Value {
+            json!({})
+        }
+        async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+            let release = format!("{}@sha256:new", crate::selfupdate::SELF_UPDATE_REPO);
+            Ok((reference == release && !self.release_gone).then(|| RELEASE_IMAGE.to_string()))
+        }
+        async fn stop(&self, name: &str, seconds: u64) -> Result<(), String> {
+            self.record(format!("stop {name} {seconds}"))?;
+            self.put(
+                name,
+                &self.ctr(name).ok_or("no such container")?.id,
+                false,
+                "exited",
+            );
+            Ok(())
+        }
+        async fn rename(&self, from: &str, to: &str) -> Result<(), String> {
+            self.record(format!("rename {from} {to}"))?;
+            let mut all = self.ctrs.lock().unwrap();
+            if all.contains_key(to) {
+                return Err(format!("{to} exists"));
+            }
+            let c = all.remove(from).ok_or("no such container")?;
+            all.insert(to.into(), c);
+            Ok(())
+        }
+        async fn create(&self, name: &str, body: &Value) -> Result<String, String> {
+            self.record(format!("create {name}"))?;
+            assert_eq!(body["Image"], REF);
+            if self.ctr(name).is_some() {
+                return Err(format!("{name} exists"));
+            }
+            self.put(name, "new", false, "created");
+            self.ctrs.lock().unwrap().get_mut(name).unwrap().image = self.created_image.into();
+            Ok("new".into())
+        }
+        async fn start(&self, name: &str) -> Result<(), String> {
+            self.record(format!("start {name}"))?;
+            let id = self.ctr(name).ok_or("no such container")?.id;
+            self.put(name, &id, true, "running");
+            Ok(())
+        }
+        async fn remove(&self, name: &str, force: bool) -> Result<(), String> {
+            self.record(format!(
+                "remove {name}{}",
+                if force { " force" } else { "" }
+            ))?;
+            if self.sticky_remove {
+                return Ok(());
+            }
+            self.ctrs
+                .lock()
+                .unwrap()
+                .remove(name)
+                .map(|_| ())
+                .ok_or_else(|| "no such container".to_string())
+        }
+        async fn tag(&self, source: &str, target: &str) -> Result<(), String> {
+            self.record(format!("tag {source} {target}"))
+        }
+        fn host_boot(&self) -> String {
+            "boot-1".into()
+        }
+        fn own_id(&self) -> String {
+            OWN_ID.into()
+        }
+        fn unraid_status_file(&self) -> PathBuf {
+            self.dir().join("unraid-update-status.json")
+        }
+        fn now(&self) -> u64 {
+            self.clock.load(Ordering::SeqCst)
+        }
+        async fn sleep(&self, d: Duration) {
+            self.clock.fetch_add(d.as_secs().max(1), Ordering::SeqCst);
+            if self.swap_on_sleep {
+                self.put("wren-agent", "intruder", true, "running");
+            }
+        }
+    }
+
+    fn setup(name: &str, fake: Fake) -> (Fake, PathBuf) {
+        setup_at(name, fake, Phase::Prepared)
+    }
+
+    /// A run in `phase`: the config folder, the backups, the state file and
+    /// the containers as they stand in that phase.
+    fn setup_at(name: &str, fake: Fake, phase: Phase) -> (Fake, PathBuf) {
+        use Phase::*;
+        let dir =
+            std::env::temp_dir().join(format!("wren-su-helper-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("selfupdate/57")).unwrap();
+        *fake.dir.lock().unwrap() = dir.clone();
+        for (file, before) in [
+            ("managed.json", &b"{\"before\":1}"[..]),
+            ("runs.json", &b"{\"ledger\":\"before\"}"[..]),
+        ] {
+            std::fs::write(dir.join("selfupdate/57").join(file), before).unwrap();
+            std::fs::write(dir.join(file), b"{\"after\":1}").unwrap();
+        }
+        if fake.unraid {
+            std::fs::write(
+                fake.unraid_status_file(),
+                include_str!("../../tests/fixtures/unraid-update-status.json"),
+            )
+            .unwrap();
+        }
+        match phase {
+            Prepared | HelperStarted => fake.put("wren-agent", "old", true, "running"),
+            OldStopped => fake.put("wren-agent", "old", false, "exited"),
+            _ => fake.put("wren-agent-wren-old-57", "old", false, "exited"),
+        }
+        match phase {
+            NewCreated => fake.put("wren-agent", "new", false, "created"),
+            NewStarted | Confirmed => fake.put("wren-agent", "new", true, "running"),
+            _ => {}
+        }
+        let path = dir.join("selfupdate.json");
+        let s = StateFile {
+            format: 1,
+            run_id: 57,
+            server_id: 3,
+            container: "wren-agent".into(),
+            reference: REF.into(),
+            from_version: "0.9.2".into(),
+            to_version: "0.10.0".into(),
+            old_container_id: "old".into(),
+            old_image_id: "sha256:old".into(),
+            from_digest: "sha256:old".into(),
+            to_digest: "sha256:new".into(),
+            unraid: fake.unraid,
+            phase,
+            updated_at: T0,
+            confirm_deadline: T0 + 300,
+            hard_deadline: T0 + 1800,
+            confirm_minutes: 5,
+            stable_seconds: 60,
+            host_boot: "boot-1".into(),
+            ..StateFile::default()
+        };
+        save(&path, &s).unwrap();
+        (fake, path)
+    }
+
+    #[tokio::test]
+    async fn a_good_update_swaps_the_container_and_cleans_up() {
+        let (fake, path) = setup("good", Fake::confirming());
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert_eq!(
+            fake.calls(),
+            [
+                "stop wren-agent 60",
+                "rename wren-agent wren-agent-wren-old-57",
+                "create wren-agent",
+                "start wren-agent",
+                "remove wren-agent-wren-old-57",
+                "remove wren-agent-selfupdate-57 force",
+            ]
+        );
+        assert_eq!(fake.ctr("wren-agent").unwrap().id, "new");
+        assert!(!path.parent().unwrap().join("selfupdate/57").exists());
+        let s = load(&path).unwrap().unwrap();
+        assert_eq!((s.phase, s.new_container_id.as_str()), (Phase::Done, "new"));
+    }
+
+    #[tokio::test]
+    async fn no_confirmation_rolls_back_to_the_same_old_container() {
+        let (fake, path) = setup("silent", Fake::silent());
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        for call in [
+            "remove wren-agent force",
+            "rename wren-agent-wren-old-57 wren-agent",
+            "tag sha256:old ghcr.io/ferdinand99/wise-wren-agent:latest",
+            "start wren-agent",
+        ] {
+            assert!(fake.calls().iter().any(|x| x == call), "{call}");
+        }
+        let dir = path.parent().unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("managed.json")).unwrap(),
+            b"{\"before\":1}"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("runs.json")).unwrap(),
+            b"{\"ledger\":\"before\"}"
+        );
+        assert!(
+            load(&path)
+                .unwrap()
+                .unwrap()
+                .reason
+                .contains("didn't reach Wren within 5 min")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restarted_helper_resumes_without_repeating_steps() {
+        let (fake, path) = setup_at("resume", Fake::confirming(), Phase::OldRenamed);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert!(
+            !fake
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("stop") || c == "rename wren-agent wren-agent-wren-old-57")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_rename_back_stops_touching_anything() {
+        let (fake, path) = setup(
+            "rbfail",
+            Fake::silent().failing("rename wren-agent-wren-old-57"),
+        );
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        let s = load(&path).unwrap().unwrap();
+        assert_eq!(s.break_glass, break_glass("wren-agent", 57));
+        assert!(s.reason.contains("didn't reach Wren"), "{}", s.reason);
+        assert!(
+            s.reason.contains("; rename wren-agent-wren-old-57"),
+            "{}",
+            s.reason
+        );
+        let calls = fake.calls();
+        let i = calls
+            .iter()
+            .position(|c| c == "rename wren-agent-wren-old-57 wren-agent")
+            .unwrap();
+        assert!(
+            calls[i + 1..]
+                .iter()
+                .all(|c| c.starts_with("remove wren-agent-selfupdate-57")),
+            "{calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn on_unraid_the_status_file_follows_the_container() {
+        for (fake, want_local, want_status) in [
+            (Fake::confirming().unraid(), "sha256:new", "true"),
+            (Fake::silent().unraid(), "sha256:old", "false"),
+        ] {
+            let (fake, path) = setup("unraid", fake);
+            run(&fake, &path).await.unwrap();
+            let v: Value =
+                serde_json::from_str(&std::fs::read_to_string(fake.unraid_status_file()).unwrap())
+                    .unwrap();
+            let e = &v[REF];
+            assert_eq!(
+                (e["local"].as_str().unwrap(), e["status"].as_str().unwrap()),
+                (want_local, want_status)
+            );
+            // The other entries stay.
+            assert_eq!(v["lscr.io/linuxserver/sonarr:latest"]["status"], "true");
+        }
+    }
+
+    #[tokio::test]
+    async fn not_on_unraid_the_status_file_is_left_alone() {
+        let (fake, path) = setup("notunraid", Fake::confirming());
+        run(&fake, &path).await.unwrap();
+        assert!(!fake.unraid_status_file().exists());
+    }
+
+    #[tokio::test]
+    async fn the_phase_says_rolling_back_while_the_old_agent_starts() {
+        let (fake, path) = setup("phase", Fake::silent());
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let at = fake.phases.lock().unwrap().clone();
+        let start = at
+            .iter()
+            .rev()
+            .find(|(c, _)| c == "start wren-agent")
+            .unwrap();
+        assert_eq!(start.1, Phase::RollingBack);
+    }
+
+    #[tokio::test]
+    async fn a_new_agent_that_dies_at_once_rolls_back_for_that_reason() {
+        let (fake, path) = setup_at("dies", Fake::silent(), Phase::NewCreated);
+        // `start` worked but the agent exited at once (restart backoff).
+        fake.ctrs.lock().unwrap().insert(
+            "wren-agent".into(),
+            FakeCtr {
+                id: "new".into(),
+                running: false,
+                status: "restarting".into(),
+                restarts: 1,
+                image: RELEASE_IMAGE.into(),
+            },
+        );
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let s = load(&path).unwrap().unwrap();
+        assert!(
+            s.reason.contains("the new agent stopped or restarted"),
+            "{}",
+            s.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn a_host_that_restarted_is_counted_once_and_the_new_boot_stored() {
+        let (fake, path) = setup_at("reboot", Fake::confirming(), Phase::NewStarted);
+        let mut s = load(&path).unwrap().unwrap();
+        s.host_boot = "an-older-boot".into();
+        save(&path, &s).unwrap();
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        let s = load(&path).unwrap().unwrap();
+        assert_eq!((s.reboots_seen, s.host_boot.as_str()), (1, "boot-1"));
+    }
+
+    #[tokio::test]
+    async fn a_finished_run_only_removes_the_helper() {
+        let (fake, path) = setup_at("finished", Fake::silent(), Phase::Done);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert_eq!(fake.calls(), ["remove wren-agent-selfupdate-57 force"]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_start_is_tried_again_not_taken_for_done() {
+        let fake = Fake::confirming().failing_times("start wren-agent", 3);
+        let (fake, path) = setup_at("startfail", fake, Phase::NewCreated);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        let starts = fake
+            .calls()
+            .iter()
+            .filter(|c| *c == "start wren-agent")
+            .count();
+        assert_eq!(starts, 4, "{:?}", fake.calls());
+    }
+
+    #[tokio::test]
+    async fn a_file_the_helper_does_not_understand_is_an_error() {
+        let (fake, path) = setup("format2", Fake::silent());
+        let mut s = load(&path).unwrap().unwrap();
+        s.format = 2;
+        save(&path, &s).unwrap();
+        assert!(run(&fake, &path).await.is_err());
+        s.format = 1;
+        s.run_id = 0;
+        save(&path, &s).unwrap();
+        assert!(run(&fake, &path).await.is_err());
+        assert!(
+            run(&fake, &path.with_file_name("nothing.json"))
+                .await
+                .is_err()
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    /// A run in `phase` with the world as it stands there, set to roll back.
+    fn rolling_back(name: &str, fake: Fake, world: Phase) -> (Fake, PathBuf) {
+        let (fake, path) = setup_at(name, fake, world);
+        let mut s = load(&path).unwrap().unwrap();
+        s.phase = Phase::RollingBack;
+        s.reason = "a test reason".into();
+        save(&path, &s).unwrap();
+        (fake, path)
+    }
+
+    #[tokio::test]
+    async fn a_docker_that_does_not_answer_is_not_a_container_that_is_gone() {
+        let fake = Fake::confirming()
+            .inspect_failing("wren-agent", 0, 3)
+            .inspect_failing("wren-agent-wren-old-57", 0, 2);
+        let (fake, path) = setup_at("flaky", fake, Phase::NewStarted);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert!(
+            !fake
+                .calls()
+                .iter()
+                .any(|c| c.contains("force") && !c.starts_with("remove wren-agent-selfupdate")),
+            "{:?}",
+            fake.calls()
+        );
+        let s = load(&path).unwrap().unwrap();
+        assert_eq!(s.reason, "");
+    }
+
+    #[tokio::test]
+    async fn a_flaky_docker_during_a_rollback_does_not_start_the_wrong_container() {
+        // The new agent holds the name; the old one is renamed.
+        let fake = Fake::silent().inspect_failing("wren-agent", 1, 2);
+        let (fake, path) = rolling_back("flaky-rb-new", fake, Phase::NewStarted);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        assert_eq!(
+            fake.calls()[0],
+            "remove wren-agent force",
+            "{:?}",
+            fake.calls()
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        // The old one is looked at too.
+        let fake = Fake::silent().inspect_failing("wren-agent-wren-old-57", 1, 2);
+        let (fake, path) = rolling_back("flaky-rb-old", fake, Phase::OldRenamed);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        assert_eq!(fake.ctr("wren-agent").unwrap().id, "old");
+    }
+
+    #[tokio::test]
+    async fn the_helper_only_starts_the_old_container() {
+        // The old container is gone and Docker says the new one was removed,
+        // but it still holds the name.
+        let fake = Fake::silent().sticky_remove();
+        let (fake, path) = rolling_back("wrong-one", fake, Phase::NewStarted);
+        fake.ctrs.lock().unwrap().remove("wren-agent-wren-old-57");
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        let calls = fake.calls();
+        assert_eq!(calls[0], "remove wren-agent force", "{calls:?}");
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("start") || c.starts_with("tag") || c.starts_with("rename")),
+            "{calls:?}"
+        );
+        let s = load(&path).unwrap().unwrap();
+        assert!(s.reason.starts_with("a test reason; "), "{}", s.reason);
+        assert!(
+            s.reason.contains("isn't back under its name"),
+            "{}",
+            s.reason
+        );
+        assert_eq!(s.break_glass, break_glass("wren-agent", 57));
+    }
+
+    #[tokio::test]
+    async fn the_old_container_has_to_stay_the_one_that_runs() {
+        // Right after the start, something else takes the name.
+        let (fake, path) = rolling_back(
+            "overtaken",
+            Fake::silent().swap_on_sleep(),
+            Phase::OldRenamed,
+        );
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RollbackFailed);
+        let s = load(&path).unwrap().unwrap();
+        assert!(s.reason.contains("doesn't stay running"), "{}", s.reason);
+        assert!(fake.calls().iter().any(|c| c == "start wren-agent"));
+    }
+
+    #[test]
+    fn only_dockers_404_means_no_such_container() {
+        // The wording comes from the real parser, so a change there fails here.
+        let answer = |status: &str| {
+            crate::docker::parse_response(format!("HTTP/1.0 {status}\r\n\r\n").as_bytes())
+                .unwrap_err()
+        };
+        assert!(is_not_found(&answer("404 Not Found")));
+        assert!(!is_not_found(&answer("500 Internal Server Error")));
+        assert!(!is_not_found(&answer("403 Forbidden")));
+        assert!(!is_not_found(
+            "can't open /var/run/docker.sock: Permission denied"
+        ));
+        assert!(!is_not_found("Docker didn't answer within 5 s"));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_fails_rolls_back_at_once() {
+        let (fake, path) = setup("stopfail", Fake::confirming().failing("stop wren-agent"));
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let s = load(&path).unwrap().unwrap();
+        assert!(
+            s.reason.starts_with("couldn't stop the old agent: "),
+            "{}",
+            s.reason
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("create")));
+    }
+
+    #[tokio::test]
+    async fn a_rename_that_fails_rolls_back_at_once() {
+        let fake = Fake::confirming().failing("rename wren-agent wren-agent-wren-old-57");
+        let (fake, path) = setup("renamefail", fake);
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
+        let s = load(&path).unwrap().unwrap();
+        assert!(
+            s.reason.starts_with("couldn't rename the old agent: "),
+            "{}",
+            s.reason
+        );
+        let c = fake.ctr("wren-agent").unwrap();
+        assert_eq!((c.id.as_str(), c.running), ("old", true));
+        assert!(!fake.calls().iter().any(|c| c.starts_with("create")));
+    }
+
+    #[tokio::test]
+    async fn a_new_container_that_is_not_on_the_verified_image_is_never_started() {
+        for (name, fake, why) in [
+            // The reference was moved to another image after the old
+            // agent's checks.
+            (
+                "otherimage",
+                Fake::confirming().created_from("sha256:other"),
+                "isn't the verified release",
+            ),
+            // The verified image itself is gone.
+            ("releasegone", Fake::confirming().release_gone(), "is gone"),
+        ] {
+            let (fake, path) = setup(name, fake);
+            assert_eq!(
+                run(&fake, &path).await.unwrap(),
+                Phase::RolledBack,
+                "{name}"
+            );
+            let s = load(&path).unwrap().unwrap();
+            assert!(s.reason.contains(why), "{name}: {}", s.reason);
+            let calls = fake.calls();
+            let rb = calls
+                .iter()
+                .position(|c| c == "remove wren-agent force")
+                .unwrap();
+            assert!(
+                !calls[..rb].iter().any(|c| c.starts_with("start")),
+                "{name}: {calls:?}"
+            );
+            let c = fake.ctr("wren-agent").unwrap();
+            assert_eq!((c.id.as_str(), c.running), ("old", true), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_helper_whose_state_file_is_gone_removes_itself() {
+        let (fake, path) = setup("vanished", Fake::silent());
+        std::fs::remove_file(&path).unwrap();
+        // Done: the container goes instead of restarting forever.
+        assert!(carry_out(&fake, &path).await);
+        assert_eq!(fake.calls(), [format!("remove {OWN_ID} force")]);
+        assert_eq!(fake.ctr("wren-agent").unwrap().id, "old");
+    }
+
+    #[tokio::test]
+    async fn the_helpers_exit_says_whether_it_is_done() {
+        let (fake, path) = setup("exit-done", Fake::confirming());
+        assert!(carry_out(&fake, &path).await);
+        let (fake, path) = setup("exit-rb", Fake::silent());
+        assert!(carry_out(&fake, &path).await);
+        let fake = Fake::silent().failing("rename wren-agent-wren-old-57");
+        let (fake, path) = setup("exit-rbfail", fake);
+        assert!(!carry_out(&fake, &path).await);
+        // A file it can't use is not a vanished one: the helper stays.
+        let (fake, path) = setup("exit-format2", Fake::silent());
+        let mut s = load(&path).unwrap().unwrap();
+        s.format = 2;
+        save(&path, &s).unwrap();
+        assert!(!carry_out(&fake, &path).await);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_new_container_whose_id_was_lost_is_found_again() {
+        // `create` worked but its reply never came: the state has no id.
+        let (fake, path) = setup_at("lostid", Fake::confirming(), Phase::NewCreated);
+        assert_eq!(load(&path).unwrap().unwrap().new_container_id, "");
+        assert_eq!(run(&fake, &path).await.unwrap(), Phase::Done);
+        assert_eq!(load(&path).unwrap().unwrap().new_container_id, "new");
+    }
+
+    #[test]
+    fn what_the_helper_sees_of_a_container() {
+        assert_eq!(observe(None), None);
+        let v = json!({"Id": "abc", "RestartCount": 3, "State": {"Running": false, "Status": "restarting"}});
+        assert_eq!(
+            observe(Some(&v)),
+            Some(Ctr0 {
+                id: "abc".into(),
+                running: false,
+                status: "restarting".into(),
+                restart_count: 3
+            })
+        );
+    }
+}

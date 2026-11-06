@@ -83,6 +83,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         crate::inventory::UNRAID => "targets.kind_unraid",
         crate::inventory::COMPOSE => "targets.kind_compose",
         crate::inventory::SCRIPT => "targets.kind_script",
+        crate::agent_update::TARGET_KIND => "targets.kind_agent",
         _ => "targets.kind_container",
     })
 }

@@ -25,6 +25,7 @@ use vole_kit::page::{PageCtx, flash};
 use vole_kit::state::Core;
 
 use crate::Wren;
+use crate::agent_update;
 use crate::runs::{self, Refusal, Run, Step};
 use crate::schedule;
 use crate::updates_notify::kind_label;
@@ -43,6 +44,7 @@ pub fn router() -> Router<Core> {
         .route("/servers/{id}/mode", post(server_mode))
         .route("/targets/{id}/allow-auto", post(allow_auto))
         .route("/servers/{id}/allow-auto", post(allow_auto_new))
+        .route("/servers/{id}/agent-update", post(agent_update_form))
         .route("/runs/{id}", get(run_page))
         .route("/runs/{id}/live", get(run_live))
         .route("/runs/{id}/cancel", post(cancel))
@@ -79,16 +81,20 @@ fn step_look(status: &str) -> (&'static str, &'static str) {
     (class, i18n::t(key))
 }
 
-fn step_label(step: &str) -> &'static str {
-    i18n::t(match step {
-        "preflight" => "runs.step_preflight",
-        "stop" => "runs.step_stop",
-        "snapshot" => "runs.step_snapshot",
-        "update" => "runs.step_update",
-        "health" => "runs.step_health",
-        "maintenance" => "runs.step_maintenance",
-        "monitors" => "runs.step_monitors",
-        "close" => "runs.step_close",
+/// A step's name; an agent update's steps say what they do to the agent.
+fn step_label(step: &str, kind: &str) -> &'static str {
+    i18n::t(match (kind == agent_update::KIND, step) {
+        (true, "preflight") => "runs.step_au_preflight",
+        (true, "update") => "runs.step_au_update",
+        (true, "health") => "runs.step_au_health",
+        (_, "preflight") => "runs.step_preflight",
+        (_, "stop") => "runs.step_stop",
+        (_, "snapshot") => "runs.step_snapshot",
+        (_, "update") => "runs.step_update",
+        (_, "health") => "runs.step_health",
+        (_, "maintenance") => "runs.step_maintenance",
+        (_, "monitors") => "runs.step_monitors",
+        (_, "close") => "runs.step_close",
         _ => "runs.step_rollback",
     })
 }
@@ -102,6 +108,8 @@ pub struct RunView {
     pub server_id: i64,
     pub server_name: String,
     pub is_rollback: bool,
+    /// An update of the server's agent (not of a container).
+    pub is_agent_update: bool,
     pub rollback_of: Option<i64>,
     pub shown: String,
     pub status: String,
@@ -169,6 +177,7 @@ impl RunView {
             server_id: r.server_id,
             server_name: r.server_name,
             is_rollback: r.kind == "rollback",
+            is_agent_update: r.kind == agent_update::KIND,
             rollback_of: r.rollback_of,
             shown: r.shown,
             status_class,
@@ -218,7 +227,7 @@ pub struct StepView {
 }
 
 impl StepView {
-    fn new(s: Step) -> StepView {
+    fn new(s: Step, kind: &str) -> StepView {
         let (warning, notes) = crate::texts::notes(&s.notes);
         let warning = warning && s.status == "ok";
         let (status_class, status_label) = if warning {
@@ -227,7 +236,7 @@ impl StepView {
             step_look(&s.status)
         };
         StepView {
-            label: step_label(&s.step),
+            label: step_label(&s.step, kind),
             status: if warning { "warning".into() } else { s.status },
             status_class,
             status_label,
@@ -388,9 +397,10 @@ async fn reschedule(
         return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response());
     };
     let who = user.username.clone();
+    let admin = user.is_admin();
     let res = wren
         .core
-        .with_conn(move |c| runs::reschedule(c, id, at, &who))
+        .with_conn(move |c| runs::reschedule(c, id, at, &who, admin))
         .await?;
     let jar = match res {
         Ok(()) => {
@@ -688,6 +698,51 @@ async fn allow_auto_new(
     Ok((jar, Redirect::to(&format!("/servers/{id}"))).into_response())
 }
 
+/// An admin approves the update of the server's agent, now or at a chosen
+/// time (the form on the server's page).
+async fn agent_update_form(
+    Extension(wren): Extension<Wren>,
+    user: CurrentUser,
+    jar: SignedCookieJar,
+    Path(id): Path<i64>,
+    body: Bytes,
+) -> ApiResult<Response> {
+    user.require_admin()?;
+    let f = form(&body);
+    let to = Redirect::to(&format!("/servers/{id}"));
+    let at = match field(&f, "when") {
+        "now" => None,
+        "at" => match parse_local(&wren.core, field(&f, "at")).await? {
+            Some(at) => Some(at),
+            None => {
+                return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response());
+            }
+        },
+        _ => return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response()),
+    };
+    let version = field(&f, "version").to_string();
+    let who = user.username.clone();
+    let release = agent_update::release(&wren);
+    let res = wren
+        .core
+        .with_conn(move |c| {
+            agent_update::approve(c, id, &version, &who, true, at, release.as_ref())
+        })
+        .await?;
+    match res {
+        Ok(run) => {
+            changed(&wren);
+            let jar = flash(
+                jar,
+                "success",
+                i18n::tf("runs.agent_update_queued", &[("id", &run.to_string())]),
+            );
+            Ok((jar, Redirect::to(&format!("/runs/{run}"))).into_response())
+        }
+        Err(r) => Ok((refused(jar, r)?, to).into_response()),
+    }
+}
+
 async fn server_mode(
     Extension(wren): Extension<Wren>,
     user: CurrentUser,
@@ -793,6 +848,8 @@ struct RunPage {
     ctx: PageCtx,
     body: RunBody,
     back_href: String,
+    /// What the back link is called: the server for an agent update, else the target.
+    back_label: String,
 }
 
 #[derive(Template)]
@@ -823,9 +880,15 @@ async fn body(core: &Core, id: i64, can_act: bool) -> ApiResult<RunBody> {
     let run = RunView::new(run.ok_or(ApiError::NotFound)?).localize(&tz);
     let can_roll_back =
         can_act && !run.is_rollback && run.status == runs::SUCCEEDED && newest == Some(run.id);
+    let kind = if run.is_agent_update {
+        agent_update::KIND
+    } else {
+        ""
+    };
+    let steps = steps.into_iter().map(|s| StepView::new(s, kind)).collect();
     Ok(RunBody {
         run,
-        steps: steps.into_iter().map(StepView::new).collect(),
+        steps,
         can_act,
         can_roll_back,
     })
@@ -844,8 +907,16 @@ async fn run_page(
     );
     let (ctx, jar) = PageCtx::build(&core, Some(&user), &jar, title, "updates", "").await;
     let back_href = match body.run.target_id {
+        _ if body.run.is_agent_update => {
+            format!("/servers/{}#agent-update", body.run.server_id)
+        }
         Some(t) => format!("/targets/{t}"),
         None => "/updates".to_string(),
+    };
+    let back_label = if body.run.is_agent_update {
+        body.run.server_name.clone()
+    } else {
+        body.run.target_name.clone()
     };
     Ok((
         jar,
@@ -853,6 +924,7 @@ async fn run_page(
             ctx,
             body,
             back_href,
+            back_label,
         }),
     ))
 }

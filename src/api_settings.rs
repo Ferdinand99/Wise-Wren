@@ -245,9 +245,51 @@ pub async fn server_action(
             let b = crate::api::body_of(&body)?;
             crate::api::server_mode(&wren, &caller.name, caller.is_admin, id, b).await?
         }
+        "agent-update" => {
+            let b = json_body(&body)?;
+            agent_update(&wren, &caller, id, &b).await?
+        }
         _ => return Err(ApiError::NotFound),
     };
     Ok(Json(v))
+}
+
+/// Approves the update of the server's agent (admins): `{"version", "at"}`,
+/// `at` an RFC 3339 time or null for now.
+pub(crate) async fn agent_update(
+    wren: &Wren,
+    caller: &Caller,
+    server_id: i64,
+    b: &Value,
+) -> ApiResult<Value> {
+    let version = text(b, "version").unwrap_or_default().to_string();
+    let at = match b.get("at") {
+        None | Some(Value::Null) => None,
+        Some(at) => Some(crate::api::time_of(at.as_str())?),
+    };
+    let (user, is_admin) = (caller.name.clone(), caller.is_admin);
+    let release = crate::agent_update::release(wren);
+    let id = wren
+        .core
+        .with_conn(move |c| {
+            crate::agent_update::approve(
+                c,
+                server_id,
+                &version,
+                &user,
+                is_admin,
+                at,
+                release.as_ref(),
+            )
+        })
+        .await?
+        .map_err(ApiError::from)?;
+    crate::api::changed(wren);
+    Ok(json!({
+        "run_id": id,
+        "status": "queued",
+        "scheduled_for": at.map(crate::schedule::db_time),
+    }))
 }
 
 // ---------------------------------------------------------------------------

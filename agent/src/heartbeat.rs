@@ -15,7 +15,15 @@ use crate::docker;
 
 pub const PATH: &str = "/api/agent/v1/heartbeat";
 /// This agent's version.
+#[cfg(not(feature = "selfupdate-test"))]
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// This agent's version; a test build may claim another one
+/// (`WW_SU_TEST_VERSION` at build time) to look like an older release.
+#[cfg(feature = "selfupdate-test")]
+pub const VERSION: &str = match option_env!("WW_SU_TEST_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// This agent process: a random id and when it started. Wren closes a run
 /// handed to another process (the agent restarted mid-run: nothing will
@@ -64,6 +72,10 @@ pub struct Heartbeat {
     /// agent loop; older agents send nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<crate::managed::Report>,
+    /// Whether this agent can update itself (0.10.0+). Filled in by the
+    /// agent loop; older agents send nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_update: Option<crate::selfupdate::report::Report>,
 }
 
 /// Reads Docker on `socket` and looks for Unraid under `root`.
@@ -79,6 +91,7 @@ pub async fn collect(socket: &str, root: &Path) -> Heartbeat {
         boot_id: boot().id.clone(),
         uptime_seconds: boot().uptime_seconds(),
         settings: None,
+        self_update: None,
     }
 }
 

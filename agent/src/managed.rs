@@ -514,6 +514,40 @@ pub enum Offered {
     Same(i64),
 }
 
+/// `base` with the settings in `path` on top, unless `locked`.
+fn read_state(base: &Config, path: &Path, locked: bool) -> State {
+    let mut state = State {
+        effective: Arc::new(base.clone()),
+        applied: None,
+        error: None,
+    };
+    if locked {
+        return state;
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let parsed = serde_json::from_str::<Value>(&text)
+                .map_err(|e| format!("{} isn't JSON ({e})", path.display()))
+                .and_then(|v| Settings::parse(&v));
+            match parsed {
+                Ok(s) => match apply(base, &s, None) {
+                    Ok(config) => {
+                        state.effective = Arc::new(config);
+                        state.applied = Some(s);
+                    }
+                    Err(p) => state.error = Some((Some(s.version), p.join("; "))),
+                },
+                Err(e) => state.error = Some((None, e)),
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            state.error = Some((None, format!("can't read {}: {e}", path.display())));
+        }
+    }
+    state
+}
+
 impl Live {
     /// `base` is the checked `agent.toml`. Unless `locked`, a `managed.json`
     /// beside it is read and applied (a damaged or now-invalid one is
@@ -524,40 +558,21 @@ impl Live {
             .parent()
             .map_or_else(|| PathBuf::from("/config"), Path::to_path_buf)
             .join(FILE);
-        let mut state = State {
-            effective: Arc::new(base.clone()),
-            applied: None,
-            error: None,
-        };
-        if !locked {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let parsed = serde_json::from_str::<Value>(&text)
-                        .map_err(|e| format!("{} isn't JSON ({e})", path.display()))
-                        .and_then(|v| Settings::parse(&v));
-                    match parsed {
-                        Ok(s) => match apply(&base, &s, None) {
-                            Ok(config) => {
-                                state.effective = Arc::new(config);
-                                state.applied = Some(s);
-                            }
-                            Err(p) => state.error = Some((Some(s.version), p.join("; "))),
-                        },
-                        Err(e) => state.error = Some((None, e)),
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    state.error = Some((None, format!("can't read {}: {e}", path.display())));
-                }
-            }
-        }
+        let state = read_state(&base, &path, locked);
         Live {
             base,
             path,
             locked,
             state: Mutex::new(state),
         }
+    }
+
+    /// Reads `managed.json` again, as [`Live::new`] does: for when it was
+    /// put back from a backup under this process (a self-update rolled back
+    /// by hand).
+    pub fn reload(&self) {
+        let state = read_state(&self.base, &self.path, self.locked);
+        *self.state() = state;
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -685,7 +700,16 @@ impl Live {
 /// the old one (mode 0600).
 fn write_atomic(path: &Path, s: &Settings) -> Result<(), String> {
     let text = serde_json::to_string_pretty(s).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
+    write_private(path, text.as_bytes())
+}
+
+/// Writes `bytes` to a temporary file beside `path` (the file name plus
+/// `.tmp`), syncs it and renames it over `path`, mode 0600. The folder is
+/// created when it is missing. A failed write leaves no temporary file.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
     let write = || -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -698,7 +722,7 @@ fn write_atomic(path: &Path, s: &Settings) -> Result<(), String> {
             options.mode(0o600);
         }
         let mut f = options.open(&tmp)?;
-        f.write_all(text.as_bytes())?;
+        f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
     };
@@ -1049,6 +1073,16 @@ update = { command = "./secret-update.sh --key hunter2" }
     }
 
     #[test]
+    fn a_self_update_field_from_wren_is_refused() {
+        let mut v = serde_json::to_value(settings()).unwrap();
+        v["self_update"] = serde_json::json!({ "enabled": true });
+        assert!(Settings::parse(&v).is_err());
+        let live = live_in(&tmp("su-field"), false);
+        assert!(live.offer(&v, &mounts()).is_err());
+        assert!(!live.config().self_update.enabled);
+    }
+
+    #[test]
     fn offers_are_written_atomically_applied_and_reloaded() {
         let dir = tmp("offer");
         let live = live_in(&dir, false);
@@ -1090,6 +1124,27 @@ update = { command = "./secret-update.sh --key hunter2" }
         assert_eq!(again.config().roots, live.config().roots);
         assert_eq!(again.config().script_stacks[0].name, "fluxer");
         assert!(again.error().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_put_back_under_a_running_agent_is_read_again_on_reload() {
+        // A self-update rolled back by hand restores managed.json from its
+        // backup while this process runs.
+        let dir = tmp("reload");
+        let live = live_in(&dir, false);
+        let other = live_in(&dir, false);
+        other
+            .offer(&serde_json::to_value(settings()).unwrap(), &mounts())
+            .unwrap();
+        assert_eq!(live.version(), None);
+        live.reload();
+        assert_eq!(live.version(), Some(2));
+        assert_eq!(live.config().roots, other.config().roots);
+        std::fs::remove_file(dir.join(FILE)).unwrap();
+        live.reload();
+        assert_eq!(live.version(), None);
+        assert!(live.error().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

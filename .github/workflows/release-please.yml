@@ -37,6 +37,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # the called workflow signs the images (cosign, keyless)
     uses: ./.github/workflows/docker-publish.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}

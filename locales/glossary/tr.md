@@ -38,4 +38,5 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; suffixes with ’ (“Unraid’de”) |
 | auto window | otomatik pencere | per-server window in which automatic updates may run |
 | scheduled update | zamanlanmış güncelleme | an update approved to run at a chosen time |
+| self-update (the agent updates itself) | kendi kendine güncelleme | agent self-update; "agent update" = the update of the agent itself |
 | monitor (Vigilant Vole) | monitör | VV: “monitör” |

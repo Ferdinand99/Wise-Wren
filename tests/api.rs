@@ -850,8 +850,10 @@ fn every_route_is_documented() {
     const SERVED: &[(&str, &str)] = &[
         ("GET", "/api/v1/servers"),
         ("POST", "/api/v1/servers"),
+        ("GET", "/api/v1/servers/{id}"),
         ("DELETE", "/api/v1/servers/{id}"),
         ("POST", "/api/v1/servers/{id}/token"),
+        ("POST", "/api/v1/servers/{id}/agent-update"),
         ("POST", "/api/v1/servers/{id}/revoke"),
         ("POST", "/api/v1/servers/{id}/check"),
         ("POST", "/api/v1/servers/{id}/interval"),
@@ -912,4 +914,110 @@ fn every_route_is_documented() {
             "{route:?} is documented but not served"
         );
     }
+}
+
+/// A server Tower whose 0.10.0 agent reports self-update on, while Wren
+/// offers 0.10.1; an admin write token.
+async fn agent_update_ready() -> (App, i64, String) {
+    let app = App::new().await;
+    let (id, agent) = app.add_server("Tower").await;
+    *app.wren.agent_release.write().unwrap() = Some(wise_wren::agent_update::Release {
+        version: "0.10.1".into(),
+        digest: format!("sha256:{}", "b".repeat(64)),
+        newest_wren: None,
+    });
+    let beat = json!({
+        "agent_version": "0.10.0", "boot_id": "boot-a", "uptime_seconds": 100,
+        "self_update": {"supported": true, "enabled": true, "blocked": "", "container": "wren-agent",
+                        "reference": "ghcr.io/ferdinand99/wise-wren-agent:latest"},
+    });
+    let res = common::post_json(&app, "/api/agent/v1/heartbeat", &agent, beat).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let admin = token(&app, "admin", "admin", TokenScope::Write).await;
+    (app, id, admin)
+}
+
+#[tokio::test]
+async fn servers_api_carries_agent_update() {
+    let (app, id, admin) = agent_update_ready().await;
+    let list = bearer(&app, "GET", "/api/v1/servers", &admin).await.json();
+    assert_eq!(
+        list["servers"][0]["agent_update"],
+        json!({"state": "available", "current": "0.10.0", "available": "0.10.1", "reason": "", "run_id": null})
+    );
+    let one = bearer(&app, "GET", &format!("/api/v1/servers/{id}"), &admin).await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.json()["agent_update"]["state"], "available");
+    assert_eq!(one.json()["name"], "Tower");
+    assert!(
+        !one.body.contains("wwa_") && !one.body.contains("token"),
+        "{}",
+        one.body
+    );
+    assert_eq!(
+        bearer(&app, "GET", "/api/v1/servers/999", &admin)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    // The route still deletes.
+    assert_eq!(
+        bearer(&app, "DELETE", &format!("/api/v1/servers/{id}"), &admin)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn mcp_update_agent_is_admin_only() {
+    let (app, id, admin) = agent_update_ready().await;
+    let editor = token(&app, "ed2", "editor", TokenScope::Write).await;
+    assert!(
+        tool_names(&app, &admin)
+            .await
+            .contains(&"update_agent".to_string())
+    );
+    assert!(
+        !tool_names(&app, &editor)
+            .await
+            .contains(&"update_agent".to_string())
+    );
+    let args = json!({"name": "update_agent", "arguments": {"server_id": id, "version": "0.10.1"}});
+    let refused = mcp(&app, &editor, "tools/call", args.clone()).await;
+    assert!(
+        refused.get("error").is_some() || refused["result"]["isError"] == true,
+        "{refused}"
+    );
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE kind = 'agent_update'")
+            .await,
+        0
+    );
+    let ok = mcp(&app, &admin, "tools/call", args).await;
+    assert!(ok["result"].to_string().contains("run_id"), "{ok}");
+    assert_eq!(
+        app.count("SELECT COUNT(*) FROM runs WHERE kind = 'agent_update'")
+            .await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn rest_agent_update_needs_an_admin() {
+    let (app, id, admin) = agent_update_ready().await;
+    let editor = token(&app, "ed3", "editor", TokenScope::Write).await;
+    let path = format!("/api/v1/servers/{id}/agent-update");
+    let body = json!({"version": "0.10.1", "at": null});
+    assert_eq!(
+        common::post_json(&app, &path, &editor, body.clone())
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let ok = common::post_json(&app, &path, &admin, body).await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.body);
+    assert_eq!(ok.json()["status"], "queued");
+    let one = bearer(&app, "GET", &format!("/api/v1/servers/{id}"), &admin).await;
+    assert_eq!(one.json()["agent_update"]["state"], "running");
 }

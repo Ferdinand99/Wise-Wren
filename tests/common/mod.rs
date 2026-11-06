@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use wise_wren::Wren;
 
@@ -92,6 +93,15 @@ impl App {
         self.wren
             .core
             .with_conn(move |c| c.query_row(sql, [], |r| r.get(0)))
+            .await
+            .unwrap()
+    }
+
+    /// [`App::count`] for a query built at run time.
+    pub async fn count_sql(&self, sql: String) -> i64 {
+        self.wren
+            .core
+            .with_conn(move |c| c.query_row(&sql, [], |r| r.get(0)))
             .await
             .unwrap()
     }
@@ -284,4 +294,99 @@ pub async fn next_event(body: &mut axum::body::BodyDataStream) -> String {
         text.push_str(&String::from_utf8_lossy(&chunk));
     }
     text
+}
+
+/// A JSON `POST` with the agent token `token`.
+pub async fn post_json(app: &App, path: &str, token: &str, body: Value) -> Res {
+    let req = Request::post(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.send(req).await
+}
+
+/// The job poll of the agent process `boot`, without waiting.
+pub async fn poll_as(app: &App, token: &str, boot: &str) -> Res {
+    bearer(
+        app,
+        "GET",
+        &format!("/api/agent/v1/jobs?wait=0&boot={boot}"),
+        token,
+    )
+    .await
+}
+
+/// A step report of run `run`.
+pub async fn step(app: &App, token: &str, run: i64, step: &str, status: &str) -> Res {
+    post_json(
+        app,
+        &format!("/api/agent/v1/runs/{run}/steps"),
+        token,
+        serde_json::json!({"step": step, "status": status, "log": "…", "duration_ms": 120}),
+    )
+    .await
+}
+
+/// The end of run `run`.
+pub async fn finish(app: &App, token: &str, run: i64, outcome: &str) -> Res {
+    post_json(
+        app,
+        &format!("/api/agent/v1/runs/{run}/finish"),
+        token,
+        serde_json::json!({"outcome": outcome, "detail": "x"}),
+    )
+    .await
+}
+
+/// A webhook receiver: what it got.
+pub async fn hooks() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let got: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let g = got.clone();
+    let app = axum::Router::new().fallback(move |body: axum::body::Bytes| {
+        let g = g.clone();
+        async move {
+            g.lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            StatusCode::OK
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}/hook"), got)
+}
+
+pub async fn add_hook(app: &App, url: String) {
+    let config = json!({"url": url, "method": "POST"}).to_string();
+    app.wren
+        .core
+        .with_conn(move |c| {
+            c.execute(
+                "INSERT INTO notification_channels (name, kind, config) VALUES ('hook', 'webhook', ?1)",
+                [config],
+            )
+        })
+        .await
+        .unwrap();
+}
+
+/// Puts `digest` in the registry as `image`'s newest and refreshes the targets.
+pub async fn set_remote(app: &App, image: &'static str, digest: &'static str) {
+    app.wren
+        .core
+        .with_conn(move |c| {
+            wise_wren::targets::set_remote(
+                c,
+                image,
+                &Ok(wise_wren::registry::Remote {
+                    digest: digest.into(),
+                    media_type: String::new(),
+                }),
+            )?;
+            wise_wren::targets::refresh_all(c)
+        })
+        .await
+        .unwrap();
 }

@@ -6,6 +6,11 @@
 //! `--check` only checks the configuration (and says which managed settings
 //! from Wren are in force). A configuration problem exits
 //! with code 2, naming the field.
+//!
+//! `wren-agent --self-update-helper --state PATH --socket PATH` is the mode
+//! the self-update helper container runs in: it needs no configuration, only
+//! the run's state file and the Docker socket (exit 0 when the run ended as
+//! `done` or `rolled_back`, else 1).
 
 use std::io::IsTerminal as _;
 use std::path::PathBuf;
@@ -16,17 +21,36 @@ use wren_agent::config::{self, Config};
 use wren_agent::ledger::Ledger;
 use wren_agent::managed::{self, Live};
 
-const USAGE: &str = "usage: wren-agent [--config PATH] [--check] [--version]";
+const USAGE: &str = "usage: wren-agent [--config PATH] [--check] [--version]
+       wren-agent --self-update-helper --state PATH --socket PATH";
 
 fn main() -> ExitCode {
     let mut path: Option<PathBuf> = std::env::var_os("WW_AGENT_CONFIG").map(PathBuf::from);
     let mut check = false;
+    let mut helper = false;
+    let mut state: Option<PathBuf> = None;
+    let mut socket: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--check" => check = true,
             "--config" => match args.next() {
                 Some(p) => path = Some(PathBuf::from(p)),
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--self-update-helper" => helper = true,
+            "--state" => match args.next() {
+                Some(p) => state = Some(PathBuf::from(p)),
+                None => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--socket" => match args.next() {
+                Some(p) => socket = Some(p),
                 None => {
                     eprintln!("{USAGE}");
                     return ExitCode::from(2);
@@ -45,6 +69,16 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+    // The helper comes before the configuration: it has none.
+    if helper || state.is_some() || socket.is_some() {
+        return match (helper, state, socket) {
+            (true, Some(state), Some(socket)) => self_update_helper(&state, socket),
+            _ => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        };
     }
     let explicit = path.is_some();
     let path = path.unwrap_or_else(|| PathBuf::from(config::DEFAULT_PATH));
@@ -97,6 +131,7 @@ fn main() -> ExitCode {
                 "required only when Wren asks"
             }
         );
+        println!("{}", config.self_update.describe());
         println!(
             "run ledger {}: {}",
             config.ledger.display(),
@@ -109,15 +144,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_ansi(std::io::stdout().is_terminal())
-        .init();
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
+    init_logging();
+    let runtime = match runtime() {
         Ok(rt) => rt,
         Err(err) => {
             eprintln!("wren-agent: {err}");
@@ -130,6 +158,39 @@ fn main() -> ExitCode {
             tracing::error!("{err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn init_logging() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
+}
+
+fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+/// Carries out the self-update run in `state` (see `selfupdate::helper`).
+fn self_update_helper(state: &std::path::Path, socket: String) -> ExitCode {
+    use wren_agent::selfupdate::helper;
+
+    init_logging();
+    let runtime = match runtime() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("wren-agent: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if runtime.block_on(helper::carry_out(&helper::DockerEngine { socket }, state)) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 

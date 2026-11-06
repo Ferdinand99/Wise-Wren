@@ -50,8 +50,16 @@ pub const INTERVAL_SECONDS: u64 = 30;
 pub const RATE: Rate = Rate::per_minute(20);
 /// Longest value kept of each reported fact (characters).
 pub const MAX_FACT_CHARS: usize = 200;
+/// The agent image's repository, spelled once.
+macro_rules! agent_repo {
+    () => {
+        "ghcr.io/ferdinand99/wise-wren-agent"
+    };
+}
+/// The agent's repository (self-updates look up its tags).
+pub const AGENT_REPO: &str = agent_repo!();
 /// The agent's image.
-pub const AGENT_IMAGE: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+pub const AGENT_IMAGE: &str = concat!(agent_repo!(), ":latest");
 
 /// What an agent reports. Unknown fields are ignored, so newer agents can
 /// report more.
@@ -86,6 +94,10 @@ pub struct Heartbeat {
     /// leniently, so a newer agent's report can't make the heartbeat fail.
     #[serde(default)]
     pub settings: Option<serde_json::Value>,
+    /// Self-update (0.10+): whether the agent may update itself and why not
+    /// ([`crate::agent_update`]). Absent from older agents; read leniently.
+    #[serde(default)]
+    pub self_update: Option<serde_json::Value>,
 }
 
 /// A boot id as Wren keeps it: letters, digits, `-` and `_`, at most 64;
@@ -163,10 +175,14 @@ pub async fn heartbeat(
     let uptime = beat.uptime_seconds;
     let report: Option<crate::agent_settings::Report> =
         beat.settings.and_then(|v| serde_json::from_value(v).ok());
+    let self_update: Option<crate::agent_update::Report> = beat
+        .self_update
+        .and_then(|v| serde_json::from_value(v).ok());
     let (scan, interrupted, settings) = match wren
         .core
         .with_conn(move |c| {
             db::record_heartbeat(c, id, &facts)?;
+            crate::agent_update::store_report(c, id, self_update)?;
             // An agent that restarted mid-run never finishes that run.
             let interrupted = match &boot {
                 Some(boot) => crate::runs::close_interrupted(c, id, boot, uptime)?,
@@ -183,6 +199,7 @@ pub async fn heartbeat(
     };
     let _ = wren.changes.send(());
     crate::runs::after_interrupted(&wren, interrupted);
+    tokio::spawn(crate::agent_update::announce(wren.clone(), id));
     // Beside `scan` (a fresh inventory) Wren can send settings, as data an
     // agent checks against its own limits (§8); never a command line.
     let mut reply = json!({
@@ -261,7 +278,8 @@ pub fn docker_run(server_url: &str, token: &str, unraid: bool) -> String {
         "# agent.toml needs an [updates] allow list: without one the agent refuses every update and\n\
          # rollback. Put this in /config/agent.toml (a list of just the names you want updated is safer):\n\
          #   [updates]\n\
-         #   allow = [\"*\"]\n{roots}{}",
+         #   allow = [\"*\"]\n{roots}\
+         # Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent (docs/agent.md).\n{}",
         lines.join(" \\\n  ")
     )
 }
@@ -300,8 +318,18 @@ mod tests {
         for never in ["--privileged", "--cap-add", "--pid"] {
             assert!(!run.contains(never));
         }
+        // Self-update is opt-in: said as a comment, never an active flag.
+        assert!(
+            run.contains("# Add -e WW_AGENT_SELF_UPDATE=1 to let Wren update this agent"),
+            "{run}"
+        );
+        assert!(
+            !run.lines()
+                .any(|l| !l.trim_start().starts_with('#') && l.contains("WW_AGENT_SELF_UPDATE"))
+        );
         let linux = docker_run("https://wren.example.com", "wwa_abc", false);
         assert!(linux.contains("-v /etc/wren-agent:/config") && !linux.contains("emhttp"));
+        assert!(linux.contains("# Add -e WW_AGENT_SELF_UPDATE=1"));
     }
 
     #[test]

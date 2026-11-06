@@ -19,11 +19,12 @@ pub mod presets;
 pub mod process;
 pub mod redact;
 pub mod run;
+pub mod selfupdate;
 pub mod snapshot;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use heartbeat::{Client, SendError};
@@ -145,6 +146,17 @@ pub async fn run(
     let client = Arc::new(Client::new(&config.server, &config.token)?);
     // `agent.toml` with the settings Wren sent on top (unless locked).
     let locked = managed::locked_by(|k| std::env::var(k).ok());
+    // What this process is in a self-update (design §9). A run prepared but
+    // never handed to a helper, or one put back by hand with the break-glass
+    // command, is settled first: nothing is on its way now. Before
+    // `managed.json` is read, which settling may put back from its backup
+    // (the folder and the socket are agent.toml's, never Wren's).
+    let dir = selfupdate::config_dir(&config).to_path_buf();
+    let engine = selfupdate::helper::DockerEngine {
+        socket: config.docker_socket.clone(),
+    };
+    selfupdate::probation::settle_prepared(&engine, &dir, 0, selfupdate::state::now()).await;
+    selfupdate::probation::settle_by_hand(&engine, &dir, selfupdate::state::now(), true).await;
     let live = Arc::new(Live::new(config, locked));
     let config = live.config();
     let scans = Scans::default();
@@ -182,6 +194,37 @@ pub async fn run(
         );
     }
     tokio::pin!(stop);
+    let self_jobs = Arc::new(jobs::JobClient::new(&config.server, &config.token)?);
+    let state_path = dir.join(selfupdate::STATE_FILE);
+    match selfupdate::probation::role(
+        selfupdate::state::load(&state_path).ok().flatten(),
+        heartbeat::VERSION,
+    ) {
+        selfupdate::probation::Role::Probation(st) => {
+            tracing::info!(
+                run = st.run_id,
+                from = %st.from_version,
+                "self-update: this agent is on probation"
+            );
+            if selfupdate::probation::fault("exit2") {
+                tracing::error!("fault injected: exit 2 before the first heartbeat");
+                std::process::exit(2);
+            }
+            tokio::select! {
+                () = selfupdate::probation::probation(&config, &client, &self_jobs, &st, &dir) => {}
+                () = &mut stop => {
+                    tracing::info!("stopped");
+                    return Ok(());
+                }
+            }
+        }
+        selfupdate::probation::Role::Report(st) => tracing::info!(
+            run = st.run_id,
+            phase = ?st.phase,
+            "self-update: the result goes to Wren with the next heartbeats"
+        ),
+        selfupdate::probation::Role::Normal => {}
+    }
     // Kept images beyond `[retention] rollback_images`, from before this
     // setting or a run that never finished, go once at start.
     let (socket, keep) = (
@@ -196,10 +239,20 @@ pub async fn run(
     });
     // A panic in the job loop would leave an agent that sends heartbeats but
     // never takes a job: it is restarted.
+    // Wren's id for this server, from the last heartbeat reply (0 before the
+    // first): an agent update records it for the new agent to check.
+    let server_id = Arc::new(AtomicI64::new(0));
+    // The id of a self-update run that has ended (see `selfupdate::probation::round`).
+    let ended = Arc::new(AtomicI64::new(0));
     let jobs_live = live.clone();
+    let jobs_id = server_id.clone();
+    let jobs_ended = ended.clone();
     let job_task = supervise("jobs", Duration::from_secs(5), move || {
-        jobs_loop(jobs_live.clone())
+        jobs_loop(jobs_live.clone(), jobs_id.clone(), jobs_ended.clone())
     });
+    // The self-update chores run beside the heartbeats, one at a time.
+    let chores = Arc::new(AtomicBool::new(false));
+    let mut next_sweep = Instant::now();
     let mut connected = false;
     let mut failures = 0u32;
     let mut last_refusal = String::new();
@@ -209,6 +262,7 @@ pub async fn run(
         let mut beat = heartbeat::collect(&config.docker_socket, Path::new("/")).await;
         let mounts = managed::own_mounts(&config.docker_socket, Path::new("/")).await;
         beat.settings = Some(live.report(&mounts));
+        beat.self_update = Some(selfupdate::report::report(&config).await);
         if !beat.docker_error.is_empty() {
             tracing::warn!(error = %beat.docker_error, "can't read Docker");
         }
@@ -220,6 +274,7 @@ pub async fn run(
                     connected = true;
                 }
                 failures = 0;
+                server_id.store(reply.server.id, Ordering::Relaxed);
                 // A scan on start, on the agent's own schedule, when Wren asks
                 // ("Check now") and again after a failed one.
                 let mut scan = reply.scan;
@@ -265,6 +320,32 @@ pub async fn run(
                 wait
             }
         };
+        // Tells Wren how a finished self-update ended (every round until it
+        // has it), settles a half-made one and sweeps leftovers now and then.
+        if !chores.swap(true, Ordering::AcqRel) {
+            let now = Instant::now();
+            let sweep_due = now >= next_sweep;
+            if sweep_due {
+                next_sweep = now + Duration::from_secs(selfupdate::scaled(selfupdate::SWEEP));
+            }
+            let (config, jobs, ended, busy, settings) = (
+                live.config(),
+                self_jobs.clone(),
+                ended.clone(),
+                chores.clone(),
+                live.clone(),
+            );
+            tokio::spawn(async move {
+                let work = tokio::spawn(async move {
+                    // A run put back by hand gets its managed.json back.
+                    if selfupdate::probation::round(&config, &jobs, &ended, sweep_due).await {
+                        settings.reload();
+                    }
+                });
+                finished("self-update chores", work).await;
+                busy.store(false, Ordering::Release);
+            });
+        }
         tokio::select! {
             () = tokio::time::sleep(wait) => {}
             () = &mut stop => {
@@ -276,8 +357,31 @@ pub async fn run(
     }
 }
 
+/// Seconds an agent update waits for a first heartbeat reply (one round).
+const SERVER_ID_WAIT: u64 = 35;
+
+/// Wren's id for this server: `id` as soon as a heartbeat reply has set it,
+/// waiting up to `wait` for the first one; 0 when none came.
+async fn known_server_id(id: &AtomicI64, wait: Duration) -> i64 {
+    let end = Instant::now() + wait;
+    loop {
+        let known = id.load(Ordering::Relaxed);
+        if known != 0 || Instant::now() >= end {
+            return known;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Waits until self-update run `run` has ended (`ended` says so).
+async fn until_ended(ended: &AtomicI64, run: i64) {
+    while ended.load(Ordering::Relaxed) != run {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// Waits for jobs and runs them, one at a time.
-async fn jobs_loop(live: Arc<Live>) {
+async fn jobs_loop(live: Arc<Live>, server_id: Arc<AtomicI64>, ended: Arc<AtomicI64>) {
     let config = live.config();
     let client = match jobs::JobClient::new(&config.server, &config.token) {
         Ok(c) => c,
@@ -294,7 +398,28 @@ async fn jobs_loop(live: Arc<Live>) {
                 failures = 0;
                 // The settings in force now; a run keeps them to its end.
                 let config = live.config();
-                run::handle(&config, &client, job).await;
+                // A job that comes before the first heartbeat reply waits for
+                // it (up to one round); an agent update needs the id.
+                let id = if job.kind == jobs::JobKind::AgentUpdate {
+                    let wait = Duration::from_secs(selfupdate::scaled(SERVER_ID_WAIT));
+                    known_server_id(&server_id, wait).await
+                } else {
+                    server_id.load(Ordering::Relaxed)
+                };
+                let run_id = job.run_id;
+                if run::handle(&config, &client, job, id).await
+                    == selfupdate::prepare::Handoff::Stopping
+                {
+                    // The helper stops this agent (SIGTERM ends the process);
+                    // no job may start meanwhile. Heartbeats go on. If the
+                    // helper rolls back without ever stopping it, the run
+                    // ends under this process: then jobs go on.
+                    tracing::info!(
+                        "self-update handed over; no more jobs until the run has ended or the agent restarts"
+                    );
+                    until_ended(&ended, run_id).await;
+                    tracing::info!("the self-update has ended; jobs go on");
+                }
             }
             Ok(jobs::Polled::Job(Err((run, why)))) => {
                 tracing::warn!(run, reason = ?why, "job refused");
@@ -346,6 +471,39 @@ mod tests {
             .expect("the supervisor ends once the task does")
             .unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn an_agent_update_waits_for_a_known_server_id() {
+        let id = Arc::new(AtomicI64::new(0));
+        let none = known_server_id(&id, Duration::from_millis(50)).await;
+        assert_eq!(none, 0, "no heartbeat reply yet");
+        let late = id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            late.store(3, Ordering::Relaxed);
+        });
+        let known = known_server_id(&id, Duration::from_secs(10)).await;
+        assert_eq!(known, 3);
+    }
+
+    #[tokio::test]
+    async fn a_parked_job_loop_goes_on_when_its_run_has_ended() {
+        let ended = Arc::new(AtomicI64::new(0));
+        // Another run's end (or none) does not release it.
+        let wait = tokio::time::timeout(Duration::from_millis(1500), until_ended(&ended, 57)).await;
+        assert!(wait.is_err());
+        ended.store(56, Ordering::Relaxed);
+        let wait = tokio::time::timeout(Duration::from_millis(1500), until_ended(&ended, 57)).await;
+        assert!(wait.is_err());
+        let late = ended.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            late.store(57, Ordering::Relaxed);
+        });
+        tokio::time::timeout(Duration::from_secs(10), until_ended(&ended, 57))
+            .await
+            .expect("the loop goes on once its run has ended");
     }
 
     #[test]

@@ -38,4 +38,5 @@ vole-kit and follow [Vigilant Vole's glossary](https://github.com/Ferdinand99/Vi
 | Docker / Compose / Unraid | Docker / Compose / Unraid | unchanged; product names; «socket Docker» |
 | auto window | finestra automatica | per-server window in which automatic updates may run |
 | scheduled update | aggiornamento programmato | an update approved to run at a chosen time |
+| self-update (the agent updates itself) | autoaggiornamento | agent self-update; "agent update" = the update of the agent itself |
 | monitor (Vigilant Vole) | monitor (m.) | VV: «monitor» |

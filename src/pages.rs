@@ -17,6 +17,7 @@ use vole_kit::page::{PageCtx, flash};
 use vole_kit::state::Core;
 
 use crate::Wren;
+use crate::agent_update;
 use crate::inventory::{COMPOSE, CONTAINER, SCRIPT, UNRAID};
 use crate::registry;
 use crate::targets::{self, Filter, Image, NOT_CHECKED, REGISTRY, Target};
@@ -81,6 +82,9 @@ pub struct TargetView {
     /// New on an auto server and waiting for an admin to allow automatic
     /// updates (it is on approve until then).
     pub awaiting_auto: bool,
+    /// Where an agent's own container is updated: its server's page (the
+    /// agent reports that it can update itself).
+    pub agent_link: Option<String>,
 }
 
 /// The status's design-system class and label.
@@ -156,6 +160,7 @@ impl TargetView {
             auto: false,
             own: false,
             awaiting_auto: t.auto_pending,
+            agent_link: None,
         }
     }
 
@@ -199,6 +204,23 @@ impl ImageView {
             status_label,
         }
     }
+}
+
+/// Where the target is updated, when it is the agent's own container (one
+/// of its images is the agent image) and the agent can update itself.
+fn agent_link(
+    c: &rusqlite::Connection,
+    target_id: i64,
+    server_id: i64,
+) -> rusqlite::Result<Option<String>> {
+    let own = targets::images(c, target_id)?
+        .iter()
+        .any(|i| agent_update::is_agent_image(&i.image));
+    if !own {
+        return Ok(None);
+    }
+    let supported = agent_update::report_of(c, server_id)?.is_some_and(|r| r.supported);
+    Ok(supported.then(|| format!("/servers/{server_id}#agent-update")))
 }
 
 /// A server's targets for its page.
@@ -296,21 +318,25 @@ pub async fn update_rows(core: &Core) -> ApiResult<Vec<UpdateRow>> {
             for t in list {
                 let p = crate::runs::policy(c, t.id)?.unwrap_or_default();
                 let active = crate::runs::active_for(c, t.id)?;
-                out.push((t, p, active));
+                let link = agent_link(c, t.id, t.server_id)?;
+                out.push((t, p, active, link));
             }
             Ok(out)
         })
         .await?;
     Ok(rows
         .into_iter()
-        .map(|(t, p, active)| UpdateRow {
+        .map(|(t, p, active, link)| UpdateRow {
             notify_only: p.effective() == crate::runs::NOTIFY,
             own: p.own,
             auto: p.updates_itself(),
             skipped: p.skipped,
             snoozed_until: p.snoozed_until,
             active: active.map(crate::run_pages::RunView::new),
-            t: TargetView::new(t),
+            t: TargetView {
+                agent_link: link,
+                ..TargetView::new(t)
+            },
         })
         .collect())
 }
@@ -403,16 +429,22 @@ async fn target_page(
 ) -> ApiResult<impl IntoResponse> {
     let target = TargetView::new(load(&core, id).await?);
     let back_href = format!("/servers/{}", target.server_id);
-    let (images, policy, active, tz) = core
+    let server_id = target.server_id;
+    let (images, policy, active, tz, link) = core
         .with_conn(move |c| {
             Ok((
                 targets::images(c, id)?,
                 crate::runs::policy(c, id)?.unwrap_or_default(),
                 crate::runs::active_for(c, id)?,
                 crate::schedule::site_tz_name(c)?,
+                agent_link(c, id, server_id)?,
             ))
         })
         .await?;
+    let target = TargetView {
+        agent_link: link.clone(),
+        ..target
+    };
     let vv = crate::vv_pages::card(&core, id, user.is_admin()).await?;
     let images = images.into_iter().map(ImageView::new).collect();
     let runs = crate::run_pages::recent(&core, Some(id), 20).await?;
@@ -423,7 +455,10 @@ async fn target_page(
         skipped: policy.skipped,
         snoozed_until: policy.snoozed_until.clone(),
         active: active.map(crate::run_pages::RunView::new),
-        t: TargetView::new(load(&core, id).await?),
+        t: TargetView {
+            agent_link: link,
+            ..TargetView::new(load(&core, id).await?)
+        },
     };
     let (ctx, jar) =
         PageCtx::build(&core, Some(&user), &jar, target.name.clone(), "servers", "").await;

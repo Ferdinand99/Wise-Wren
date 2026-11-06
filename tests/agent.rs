@@ -168,7 +168,7 @@ async fn agent_refuses_jobs_outside_its_allowlist() {
         _ => panic!("a job"),
     };
     assert_eq!(job.target.name, "postiz");
-    wren_agent::run::handle(&config, &jobs, job).await;
+    let _ = wren_agent::run::handle(&config, &jobs, job, 1).await;
     let run = app
         .wren
         .core

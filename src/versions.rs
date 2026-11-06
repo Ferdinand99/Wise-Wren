@@ -282,7 +282,7 @@ pub async fn from_url(source: &Source, allow: crate::fetch::Allow) -> Result<Lat
 }
 
 /// `1.2`, `v1.2.3`, `1.2.3-rc.1` as semver (missing parts are 0).
-fn semver_of(v: &str) -> Option<semver::Version> {
+pub(crate) fn semver_of(v: &str) -> Option<semver::Version> {
     let v = v.trim().trim_start_matches(['v', 'V']);
     if let Ok(parsed) = semver::Version::parse(v) {
         return Some(parsed);

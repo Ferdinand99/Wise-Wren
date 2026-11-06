@@ -1,6 +1,7 @@
 # Upgrading
 
-Wren doesn't update itself or its agents yet: their targets show new versions but can't be approved.
+Wren doesn't update itself yet: update the server by hand (below). From 0.10 it can update its own agents where the
+host's owner allows it ([Agent self-update](agent.md#agent-self-update)); agents before 0.10 are updated by hand.
 
 ## The server
 
@@ -85,13 +86,49 @@ The same release renames Wren's internal slug from `wren` to `wise-wren` (the pu
 names). It shows up as the MCP server name, the API reference download names and the source or tag Keep, ClickSend and
 Opsgenie receive: update a rule that matched `wren`.
 
+### To 0.10
+
+Wren can now update its own agents (see [Agent self-update](agent.md#agent-self-update)). Server and agent change
+together; recreate both **by hand this time**: an agent before 0.10.0 can't update itself, so this is the last
+manual agent update.
+
+- **The server** adds three columns to the servers table at the first start, after the usual copy in
+  `backups/wren-before-…`. The release before 0.10 refuses a database this one has started on; to go back, restore
+  that copy.
+- **The agent**: when you recreate it, add `WW_AGENT_SELF_UPDATE=1` to its environment (Unraid: add a variable to the
+  container) if you want Wren to update it from now on. It is off otherwise, and Wren can't switch it on. The
+  alternative is `[self_update] enabled = true` in `agent.toml`, but an agent before 0.10 refuses to start on that
+  section, so the variable is the better choice if you may need to go back.
+- **Keep the agent's image tag at `:latest` or `:0`** (`:0.10` follows 0.10.x only). Wren never moves a tag that
+  promises a version: an exact tag such as `:0.10.0` or a digest pins one, the card says so and the agent
+  isn't offered the update. Compose files and Unraid templates need the same.
+- **The agent's config folder** (`/config`) must be a writable mount from the host: the agent keeps its update state
+  there. Mounted read-only, the agent shows why it can't update itself.
+- **The first real self-update is 0.10.0 → 0.10.1.** An agent is only ever offered Wren's own version, so update
+  Wren first, then approve the agent on the server's page (**Agent version**). Update agents one at a time, and don't
+  update Wren while an agent update runs.
+- On the server's page the agent card says that self-update is off on that server until the variable is set, and
+  that an older agent has to be updated by hand once (agents before 0.10).
+- The release images are signed with cosign from this release; the agent doesn't verify the signature yet
+  ([Security notes](security.md#agent-self-update)).
+
 ## Agents
 
-Recreate each agent
- with the new image (Unraid: "Check for updates" on the agent's container). The agent reports
-its version with every heartbeat; the server's page shows it. Keep the agents on the same version as the server.
+Update the server first, then the agents. The agent reports its version with every heartbeat; the server's page
+shows it. Keep the agents on the same version as the server.
+
+- **An agent from 0.10 with self-update switched on** (`WW_AGENT_SELF_UPDATE=1` or `[self_update]`, see
+  [To 0.10](#to-010)): approve the update on the server's page (**Agent version**, now or at a set time). Wren offers
+  its own version, and the agent replaces itself and rolls back if the new one can't reach Wren. Don't update Wren
+  while this runs.
+- **Any other agent** (before 0.10, or self-update off): recreate it with the new image (Unraid: "Check for updates"
+  on the agent's container; Compose: `docker compose pull && docker compose up -d`; `docker run`: pull, remove and
+  start with the same options).
+
+Managed settings and the run ledger live in the agent's config folder, so they survive an update either way.
 
 ## Pinning
 
 `:latest` follows releases, `:0.2` and `:0` follow a minor or major line, `:0.2.1` (an exact version) never moves, `:edge` is the newest `main`
-build (for testing only).
+build (for testing only). An agent that Wren should update itself has to run `:latest`, `:0` or `:0.10` (the
+minor line follows patch releases only): an exact version or a digest pins it, and Wren refuses to move it.
