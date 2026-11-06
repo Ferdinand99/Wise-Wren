@@ -80,9 +80,16 @@ pub fn config_mount(inspect: &Value, config_dir: &Path) -> Option<Value> {
 }
 
 /// The folder can be written to: a file is made in it and removed again.
+/// Whatever has the probe's name goes first, and the probe is only ever made
+/// new (`O_EXCL`), so a link put there is never written through.
 pub fn writable(dir: &Path) -> bool {
     let probe = dir.join(".wren-write-test");
-    let made = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .is_ok();
     let _ = std::fs::remove_file(&probe);
     made
 }
@@ -360,6 +367,19 @@ mod tests {
         assert!(writable(&dir));
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         assert!(!writable(&dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_never_writes_through_a_link() {
+        let dir = temp("writable-link");
+        let target = dir.join("target");
+        std::fs::write(&target, b"keep").unwrap();
+        std::os::unix::fs::symlink(&target, dir.join(".wren-write-test")).unwrap();
+        assert!(writable(&dir));
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(dir.join(".wren-write-test")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
