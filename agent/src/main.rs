@@ -177,7 +177,7 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
 
 /// Carries out the self-update run in `state` (see `selfupdate::helper`).
 fn self_update_helper(state: &std::path::Path, socket: String) -> ExitCode {
-    use wren_agent::selfupdate::{helper, state::Phase};
+    use wren_agent::selfupdate::helper;
 
     init_logging();
     let runtime = match runtime() {
@@ -187,16 +187,10 @@ fn self_update_helper(state: &std::path::Path, socket: String) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(helper::run(&helper::DockerEngine { socket }, state)) {
-        Ok(Phase::Done | Phase::RolledBack) => ExitCode::SUCCESS,
-        Ok(phase) => {
-            tracing::error!("the self-update ended as {phase:?}");
-            ExitCode::FAILURE
-        }
-        Err(err) => {
-            tracing::error!("{err}");
-            ExitCode::FAILURE
-        }
+    if runtime.block_on(helper::carry_out(&helper::DockerEngine { socket }, state)) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }
 

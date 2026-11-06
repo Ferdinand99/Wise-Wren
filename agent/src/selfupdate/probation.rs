@@ -1330,6 +1330,9 @@ mod tests {
         async fn image_config(&self, _: &str) -> Value {
             Value::Null
         }
+        async fn image_id(&self, _: &str) -> Result<Option<String>, String> {
+            unreachable!()
+        }
         async fn stop(&self, _: &str, _: u64) -> Result<(), String> {
             unreachable!()
         }
@@ -1351,6 +1354,9 @@ mod tests {
             Ok(())
         }
         fn host_boot(&self) -> String {
+            String::new()
+        }
+        fn own_id(&self) -> String {
             String::new()
         }
         fn unraid_status_file(&self) -> PathBuf {

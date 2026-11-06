@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use super::machine::{Action, Ctr0, Seen, apply, next};
 use super::state::{FORMAT, Phase, StateFile, break_glass, confirmed, load, now, save};
-use super::{BACKUP_DIR, ROLLBACK_CHECK, STOP, helper_name, old_name, scaled};
+use super::{BACKUP_DIR, ROLLBACK_CHECK, SELF_UPDATE_REPO, STOP, helper_name, old_name, scaled};
 use crate::docker::{cli, get_json, post_json};
 use crate::managed::write_private;
 use crate::run::{UNRAID_STATUS, create_body, write_unraid_status};
@@ -34,6 +34,12 @@ pub trait Engine {
     fn inspect(&self, name: &str) -> impl Future<Output = Result<Option<Value>, String>> + Send;
     /// The `Config` of image `image_id` (`Null` when it can't be read).
     fn image_config(&self, image_id: &str) -> impl Future<Output = Value> + Send;
+    /// The id of the image `reference` names: `Ok(None)` only when Docker
+    /// says there is no such image.
+    fn image_id(
+        &self,
+        reference: &str,
+    ) -> impl Future<Output = Result<Option<String>, String>> + Send;
     fn stop(&self, name: &str, seconds: u64) -> impl Future<Output = Result<(), String>> + Send;
     fn rename(&self, from: &str, to: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// Creates container `name` and returns its id.
@@ -47,6 +53,8 @@ pub trait Engine {
     fn tag(&self, source: &str, target: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// The host's kernel boot id (`/proc/sys/kernel/random/boot_id`).
     fn host_boot(&self) -> String;
+    /// The id of the container this process runs in (empty when unknown).
+    fn own_id(&self) -> String;
     /// Unraid's update-status file ([`UNRAID_STATUS`]).
     fn unraid_status_file(&self) -> PathBuf;
     /// Seconds since the epoch.
@@ -80,6 +88,14 @@ impl Engine for DockerEngine {
             .ok()
             .and_then(|i| i.get("Config").cloned())
             .unwrap_or(Value::Null)
+    }
+
+    async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+        match get_json(&self.socket, &format!("/images/{reference}/json")).await {
+            Ok(v) => Ok(v.get("Id").and_then(Value::as_str).map(str::to_string)),
+            Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn stop(&self, name: &str, seconds: u64) -> Result<(), String> {
@@ -135,6 +151,10 @@ impl Engine for DockerEngine {
             .unwrap_or_default()
     }
 
+    fn own_id(&self) -> String {
+        crate::jobs::own_id()
+    }
+
     fn unraid_status_file(&self) -> PathBuf {
         PathBuf::from(UNRAID_STATUS)
     }
@@ -177,6 +197,41 @@ pub fn observe(inspect: Option<&Value>) -> Option<Ctr0> {
     })
 }
 
+/// The helper container's whole life: carries out the run in `state_path`.
+/// `true` when the helper's process may end well (the run is done or rolled
+/// back, or there is no run), `false` when it ends in a state that needs a
+/// person.
+///
+/// A helper whose state file is gone has no run to carry out, and its
+/// restart policy would only start it again to find the same: it removes
+/// its own container.
+pub async fn carry_out<E: Engine>(engine: &E, state_path: &Path) -> bool {
+    if matches!(load(state_path), Ok(None)) {
+        tracing::warn!(
+            "{} doesn't exist: there is no run to carry out; removing this helper",
+            state_path.display()
+        );
+        let own = engine.own_id();
+        if own.is_empty() {
+            tracing::warn!("can't find this helper's own container; remove it by hand");
+        } else if let Err(e) = engine.remove(&own, true).await {
+            tracing::warn!("couldn't remove this helper's container {own}: {e}");
+        }
+        return true;
+    }
+    match run(engine, state_path).await {
+        Ok(Phase::Done | Phase::RolledBack) => true,
+        Ok(phase) => {
+            tracing::error!("the self-update ended as {phase:?}");
+            false
+        }
+        Err(err) => {
+            tracing::error!("{err}");
+            false
+        }
+    }
+}
+
 /// Carries out the run in `state_path` to its end and returns the last phase.
 /// An error means the file could not be used at all (nothing was touched).
 pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, String> {
@@ -205,6 +260,7 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
         s.phase
     );
     let mut first = true;
+    let mut told_past_limit = false;
     loop {
         let before = s.clone();
         let now = engine.now();
@@ -217,6 +273,15 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
             (Ok(renamed), Ok(named)) => (renamed, named),
             (Err(e), _) | (_, Err(e)) => {
                 tracing::warn!("can't look at the containers, trying again: {e}");
+                // Past the hard limit the helper still can't roll back:
+                // say once how to do it by hand.
+                if now > s.hard_deadline && !told_past_limit {
+                    told_past_limit = true;
+                    tracing::error!(
+                        "the self-update is past its time limit and Docker can't be looked at; if that stays so, put the old agent back by hand: {}",
+                        break_glass(&s.container, s.run_id)
+                    );
+                }
                 engine.sleep(Duration::from_secs(scaled(2))).await;
                 continue;
             }
@@ -274,9 +339,17 @@ pub async fn run<E: Engine>(engine: &E, state_path: &Path) -> Result<Phase, Stri
                 Ok(id) => s.new_container_id = id,
                 Err(e) => tracing::warn!("couldn't create the new agent: {e}"),
             },
-            Action::StartNew => match engine.start(&s.container).await {
-                Ok(()) => apply(&mut s, &action, &seen),
-                Err(e) => tracing::warn!("couldn't start the new agent: {e}"),
+            // Only a new container on the release the old agent verified is
+            // started.
+            Action::StartNew => match verified_image(engine, &s, named.as_ref()).await {
+                Ok(()) => match engine.start(&s.container).await {
+                    Ok(()) => apply(&mut s, &action, &seen),
+                    Err(e) => tracing::warn!("couldn't start the new agent: {e}"),
+                },
+                Err(Rb::Retry(e)) => {
+                    tracing::warn!("can't check the new agent's image, trying again: {e}");
+                }
+                Err(Rb::Failed(e)) => action = Action::RollBack(e),
             },
             Action::CleanUp => {
                 clean_up(engine, &s, &dir, &old_n).await;
@@ -334,6 +407,29 @@ async fn create_new<E: Engine>(
     let image = engine.image_config(&s.old_image_id).await;
     let body = create_body(inspect, &image, &s.reference);
     engine.create(&s.container, &body).await
+}
+
+/// The new container (its inspect `named`) was made from the reference, so
+/// check that it runs the image the old agent verified: the one
+/// `SELF_UPDATE_REPO@to_digest` names. A failed look is a retry.
+async fn verified_image<E: Engine>(
+    engine: &E,
+    s: &StateFile,
+    named: Option<&Value>,
+) -> Result<(), Rb> {
+    let release = format!("{SELF_UPDATE_REPO}@{}", s.to_digest);
+    let has = named
+        .and_then(|v| v.get("Image"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match engine.image_id(&release).await.map_err(Rb::Retry)? {
+        Some(want) if want == has => Ok(()),
+        Some(want) => Err(format!(
+            "the new container's image {has} isn't the verified release {release} ({want})"
+        )
+        .into()),
+        None => Err(format!("the verified image {release} is gone").into()),
+    }
 }
 
 /// After `confirmed` and the stable period: the status file says the new
@@ -473,6 +569,10 @@ mod tests {
 
     const REF: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
     const T0: u64 = 1_000_000;
+    /// The image id the verified release (`SELF_UPDATE_REPO@sha256:new`) has.
+    const RELEASE_IMAGE: &str = "sha256:release";
+    /// The helper container's own id.
+    const OWN_ID: &str = "helper-own-id";
 
     #[derive(Clone)]
     struct FakeCtr {
@@ -480,6 +580,8 @@ mod tests {
         running: bool,
         status: String,
         restarts: i64,
+        /// The image id the container was made from.
+        image: String,
     }
 
     /// A Docker host in memory: containers by name, a log of what the helper
@@ -504,6 +606,11 @@ mod tests {
         confirm: bool,
         unraid: bool,
         dir: Mutex<PathBuf>,
+        /// The image id `create` makes the new container from (what the
+        /// reference names by then).
+        created_image: &'static str,
+        /// The verified release image is no longer there.
+        release_gone: bool,
     }
 
     impl Fake {
@@ -521,6 +628,8 @@ mod tests {
                 confirm,
                 unraid: false,
                 dir: Mutex::new(PathBuf::new()),
+                created_image: RELEASE_IMAGE,
+                release_gone: false,
             }
         }
         /// The new agent writes the confirm marker as soon as it is started.
@@ -558,6 +667,14 @@ mod tests {
             self.unraid = true;
             self
         }
+        fn created_from(mut self, image: &'static str) -> Fake {
+            self.created_image = image;
+            self
+        }
+        fn release_gone(mut self) -> Fake {
+            self.release_gone = true;
+            self
+        }
         fn dir(&self) -> PathBuf {
             self.dir.lock().unwrap().clone()
         }
@@ -568,6 +685,11 @@ mod tests {
             self.ctrs.lock().unwrap().get(name).cloned()
         }
         fn put(&self, name: &str, id: &str, running: bool, status: &str) {
+            let image = match self.ctr(name) {
+                Some(c) if c.id == id => c.image,
+                _ if id == "new" => RELEASE_IMAGE.into(),
+                _ => "sha256:old".into(),
+            };
             self.ctrs.lock().unwrap().insert(
                 name.into(),
                 FakeCtr {
@@ -575,6 +697,7 @@ mod tests {
                     running,
                     status: status.into(),
                     restarts: 0,
+                    image,
                 },
             );
         }
@@ -632,6 +755,7 @@ mod tests {
             };
             Ok(Some(json!({
                 "Id": c.id,
+                "Image": c.image,
                 "RestartCount": c.restarts,
                 "State": {"Running": c.running, "Status": c.status},
                 "Config": {"Image": "old-image", "Env": ["A=1"]},
@@ -640,6 +764,10 @@ mod tests {
         }
         async fn image_config(&self, _image_id: &str) -> Value {
             json!({})
+        }
+        async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+            let release = format!("{}@sha256:new", crate::selfupdate::SELF_UPDATE_REPO);
+            Ok((reference == release && !self.release_gone).then(|| RELEASE_IMAGE.to_string()))
         }
         async fn stop(&self, name: &str, seconds: u64) -> Result<(), String> {
             self.record(format!("stop {name} {seconds}"))?;
@@ -668,6 +796,7 @@ mod tests {
                 return Err(format!("{name} exists"));
             }
             self.put(name, "new", false, "created");
+            self.ctrs.lock().unwrap().get_mut(name).unwrap().image = self.created_image.into();
             Ok("new".into())
         }
         async fn start(&self, name: &str) -> Result<(), String> {
@@ -696,6 +825,9 @@ mod tests {
         }
         fn host_boot(&self) -> String {
             "boot-1".into()
+        }
+        fn own_id(&self) -> String {
+            OWN_ID.into()
         }
         fn unraid_status_file(&self) -> PathBuf {
             self.dir().join("unraid-update-status.json")
@@ -920,6 +1052,7 @@ mod tests {
                 running: false,
                 status: "restarting".into(),
                 restarts: 1,
+                image: RELEASE_IMAGE.into(),
             },
         );
         assert_eq!(run(&fake, &path).await.unwrap(), Phase::RolledBack);
@@ -1116,6 +1249,69 @@ mod tests {
         let c = fake.ctr("wren-agent").unwrap();
         assert_eq!((c.id.as_str(), c.running), ("old", true));
         assert!(!fake.calls().iter().any(|c| c.starts_with("create")));
+    }
+
+    #[tokio::test]
+    async fn a_new_container_that_is_not_on_the_verified_image_is_never_started() {
+        for (name, fake, why) in [
+            // The reference was moved to another image after the old
+            // agent's checks.
+            (
+                "otherimage",
+                Fake::confirming().created_from("sha256:other"),
+                "isn't the verified release",
+            ),
+            // The verified image itself is gone.
+            ("releasegone", Fake::confirming().release_gone(), "is gone"),
+        ] {
+            let (fake, path) = setup(name, fake);
+            assert_eq!(
+                run(&fake, &path).await.unwrap(),
+                Phase::RolledBack,
+                "{name}"
+            );
+            let s = load(&path).unwrap().unwrap();
+            assert!(s.reason.contains(why), "{name}: {}", s.reason);
+            let calls = fake.calls();
+            let rb = calls
+                .iter()
+                .position(|c| c == "remove wren-agent force")
+                .unwrap();
+            assert!(
+                !calls[..rb].iter().any(|c| c.starts_with("start")),
+                "{name}: {calls:?}"
+            );
+            let c = fake.ctr("wren-agent").unwrap();
+            assert_eq!((c.id.as_str(), c.running), ("old", true), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_helper_whose_state_file_is_gone_removes_itself() {
+        let (fake, path) = setup("vanished", Fake::silent());
+        std::fs::remove_file(&path).unwrap();
+        // Done: the container goes instead of restarting forever.
+        assert!(carry_out(&fake, &path).await);
+        assert_eq!(fake.calls(), [format!("remove {OWN_ID} force")]);
+        assert_eq!(fake.ctr("wren-agent").unwrap().id, "old");
+    }
+
+    #[tokio::test]
+    async fn the_helpers_exit_says_whether_it_is_done() {
+        let (fake, path) = setup("exit-done", Fake::confirming());
+        assert!(carry_out(&fake, &path).await);
+        let (fake, path) = setup("exit-rb", Fake::silent());
+        assert!(carry_out(&fake, &path).await);
+        let fake = Fake::silent().failing("rename wren-agent-wren-old-57");
+        let (fake, path) = setup("exit-rbfail", fake);
+        assert!(!carry_out(&fake, &path).await);
+        // A file it can't use is not a vanished one: the helper stays.
+        let (fake, path) = setup("exit-format2", Fake::silent());
+        let mut s = load(&path).unwrap().unwrap();
+        s.format = 2;
+        save(&path, &s).unwrap();
+        assert!(!carry_out(&fake, &path).await);
+        assert!(fake.calls().is_empty());
     }
 
     #[tokio::test]
