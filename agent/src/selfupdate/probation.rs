@@ -551,12 +551,27 @@ pub async fn adopt<E: Engine>(engine: &E, dir: &Path, now: u64, loud: bool) -> b
         run = s.run_id,
         "the self-update helper is gone; finishing the update here"
     );
-    // A helper that is stuck must not write the file later.
-    if view.is_some()
-        && let Err(e) = engine.remove(&helper, true).await
-    {
-        tracing::warn!("can't remove the broken helper {helper}: {e}");
-        return false;
+    // A helper that is stuck must not write the file later. It may have
+    // written it before it went (a rollback it began), so the decision is
+    // made again on what the file says now.
+    if view.is_some() {
+        if let Err(e) = engine.remove(&helper, true).await {
+            tracing::warn!("can't remove the broken helper {helper}: {e}");
+            return false;
+        }
+        s = match state::load(&path) {
+            Ok(Some(fresh)) if fresh.run_id == s.run_id => fresh,
+            _ => return false,
+        };
+        if orphan(&s, true, state::confirmed(dir, s.run_id)) != Orphan::Finish {
+            tracing::warn!(
+                run = s.run_id,
+                "the removed helper had moved the run to {:?}; it is left as it is; to go back by hand: {}",
+                s.phase,
+                s.break_glass
+            );
+            return false;
+        }
     }
     let old = old_name(&s.container, s.run_id);
     match engine.inspect(&old).await {
@@ -1291,6 +1306,9 @@ mod tests {
         fail: bool,
         tags: Mutex<Vec<String>>,
         removed: Mutex<Vec<String>>,
+        /// What a helper writes to the state file just before it is removed
+        /// (path and content).
+        last_write: Mutex<Option<(PathBuf, StateFile)>>,
     }
 
     impl FakeDocker {
@@ -1303,7 +1321,12 @@ mod tests {
                 fail,
                 tags: Mutex::new(Vec::new()),
                 removed: Mutex::new(Vec::new()),
+                last_write: Mutex::new(None),
             }
+        }
+        fn writing_on_removal(self, path: &Path, s: StateFile) -> FakeDocker {
+            *self.last_write.lock().unwrap() = Some((path.to_path_buf(), s));
+            self
         }
         fn with(mut self, name: &str, inspect: Value) -> FakeDocker {
             self.existing.retain(|(n, _)| n != name);
@@ -1346,6 +1369,11 @@ mod tests {
             unreachable!()
         }
         async fn remove(&self, name: &str, _: bool) -> Result<(), String> {
+            if name.starts_with("wren-agent-selfupdate-")
+                && let Some((path, s)) = self.last_write.lock().unwrap().take()
+            {
+                state::save(&path, &s).unwrap();
+            }
             self.removed.lock().unwrap().push(name.to_string());
             Ok(())
         }
@@ -1519,6 +1547,41 @@ mod tests {
             ["wren-agent-selfupdate-57", "wren-agent-wren-old-57"]
         );
         assert_eq!(state::load(&path).unwrap().unwrap().phase, Phase::Done);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_stuck_helper_that_wrote_before_it_was_removed_is_not_overruled() {
+        // The helper got as far as starting a rollback before it was removed:
+        // the new agent decides again on what the file says now.
+        let (dir, path) = adoptable("stuck-wrote", Phase::NewStarted, true);
+        let mut later = state::load(&path).unwrap().unwrap();
+        later.phase = Phase::RollingBack;
+        later.reason = "the new agent stopped or restarted".into();
+        let docker = FakeDocker::new(&["wren-agent-wren-old-57"], false)
+            .with(
+                "wren-agent-selfupdate-57",
+                json!({"State": {"Status": "restarting"}, "RestartCount": 9}),
+            )
+            .writing_on_removal(&path, later.clone());
+        assert!(!adopt(&docker, &dir, 7000, true).await);
+        assert_eq!(docker.removed(), ["wren-agent-selfupdate-57"]);
+        assert_eq!(state::load(&path).unwrap().unwrap(), later);
+        assert!(dir.join("selfupdate").join("57").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        // A file that now belongs to another run is left alone too.
+        let (dir, path) = adoptable("stuck-other", Phase::Confirmed, true);
+        let mut other = state::load(&path).unwrap().unwrap();
+        other.run_id = 58;
+        let docker = FakeDocker::new(&["wren-agent-wren-old-57"], false)
+            .with(
+                "wren-agent-selfupdate-57",
+                json!({"State": {"Status": "restarting"}, "RestartCount": 9}),
+            )
+            .writing_on_removal(&path, other.clone());
+        assert!(!adopt(&docker, &dir, 7000, true).await);
+        assert_eq!(docker.removed(), ["wren-agent-selfupdate-57"]);
+        assert_eq!(state::load(&path).unwrap().unwrap(), other);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
