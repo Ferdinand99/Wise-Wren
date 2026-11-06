@@ -424,7 +424,8 @@ Wren never moves a tag that promises a version, so the tag the agent runs from h
    no network, and none of the agent's environment except `TZ` and `RUST_LOG`: it never talks to Wren. It restarts
    itself after a crash and carries on from the state file.
 3. The helper stops the old agent, renames it `<name>-wren-old-<run>` and creates the new agent under the original
-   name with the same configuration (environment, mounts, labels, restart policy, networks).
+   name with the same configuration (environment, mounts, labels, restart policy, networks). It starts the new agent
+   only when its image is the release the old agent checked; any other image is rolled back.
 4. The new agent is on **probation**: it reports to Wren as usual but takes no jobs and no settings. It confirms
    when Wren answers with the same server id, Docker is readable, one job poll worked and it has run without a
    restart for `max(min_health_seconds, 60 s)`.
@@ -476,16 +477,22 @@ started: it removes the new container, renames `<name>-wren-old-<run>` back to `
 and its reason to Wren. Nothing is deleted before the new agent has proved it can talk to Wren.
 
 **Break glass.** If the helper itself can't finish (the rollback failed, or the helper is stuck), Wren closes the run
-as one that needs you and shows the command below; it is also in the agent's log and in `selfupdate.json`. Run it on
-the host (`<name>` is the agent's container name, `<run>` the run number Wren shows). **Remove the helper first**, or
-it keeps working on the containers while you do:
+as one that needs you and shows the command below on one line; it is also in the agent's log and in `selfupdate.json`.
+Run it on the host (`<name>` is the agent's container name, `<run>` the run number Wren shows):
 
 ```bash
 docker rm -f wren-agent-selfupdate-<run>
-docker rm -f <name> && docker rename <name>-wren-old-<run> <name> && docker start <name>
+if docker container inspect <name>-wren-old-<run> >/dev/null 2>&1; then
+  docker rm -f <name>; docker rename <name>-wren-old-<run> <name>
+fi
+docker start <name>
 ```
 
-Then read the agent's log before you try again.
+It is safe whatever state the update was left in. It removes the helper first, so nothing works on the containers
+while you do. Only while the renamed old agent `<name>-wren-old-<run>` still exists does it remove what has the name
+`<name>` (the new agent) and give the name back; otherwise `<name>` already is the old agent and is only started. An
+error from a `docker rm -f` of a container that is already gone is expected. Then read the agent's log before you try
+again.
 
 ### Going back by hand after a good update
 
