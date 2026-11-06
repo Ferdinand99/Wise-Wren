@@ -24,6 +24,20 @@ use crate::run::{UNRAID_STATUS, create_body, write_unraid_status};
 /// The files a rollback puts back from the run's backup folder.
 const RESTORED: [&str; 2] = ["managed.json", "runs.json"];
 
+/// Puts `managed.json` and `runs.json` back from run `run`'s backup folder
+/// in `dir`; a file without a backup is left as it is.
+pub fn restore_backup(dir: &Path, run: i64) -> Result<(), String> {
+    let backup = dir.join(BACKUP_DIR).join(run.to_string());
+    for name in RESTORED {
+        match std::fs::read(backup.join(name)) {
+            Ok(bytes) => write_private(&dir.join(name), &bytes)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("can't read {}: {e}", backup.join(name).display())),
+        }
+    }
+    Ok(())
+}
+
 /// What the helper needs of the Docker host. [`DockerEngine`] is the real
 /// one; the tests use a fake.
 pub trait Engine {
@@ -511,18 +525,8 @@ async fn roll_back<E: Engine>(
         Some(c) if c.id == s.old_container_id => {}
         _ => return Err("the old agent's container isn't back under its name".into()),
     }
-    // 3. managed.json and runs.json as they were (a missing backup leaves the
-    //    current file).
-    let backup = dir.join(BACKUP_DIR).join(s.run_id.to_string());
-    for name in RESTORED {
-        match std::fs::read(backup.join(name)) {
-            Ok(bytes) => write_private(&dir.join(name), &bytes)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(format!("can't read {}: {e}", backup.join(name).display()).into());
-            }
-        }
-    }
+    // 3. managed.json and runs.json as they were.
+    restore_backup(dir, s.run_id)?;
     // 4. The reference points at the old image again.
     engine.tag(&s.old_image_id, &s.reference).await?;
     if s.unraid {

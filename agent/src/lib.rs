@@ -146,6 +146,17 @@ pub async fn run(
     let client = Arc::new(Client::new(&config.server, &config.token)?);
     // `agent.toml` with the settings Wren sent on top (unless locked).
     let locked = managed::locked_by(|k| std::env::var(k).ok());
+    // What this process is in a self-update (design §9). A run prepared but
+    // never handed to a helper, or one put back by hand with the break-glass
+    // command, is settled first: nothing is on its way now. Before
+    // `managed.json` is read, which settling may put back from its backup
+    // (the folder and the socket are agent.toml's, never Wren's).
+    let dir = selfupdate::config_dir(&config).to_path_buf();
+    let engine = selfupdate::helper::DockerEngine {
+        socket: config.docker_socket.clone(),
+    };
+    selfupdate::probation::settle_prepared(&engine, &dir, 0, selfupdate::state::now()).await;
+    selfupdate::probation::settle_by_hand(&engine, &dir, selfupdate::state::now(), true).await;
     let live = Arc::new(Live::new(config, locked));
     let config = live.config();
     let scans = Scans::default();
@@ -183,16 +194,7 @@ pub async fn run(
         );
     }
     tokio::pin!(stop);
-    // What this process is in a self-update (design §9). A run prepared but
-    // never handed to a helper, or one put back by hand with the break-glass
-    // command, is settled first: nothing is on its way now.
-    let dir = selfupdate::config_dir(&config).to_path_buf();
     let self_jobs = Arc::new(jobs::JobClient::new(&config.server, &config.token)?);
-    let engine = selfupdate::helper::DockerEngine {
-        socket: config.docker_socket.clone(),
-    };
-    selfupdate::probation::settle_prepared(&engine, &dir, 0, selfupdate::state::now()).await;
-    selfupdate::probation::settle_by_hand(&engine, &dir, selfupdate::state::now(), true).await;
     let state_path = dir.join(selfupdate::STATE_FILE);
     match selfupdate::probation::role(
         selfupdate::state::load(&state_path).ok().flatten(),
@@ -326,15 +328,19 @@ pub async fn run(
             if sweep_due {
                 next_sweep = now + Duration::from_secs(selfupdate::scaled(selfupdate::SWEEP));
             }
-            let (config, jobs, ended, busy) = (
+            let (config, jobs, ended, busy, settings) = (
                 live.config(),
                 self_jobs.clone(),
                 ended.clone(),
                 chores.clone(),
+                live.clone(),
             );
             tokio::spawn(async move {
                 let work = tokio::spawn(async move {
-                    selfupdate::probation::round(&config, &jobs, &ended, sweep_due).await;
+                    // A run put back by hand gets its managed.json back.
+                    if selfupdate::probation::round(&config, &jobs, &ended, sweep_due).await {
+                        settings.reload();
+                    }
                 });
                 finished("self-update chores", work).await;
                 busy.store(false, Ordering::Release);

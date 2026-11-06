@@ -99,6 +99,9 @@ pub struct StateFile {
     pub host_boot: String,
     pub config_dir: String,
     pub reported: bool,
+    /// A `rollback_failed` run whose old agent was put back by hand: the old
+    /// agent has pointed the tag back and restored the backed-up files (once).
+    pub settled_by_hand: bool,
 }
 
 /// Reads the state file: `Ok(None)` when there is none; an error when it is

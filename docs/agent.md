@@ -494,9 +494,15 @@ while you do. Only while the renamed old agent `<name>-wren-old-<run>` still exi
 error from a `docker rm -f` of a container that is already gone is expected. Then read the agent's log before you try
 again.
 
-You don't need to tidy up after it: when the old agent starts and finds the run unfinished, with no helper, no
-renamed copy and no new container left, it points the image tag back at the old image, marks the run as rolled back
-by hand in `selfupdate.json` and reports it to Wren. The next agent update can then start as usual.
+You don't need to tidy up after it. When the old agent starts and finds no helper, no renamed copy and no new
+container left, it points the image tag back at the old image (so the next `docker compose up` or Unraid recreate
+doesn't move to the new release), sets Unraid's update status back on Unraid, and puts `managed.json` and `runs.json`
+back from the run's backup in `selfupdate/<run>/` (the new agent may have written both). A run that was left
+unfinished is then marked as rolled back by hand in `selfupdate.json` and reported to Wren; one whose rollback failed
+stays `rollback_failed` (Wren was told so already), and the tag and files are put back only once, so a later update
+by hand isn't undone. Either way the next agent update can then start as usual. A helper that stopped before the
+agent's container started (after a reboot or an array restart) is given time to come back before any of this
+happens.
 
 ### Going back by hand after a good update
 
