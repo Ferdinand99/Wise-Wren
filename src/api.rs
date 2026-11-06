@@ -32,7 +32,7 @@ use crate::targets::{self, Filter, Target};
 
 const ERROR_EXAMPLE: &str = r#"{"error": {"code": "not_found", "message": "Not found."}}"#;
 
-const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "agent_version": "0.1.0", "unraid": true, "agent_update": {"state": "available", "current": "0.1.0", "available": "0.10.1", "reason": "", "run_id": null}}]}"#;
+const SERVERS_EXAMPLE: &str = r#"{"servers": [{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "agent_version": "0.10.0", "unraid": true, "agent_update": {"state": "available", "current": "0.10.0", "available": "0.10.1", "reason": "", "run_id": null}}]}"#;
 
 const HEARTBEAT_EXAMPLE: &str = r#"{"agent_version": "0.1.0", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "unraid": true, "boot_id": "18f3a2c4e5d6b7a8-1-9c0d", "uptime_seconds": 3600}"#;
 
@@ -66,7 +66,7 @@ fn nothing(_: &mut String) {}
 const OWN_ROUTES: &[RouteDoc] = &[
         r("GET", "/api/v1/servers", "viewer", "Servers", "List the servers with their agents' status (online, offline, waiting for the agent, no token) and what each agent last reported.")
             .res(SERVERS_EXAMPLE),
-        r("GET", "/api/v1/servers/{id}", "viewer", "Servers", "One server, as in the list. `agent_update` says where its agent stands: `state` is `available` (a newer agent can be installed: `available` is the version), `current`, `running` (an agent update is queued or running: `run_id`), `off` (the agent's own switch is off), `blocked` (`reason` is the agent's code), `below_floor` (older than 0.10.0), `unsupported` or `unknown`.")
+        r("GET", "/api/v1/servers/{id}", "viewer", "Servers", "One server, as in the list. `agent_update` says where its agent stands: `state` is `available` (a newer agent can be installed: `available` is the version), `current`, `running` (an agent update is queued or running: `run_id`), `off` (the agent's own switch is off), `blocked` (`reason` is the agent's code), `below_floor` (older than 0.10.0), `unsupported` or `unknown` (`reason` may be `release_unknown`: Wren couldn't look up its own agent release yet).")
             .res(r#"{"id": 1, "name": "Tower", "status": "online", "last_seen_at": "2026-10-23 10:00:00", "hostname": "Tower", "os": "Unraid OS 7.4", "docker_version": "29.8.2", "docker_error": "", "agent_version": "0.10.0", "unraid": true, "mode": "approve", "auto_window": null, "check_interval_hours": 6, "agent_update": {"state": "available", "current": "0.10.0", "available": "0.10.1", "reason": "", "run_id": null}}"#),
         r("POST", "/api/v1/servers", "admin", "Servers", "Add a server. The answer has its agent token (`wwa_…`) and the `docker run` lines that start the agent (Unraid and other Linux); the token is shown only here, Wren keeps its SHA-256. Needs an API token with write access.")
             .req(r#"{"name": "Tower"}"#)
