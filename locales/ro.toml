@@ -395,6 +395,7 @@ step_au_preflight = "Verificări și descărcare"
 step_au_update = "Asistent pornit; agentul repornește"
 step_au_health = "Înapoi pe versiunea nouă și stabil"
 err_agent_update = "Acum nu este disponibilă nicio actualizare a agentului pentru acest server."
+err_agent_admin_only = "Doar administratorii pot muta o actualizare a agentului."
 agent_update_queued = "Actualizarea agentului a fost aprobată (rularea #{id})."
 own_agent = "Actualizează-l din pagina serverului său"
 

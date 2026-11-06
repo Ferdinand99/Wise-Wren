@@ -395,6 +395,7 @@ step_au_preflight = "בדיקות והורדה"
 step_au_update = "העוזר הופעל; הסוכן מופעל מחדש"
 step_au_health = "חזר לגרסה החדשה ויציב"
 err_agent_update = "אין כרגע עדכון סוכן זמין לשרת הזה."
+err_agent_admin_only = "רק מנהלים יכולים להזיז עדכון סוכן."
 agent_update_queued = "עדכון הסוכן אושר (הרצה #{id})."
 own_agent = "יש לעדכן אותו מדף השרת שלו"
 

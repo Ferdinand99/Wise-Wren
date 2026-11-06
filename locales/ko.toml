@@ -391,6 +391,7 @@ step_au_preflight = "점검 및 다운로드"
 step_au_update = "도우미가 시작됐어요. 에이전트가 다시 시작돼요"
 step_au_health = "새 버전으로 돌아와 안정적이에요"
 err_agent_update = "지금은 이 서버에 사용할 수 있는 에이전트 업데이트가 없어요."
+err_agent_admin_only = "에이전트 업데이트는 관리자만 옮길 수 있어요."
 agent_update_queued = "에이전트 업데이트를 승인했어요(실행 #{id})."
 own_agent = "서버 페이지에서 업데이트하세요"
 

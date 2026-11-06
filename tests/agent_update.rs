@@ -967,6 +967,59 @@ async fn posting_the_form_queues_the_run_and_the_run_page_names_it() {
     );
 }
 
+/// A scheduled agent update approved by an admin; its run id and the
+/// admin's token.
+async fn scheduled_agent_update(app: &App, id: i64) -> (i64, String) {
+    let ad = admin_token(app).await;
+    let at = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(2);
+    let res = post_json(
+        app,
+        &format!("/api/v1/servers/{id}/agent-update"),
+        &ad,
+        json!({"version": "0.10.1", "at": at.to_string()}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    (res.json()["run_id"].as_i64().unwrap(), ad)
+}
+
+#[tokio::test]
+async fn only_admins_move_a_scheduled_agent_update() {
+    let (app, id, _) = setup().await;
+    let (run, ad) = scheduled_agent_update(&app, id).await;
+    let before = runs_get(&app, run).await.scheduled_for;
+    let soon = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(3);
+    let url = format!("/api/v1/runs/{run}/reschedule");
+    let body = json!({"at": soon.to_string()});
+    // An editor, by REST (MCP takes the same path) and by the form.
+    let ed = api_token(
+        &app,
+        add_user(&app, "ed", "editor").await,
+        TokenScope::Write,
+    )
+    .await;
+    let res = post_json(&app, &url, &ed, body.clone()).await;
+    assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
+    let mut web = Web::new(&app, "ed2", "editor").await;
+    let res = web
+        .post(
+            &format!("/runs/{run}/reschedule"),
+            &[("at", soon.to_string().as_str()), ("back", "/schedules")],
+        )
+        .await;
+    assert_eq!(res.header("location"), "/schedules");
+    let page = web.get("/schedules").await.body;
+    assert!(
+        page.contains("Only admins can move an agent update."),
+        "{page}"
+    );
+    assert_eq!(runs_get(&app, run).await.scheduled_for, before);
+    // An admin may.
+    let res = post_json(&app, &url, &ad, body).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_ne!(runs_get(&app, run).await.scheduled_for, before);
+}
+
 #[tokio::test]
 async fn the_form_schedules_and_refuses_in_words() {
     let (app, id, _) = setup().await;

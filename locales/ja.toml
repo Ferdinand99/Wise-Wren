@@ -391,6 +391,7 @@ step_au_preflight = "チェックとダウンロード"
 step_au_update = "ヘルパーを起動しました。エージェントが再起動します"
 step_au_health = "新バージョンに戻り、安定しています"
 err_agent_update = "このサーバーに適用できるエージェントのアップデートは現在ありません。"
+err_agent_admin_only = "エージェントのアップデートを移動できるのは管理者だけです。"
 agent_update_queued = "エージェントのアップデートを承認しました（実行 #{id}）。"
 own_agent = "サーバーのページからアップデートしてください"
 

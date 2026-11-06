@@ -123,6 +123,8 @@ pub enum Refusal {
     OwnImage,
     /// Only admins turn automatic updates on.
     AdminOnly,
+    /// Only admins move an agent update (they alone approve one).
+    AgentAdminOnly,
     /// `auto` needs the server's auto window.
     NoWindow,
     /// A scheduled time that isn't a time, is past or too far ahead.
@@ -146,6 +148,7 @@ impl Refusal {
             Refusal::NotRollbackable => "runs.err_not_rollbackable",
             Refusal::OwnImage => "runs.err_own",
             Refusal::AdminOnly => "runs.err_admin_only",
+            Refusal::AgentAdminOnly => "runs.err_agent_admin_only",
             Refusal::NoWindow => "runs.err_no_window",
             Refusal::BadTime => "runs.err_time",
             Refusal::NotScheduled => "runs.err_not_scheduled",
@@ -165,7 +168,7 @@ impl From<Refusal> for ApiError {
     fn from(r: Refusal) -> ApiError {
         match r {
             Refusal::NotFound => ApiError::NotFound,
-            Refusal::AdminOnly => ApiError::Forbidden,
+            Refusal::AdminOnly | Refusal::AgentAdminOnly => ApiError::Forbidden,
             other => ApiError::bad_request(other.message()),
         }
     }
@@ -405,16 +408,21 @@ pub fn queue_auto(c: &Connection, target_id: i64) -> rusqlite::Result<Result<i64
 }
 
 /// Moves a scheduled run that hasn't started to `at` (UTC). Its planned
-/// window in Vigilant Vole follows ([`crate::vv`]).
+/// window in Vigilant Vole follows ([`crate::vv`]). An agent update only an
+/// admin may move, as only an admin may approve one.
 pub fn reschedule(
     c: &Connection,
     run_id: i64,
     at: jiff::Timestamp,
     user: &str,
+    is_admin: bool,
 ) -> rusqlite::Result<Result<(), Refusal>> {
     let Some(r) = get(c, run_id)? else {
         return Ok(Err(Refusal::NotFound));
     };
+    if r.kind == crate::agent_update::KIND && !is_admin {
+        return Ok(Err(Refusal::AgentAdminOnly));
+    }
     if r.status != QUEUED || r.scheduled_for.is_none() {
         return Ok(Err(Refusal::NotScheduled));
     }

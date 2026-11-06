@@ -393,6 +393,7 @@ step_au_preflight = "Tarkistukset ja lataus"
 step_au_update = "Apuri käynnistetty; agentti käynnistyy uudelleen"
 step_au_health = "Takaisin uudessa versiossa ja vakaa"
 err_agent_update = "Tälle palvelimelle ei ole juuri nyt agentin päivitystä saatavilla."
+err_agent_admin_only = "Vain ylläpitäjät voivat siirtää agentin päivitystä."
 agent_update_queued = "Agentin päivitys hyväksytty (ajo #{id})."
 own_agent = "Päivitä se palvelimen sivulta"
 

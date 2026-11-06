@@ -393,6 +393,7 @@ step_au_preflight = "Ellenőrzések és letöltés"
 step_au_update = "A segéd elindult; az ügynök újraindul"
 step_au_health = "Vissza az új verzión, stabilan"
 err_agent_update = "Ehhez a szerverhez jelenleg nincs elérhető ügynökfrissítés."
+err_agent_admin_only = "Ügynökfrissítést csak adminok helyezhetnek át."
 agent_update_queued = "Ügynökfrissítés jóváhagyva (futtatás: #{id})."
 own_agent = "Frissítse a szerver oldaláról"
 

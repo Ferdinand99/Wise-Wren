@@ -393,6 +393,7 @@ step_au_preflight = "Kontroller ve indirme"
 step_au_update = "Yardımcı başlatıldı; ajan yeniden başlıyor"
 step_au_health = "Yeni sürümde ve kararlı"
 err_agent_update = "Bu sunucu için şu anda ajan güncellemesi yok."
+err_agent_admin_only = "Ajan güncellemesini yalnızca yöneticiler taşıyabilir."
 agent_update_queued = "Ajan güncellemesi onaylandı (çalıştırma #{id})."
 own_agent = "Sunucu sayfasından güncelleyin"
 

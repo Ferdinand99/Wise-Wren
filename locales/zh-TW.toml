@@ -391,6 +391,7 @@ step_au_preflight = "檢查與下載"
 step_au_update = "輔助程式已啟動；代理程式將重新啟動"
 step_au_health = "已回到新版本且運作穩定"
 err_agent_update = "此伺服器目前沒有可用的代理程式更新。"
+err_agent_admin_only = "只有管理員能調整代理程式更新的時間。"
 agent_update_queued = "代理程式更新已核准（執行 #{id}）。"
 own_agent = "請在其伺服器頁面中更新"
 

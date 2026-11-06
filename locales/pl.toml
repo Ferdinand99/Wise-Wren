@@ -397,6 +397,7 @@ step_au_preflight = "Kontrole i pobieranie"
 step_au_update = "Pomocnik uruchomiony; agent uruchamia się ponownie"
 step_au_health = "Z powrotem na nowej wersji i stabilny"
 err_agent_update = "Dla tego serwera nie ma teraz żadnej aktualizacji agenta."
+err_agent_admin_only = "Tylko administratorzy mogą przenieść aktualizację agenta."
 agent_update_queued = "Aktualizacja agenta zatwierdzona (uruchomienie #{id})."
 own_agent = "Zaktualizuj go na stronie jego serwera"
 

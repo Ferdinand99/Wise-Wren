@@ -393,6 +393,7 @@ step_au_preflight = "Sjekker og nedlasting"
 step_au_update = "Hjelperen er startet; agenten starter på nytt"
 step_au_health = "Tilbake på den nye versjonen og stabil"
 err_agent_update = "Ingen agentoppdatering er tilgjengelig for denne serveren akkurat nå."
+err_agent_admin_only = "Bare administratorer kan flytte en agentoppdatering."
 agent_update_queued = "Agentoppdatering godkjent (kjøring #{id})."
 own_agent = "Oppdater den fra serversiden"
 

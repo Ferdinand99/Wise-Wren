@@ -696,7 +696,7 @@ async fn scheduled_run_plans_a_window_and_activates_it() {
     let later = at + jiff::SignedDuration::from_hours(1);
     app.wren
         .core
-        .with_conn(move |c| runs::reschedule(c, id, later, "ed"))
+        .with_conn(move |c| runs::reschedule(c, id, later, "ed", false))
         .await
         .unwrap()
         .unwrap();

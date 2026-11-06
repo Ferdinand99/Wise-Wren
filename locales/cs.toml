@@ -397,6 +397,7 @@ step_au_preflight = "Kontroly a stažení"
 step_au_update = "Pomocník spuštěn; agent se restartuje"
 step_au_health = "Zpět na nové verzi a stabilní"
 err_agent_update = "Pro tento server teď není k dispozici žádná aktualizace agenta."
+err_agent_admin_only = "Aktualizaci agenta mohou přesunout jen správci."
 agent_update_queued = "Aktualizace agenta schválena (běh #{id})."
 own_agent = "Aktualizujte ho na stránce jeho serveru"
 

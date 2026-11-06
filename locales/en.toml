@@ -393,6 +393,7 @@ step_au_preflight = "Checks and download"
 step_au_update = "Helper started; the agent restarts"
 step_au_health = "Back on the new version and stable"
 err_agent_update = "No agent update is available for this server right now."
+err_agent_admin_only = "Only admins can move an agent update."
 agent_update_queued = "Agent update approved (run #{id})."
 own_agent = "Update it from its server page"
 

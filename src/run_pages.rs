@@ -397,9 +397,10 @@ async fn reschedule(
         return Ok((flash(jar, "error", Refusal::BadTime.message()), to).into_response());
     };
     let who = user.username.clone();
+    let admin = user.is_admin();
     let res = wren
         .core
-        .with_conn(move |c| runs::reschedule(c, id, at, &who))
+        .with_conn(move |c| runs::reschedule(c, id, at, &who, admin))
         .await?;
     let jar = match res {
         Ok(()) => {

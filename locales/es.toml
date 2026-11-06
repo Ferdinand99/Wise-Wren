@@ -395,6 +395,7 @@ step_au_preflight = "Comprobaciones y descarga"
 step_au_update = "Ayudante iniciado; el agente se reinicia"
 step_au_health = "De nuevo en la versión nueva y estable"
 err_agent_update = "Ahora mismo no hay ninguna actualización del agente disponible para este servidor."
+err_agent_admin_only = "Solo los administradores pueden mover una actualización del agente."
 agent_update_queued = "Actualización del agente aprobada (ejecución #{id})."
 own_agent = "Actualízalo desde la página de su servidor"
 

@@ -393,6 +393,7 @@ step_au_preflight = "Controles en download"
 step_au_update = "Helper gestart; de agent start opnieuw op"
 step_au_health = "Terug op de nieuwe versie en stabiel"
 err_agent_update = "Er is op dit moment geen agent-update beschikbaar voor deze server."
+err_agent_admin_only = "Alleen beheerders kunnen een agent-update verplaatsen."
 agent_update_queued = "Agent-update goedgekeurd (run #{id})."
 own_agent = "Werk hem bij vanaf de serverpagina"
 

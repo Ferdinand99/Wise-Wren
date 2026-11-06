@@ -1304,11 +1304,12 @@ pub async fn run_act(
 ) -> ApiResult<Value> {
     caller.editor()?;
     let who = caller.name.clone();
+    let admin = caller.is_admin;
     let v = match action {
         "reschedule" => {
             let at = time_of(b.at.as_deref())?;
             wren.core
-                .with_conn(move |c| runs::reschedule(c, id, at, &who))
+                .with_conn(move |c| runs::reschedule(c, id, at, &who, admin))
                 .await?
                 .map_err(ApiError::from)?;
             json!({ "run_id": id, "scheduled_for": crate::schedule::db_time(at) })

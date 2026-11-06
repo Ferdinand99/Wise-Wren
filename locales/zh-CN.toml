@@ -391,6 +391,7 @@ step_au_preflight = "检查与下载"
 step_au_update = "辅助程序已启动；探针将重启"
 step_au_health = "已回到新版本且运行稳定"
 err_agent_update = "此服务器目前没有可用的探针更新。"
+err_agent_admin_only = "只有管理员才能调整探针更新的时间。"
 agent_update_queued = "探针更新已批准（运行 #{id}）。"
 own_agent = "请在其服务器页面中更新"
 
