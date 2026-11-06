@@ -113,7 +113,7 @@ const OWN_ROUTES: &[RouteDoc] = &[
         r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule. `409` as for approve.")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…", "at": "2026-10-24T03:00:00+02:00"}"#)
             .res(r#"{"run_id": 14, "status": "queued", "scheduled_for": "2026-10-24 01:00:00"}"#),
-        r("POST", "/api/v1/runs/{id}/reschedule", "editor", "Schedules", "Move a scheduled run that hasn't started (`at` as for schedule). Its planned window in Vigilant Vole moves with it.")
+        r("POST", "/api/v1/runs/{id}/reschedule", "editor", "Schedules", "Move a scheduled run that hasn't started (`at` as for schedule). Its planned window in Vigilant Vole moves with it. A scheduled agent update (`kind` `agent_update`) can only be moved by an admin; anyone else gets `403`.")
             .req(r#"{"at": "2026-10-25T03:00:00+02:00"}"#)
             .res(r#"{"run_id": 14, "scheduled_for": "2026-10-25 01:00:00"}"#),
         r("POST", "/api/v1/runs/{id}/cancel", "editor", "Runs", "Cancel a run before anything stops: a queued or scheduled one at once (its planned window in Vigilant Vole is deleted), a running one when the agent reports its preflight. (Bulk approval on the Updates page is one approve per target here.)")
