@@ -78,12 +78,12 @@ au_below_floor = "Von Hand aktualisieren: Agents vor {floor} können sich nicht 
 au_unknown = "Wren konnte das Release seines eigenen Agents noch nicht abfragen."
 au_newer_wren = "Wren {version} ist erschienen: Aktualisiere erst Wren (von Hand), dann die Agents."
 au_blocked_foreign_repo = "Der Agent läuft nicht mit dem offiziellen Image (ghcr.io/ferdinand99/wise-wren-agent)."
-au_blocked_pinned = "Der Tag des Agents legt eine Version fest: Ändere ihn auf :latest oder :0."
+au_blocked_pinned = "Der Tag des Agenten legt eine Version fest: Ändere ihn auf :latest oder :0."
 au_blocked_not_container = "Der Agent kann seinen eigenen Container nicht lesen."
 au_blocked_no_own_id = "Der Agent findet seinen eigenen Container nicht."
 au_blocked_autoremove = "Der Agent wurde mit --rm gestartet."
 au_blocked_network_mode = "Der Agent teilt das Netzwerk eines anderen Containers."
-au_blocked_config_ro = "Der Konfigurationsordner des Agents ist schreibgeschützt."
+au_blocked_config_ro = "Der Konfigurationsordner des Agenten ist schreibgeschützt."
 au_blocked_other = "Der Agent meldet einen Grund, warum er sich nicht aktualisieren kann: {code}"
 
 [channels]
