@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.2...v0.10.0) (2026-11-06)
+
+
+### Features
+
+* agents can update themselves ([#59](https://github.com/Ferdinand99/Wise-Wren/issues/59)) ([014b38a](https://github.com/Ferdinand99/Wise-Wren/commit/014b38acecffc89ab318488863dd86cc145bd295))
+
 ## [0.9.2](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.1...v0.9.2) (2026-10-29)
 
 
