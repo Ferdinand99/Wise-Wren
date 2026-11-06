@@ -184,13 +184,15 @@ pub async fn run(
     }
     tokio::pin!(stop);
     // What this process is in a self-update (design §9). A run prepared but
-    // never handed to a helper is settled first: nothing is on its way now.
+    // never handed to a helper, or one put back by hand with the break-glass
+    // command, is settled first: nothing is on its way now.
     let dir = selfupdate::config_dir(&config).to_path_buf();
     let self_jobs = Arc::new(jobs::JobClient::new(&config.server, &config.token)?);
     let engine = selfupdate::helper::DockerEngine {
         socket: config.docker_socket.clone(),
     };
     selfupdate::probation::settle_prepared(&engine, &dir, 0, selfupdate::state::now()).await;
+    selfupdate::probation::settle_by_hand(&engine, &dir, selfupdate::state::now(), true).await;
     let state_path = dir.join(selfupdate::STATE_FILE);
     match selfupdate::probation::role(
         selfupdate::state::load(&state_path).ok().flatten(),

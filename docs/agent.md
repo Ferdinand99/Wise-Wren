@@ -494,6 +494,10 @@ while you do. Only while the renamed old agent `<name>-wren-old-<run>` still exi
 error from a `docker rm -f` of a container that is already gone is expected. Then read the agent's log before you try
 again.
 
+You don't need to tidy up after it: when the old agent starts and finds the run unfinished, with no helper, no
+renamed copy and no new container left, it points the image tag back at the old image, marks the run as rolled back
+by hand in `selfupdate.json` and reports it to Wren. The next agent update can then start as usual.
+
 ### Going back by hand after a good update
 
 The old image stays tagged `wren-rollback/agent-<name>:<run>-<name>` (the newest `[retention] rollback_images` of

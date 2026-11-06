@@ -16,8 +16,9 @@
 //! ended, and `reported` says whether Wren has heard it.
 //!
 //! Leftovers (a finished run's helper and renamed old container, a run
-//! prepared but never handed to a helper) are cleared by [`sweep`] and
-//! [`settle_prepared`].
+//! prepared but never handed to a helper, a run put back by hand with the
+//! break-glass command) are cleared by [`sweep`], [`settle_prepared`] and
+//! [`settle_by_hand`].
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -508,6 +509,13 @@ pub fn orphan(s: &StateFile, gone: bool, marker: bool) -> Orphan {
     }
 }
 
+/// Whether the break-glass command is worth showing for a run in `phase`:
+/// not once it is `done` or `rolled_back`, when an agent runs and there is
+/// nothing to go back to.
+pub fn break_glass_helps(phase: Phase) -> bool {
+    !matches!(phase, Phase::Done | Phase::RolledBack)
+}
+
 /// The helper of the run the new agent confirmed is gone: the new agent does
 /// the helper's clean-up itself (the helper is gone, so the file still has
 /// one writer) and sets `done`; the ordinary report path tells Wren. `true`
@@ -564,12 +572,20 @@ pub async fn adopt<E: Engine>(engine: &E, dir: &Path, now: u64, loud: bool) -> b
             _ => return false,
         };
         if orphan(&s, true, state::confirmed(dir, s.run_id)) != Orphan::Finish {
-            tracing::warn!(
-                run = s.run_id,
-                "the removed helper had moved the run to {:?}; it is left as it is; to go back by hand: {}",
-                s.phase,
-                s.break_glass
-            );
+            if break_glass_helps(s.phase) {
+                tracing::warn!(
+                    run = s.run_id,
+                    "the removed helper had moved the run to {:?}; it is left as it is; to go back by hand: {}",
+                    s.phase,
+                    s.break_glass
+                );
+            } else {
+                tracing::info!(
+                    run = s.run_id,
+                    "the removed helper had already ended the run as {:?}",
+                    s.phase
+                );
+            }
             return false;
         }
     }
@@ -675,6 +691,162 @@ pub async fn settle_prepared<E: Engine>(engine: &E, dir: &Path, grace: u64, now:
     }
 }
 
+/// What [`by_hand`] found.
+enum ByHand {
+    /// The helper lives and decides for itself.
+    Wait,
+    /// It is not clear the old agent was put back by hand: nothing is done.
+    Unsure(String),
+    /// The old agent was put back by hand; `stuck` when a broken helper is
+    /// still there.
+    Settle { stuck: bool },
+}
+
+/// Whether the run in `s`, not over, was put back by hand with the
+/// break-glass command: its helper is gone (or stuck), this process runs in
+/// the very container the run replaced and under its name, and neither the
+/// renamed copy nor the new agent's container is left.
+async fn by_hand<E: Engine>(engine: &E, s: &StateFile, now: u64) -> ByHand {
+    let helper = match helper_view(engine, &helper_name(s.run_id), now).await {
+        Ok(helper) => helper,
+        Err(e) => return ByHand::Unsure(format!("can't look for the helper: {e}")),
+    };
+    if !helper_gone(helper.as_ref()) {
+        return ByHand::Wait;
+    }
+    let own = engine.own_id();
+    if own.is_empty() || s.old_container_id.is_empty() {
+        return ByHand::Unsure("this agent's own container is not known".into());
+    }
+    let me = match engine.inspect(&own).await {
+        Ok(Some(me)) => me,
+        Ok(None) => return ByHand::Unsure("this agent's own container wasn't found".into()),
+        Err(e) => return ByHand::Unsure(format!("can't look at this agent's container: {e}")),
+    };
+    let id = me.get("Id").and_then(Value::as_str).unwrap_or("");
+    let name = me
+        .get("Name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_start_matches('/');
+    if id != s.old_container_id || name != s.container {
+        return ByHand::Unsure(
+            "this agent is not the container the run replaced, under its name".into(),
+        );
+    }
+    let old = old_name(&s.container, s.run_id);
+    match engine.inspect(&old).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return ByHand::Unsure(format!("{old} is still there")),
+        Err(e) => return ByHand::Unsure(format!("can't look for {old}: {e}")),
+    }
+    if !s.new_container_id.is_empty() {
+        match engine.inspect(&s.new_container_id).await {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return ByHand::Unsure("the new agent's container is still there".into());
+            }
+            Err(e) => return ByHand::Unsure(format!("can't look for the new container: {e}")),
+        }
+    }
+    ByHand::Settle {
+        stuck: helper.is_some(),
+    }
+}
+
+/// A run that is not over although its old agent runs again, put back by
+/// hand with the break-glass command (which removes the helper, so nothing
+/// would ever end the run and every later self-update would be refused as
+/// busy). Only the old agent settles it, and only when [`by_hand`] is sure:
+/// the reference tag goes back to the old image if it still names the new
+/// release, and the run is marked `rolled_back` for the ordinary report path
+/// to tell Wren. `true` when it settled one; anything unclear is logged
+/// (`loud`) and left as it is.
+pub async fn settle_by_hand<E: Engine>(engine: &E, dir: &Path, now: u64, loud: bool) -> bool {
+    let path = dir.join(STATE_FILE);
+    let Ok(Some(mut s)) = state::load(&path) else {
+        return false;
+    };
+    // `prepared` is settle_prepared's; the new agent never settles here.
+    let ours = |s: &StateFile| {
+        !s.phase.terminal() && s.phase != Phase::Prepared && s.from_version == VERSION
+    };
+    if !ours(&s) {
+        return false;
+    }
+    let unsure = |s: &StateFile, why: &str| {
+        if loud {
+            tracing::warn!(
+                run = s.run_id,
+                "the self-update is still {:?} but is left as it is: {why}",
+                s.phase
+            );
+        }
+        false
+    };
+    match by_hand(engine, &s, now).await {
+        ByHand::Wait => return false,
+        ByHand::Unsure(why) => return unsure(&s, &why),
+        ByHand::Settle { stuck: false } => {}
+        ByHand::Settle { stuck: true } => {
+            // A stuck helper must not write the file later. It may have
+            // written it before it went, so the decision is made again.
+            let helper = helper_name(s.run_id);
+            if let Err(e) = engine.remove(&helper, true).await {
+                return unsure(&s, &format!("can't remove the stuck helper {helper}: {e}"));
+            }
+            s = match state::load(&path) {
+                Ok(Some(fresh)) if fresh.run_id == s.run_id && ours(&fresh) => fresh,
+                _ => return false,
+            };
+            match by_hand(engine, &s, now).await {
+                ByHand::Settle { stuck: false } => {}
+                ByHand::Unsure(why) => return unsure(&s, &why),
+                _ => return unsure(&s, "the helper is still there"),
+            }
+        }
+    }
+    if s.old_image_id.is_empty() || s.reference.is_empty() {
+        return unsure(&s, "the state file doesn't name the old image");
+    }
+    match engine.image_id(&s.reference).await {
+        Ok(Some(id)) if id == s.old_image_id => {}
+        Ok(_) => {
+            if let Err(e) = engine.tag(&s.old_image_id, &s.reference).await {
+                return unsure(&s, &format!("can't put the image tag back: {e}"));
+            }
+        }
+        Err(e) => return unsure(&s, &format!("can't look at {}: {e}", s.reference)),
+    }
+    if s.unraid
+        && let Err(e) = write_unraid_status(
+            &engine.unraid_status_file(),
+            &s.reference,
+            &s.from_digest,
+            &s.to_digest,
+        )
+    {
+        tracing::warn!("couldn't set Unraid's update status: {e}");
+    }
+    let _ = std::fs::remove_dir_all(dir.join(BACKUP_DIR).join(s.run_id.to_string()));
+    tracing::warn!(
+        run = s.run_id,
+        "the self-update was left {:?} and the old agent runs again: rolled back by hand",
+        s.phase
+    );
+    s.phase = Phase::RolledBack;
+    s.reason = "rolled back by hand".into();
+    s.updated_at = now;
+    s.reported = false;
+    match state::save(&path, &s) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("can't save {}: {e}", path.display());
+            false
+        }
+    }
+}
+
 /// Removes what a finished run left (see [`leftovers`]); the names removed.
 /// A state file that can't be read leaves everything alone.
 pub async fn sweep(socket: &str, dir: &Path) -> Vec<String> {
@@ -705,7 +877,7 @@ pub async fn sweep(socket: &str, dir: &Path) -> Vec<String> {
 }
 
 /// One round of the chores a running agent does for self-updates: settles a
-/// prepared run that has no helper, tells Wren how a finished run ended
+/// prepared run that has no helper and one put back by hand, tells Wren how a finished run ended
 /// (again every round until Wren has it) and, when `sweep_due`, sweeps the
 /// leftovers. `ended` gets the id of a finished run, which lets a parked job
 /// loop go on (the helper rolled back without ever stopping this agent).
@@ -716,6 +888,7 @@ pub async fn round(config: &Config, jobs: &JobClient, ended: &AtomicI64, sweep_d
         socket: socket.to_string(),
     };
     settle_prepared(&engine, dir, scaled(SWEEP), state::now()).await;
+    settle_by_hand(&engine, dir, state::now(), sweep_due).await;
     adopt(&engine, dir, state::now(), sweep_due).await;
     let path = dir.join(STATE_FILE);
     let found = state::load(&path).ok().flatten();
@@ -1309,6 +1482,10 @@ mod tests {
         /// What a helper writes to the state file just before it is removed
         /// (path and content).
         last_write: Mutex<Option<(PathBuf, StateFile)>>,
+        /// The id this process finds for its own container.
+        own: String,
+        /// Image references and the image id each names.
+        images: Vec<(String, String)>,
     }
 
     impl FakeDocker {
@@ -1322,7 +1499,17 @@ mod tests {
                 tags: Mutex::new(Vec::new()),
                 removed: Mutex::new(Vec::new()),
                 last_write: Mutex::new(None),
+                own: String::new(),
+                images: Vec::new(),
             }
+        }
+        fn running_as(mut self, own: &str) -> FakeDocker {
+            self.own = own.to_string();
+            self
+        }
+        fn image(mut self, reference: &str, id: &str) -> FakeDocker {
+            self.images.push((reference.to_string(), id.to_string()));
+            self
         }
         fn writing_on_removal(self, path: &Path, s: StateFile) -> FakeDocker {
             *self.last_write.lock().unwrap() = Some((path.to_path_buf(), s));
@@ -1353,8 +1540,15 @@ mod tests {
         async fn image_config(&self, _: &str) -> Value {
             Value::Null
         }
-        async fn image_id(&self, _: &str) -> Result<Option<String>, String> {
-            unreachable!()
+        async fn image_id(&self, reference: &str) -> Result<Option<String>, String> {
+            if self.fail {
+                return Err("Docker didn't answer".into());
+            }
+            Ok(self
+                .images
+                .iter()
+                .find(|(r, _)| r == reference)
+                .map(|(_, id)| id.clone()))
         }
         async fn stop(&self, _: &str, _: u64) -> Result<(), String> {
             unreachable!()
@@ -1385,7 +1579,7 @@ mod tests {
             String::new()
         }
         fn own_id(&self) -> String {
-            String::new()
+            self.own.clone()
         }
         fn unraid_status_file(&self) -> PathBuf {
             PathBuf::new()
@@ -1629,5 +1823,176 @@ mod tests {
             Phase::RolledBack
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_way_back_by_hand_is_shown_only_while_it_can_help() {
+        use Phase::*;
+        for p in [
+            Prepared,
+            HelperStarted,
+            OldStopped,
+            OldRenamed,
+            NewCreated,
+            NewStarted,
+            Confirmed,
+            RollingBack,
+            RollbackFailed,
+        ] {
+            assert!(break_glass_helps(p), "{p:?}");
+        }
+        // The run is over and an agent runs: there is nothing to go back to.
+        assert!(!break_glass_helps(Done));
+        assert!(!break_glass_helps(RolledBack));
+    }
+
+    const REF: &str = "ghcr.io/ferdinand99/wise-wren-agent:latest";
+
+    /// A run the old agent (this version) handed over, left in `phase` after
+    /// the break-glass command put the old agent back.
+    fn left_by_hand(name: &str, phase: Phase) -> (PathBuf, PathBuf, PathBuf) {
+        let mut s = at(phase, crate::heartbeat::VERSION, "99.0.0", false);
+        s.old_container_id = "old-id".into();
+        s.new_container_id = "new-id".into();
+        s.old_image_id = "sha256:old".into();
+        s.reference = REF.into();
+        s.updated_at = 1000;
+        let (dir, path, ledger) = folder(name, &s);
+        std::fs::create_dir_all(dir.join("selfupdate").join("57")).unwrap();
+        (dir, path, ledger)
+    }
+
+    /// Docker after the break-glass command: the old agent runs under its
+    /// own name (this process, found by its short id), the helper, the new
+    /// container and the renamed copy are gone, and the tag still names the
+    /// new release.
+    fn after_break_glass() -> FakeDocker {
+        FakeDocker::new(&[], false)
+            .running_as("old-short")
+            .with("old-short", json!({"Id": "old-id", "Name": "/wren-agent"}))
+            .image(REF, "sha256:new")
+    }
+
+    #[tokio::test]
+    async fn a_run_put_back_with_the_break_glass_command_is_settled_as_rolled_back() {
+        for phase in [Phase::RollingBack, Phase::NewStarted, Phase::OldStopped] {
+            let (dir, path, ledger) = left_by_hand(&format!("byhand-{phase:?}"), phase);
+            let docker = after_break_glass();
+            assert!(settle_by_hand(&docker, &dir, 5000, true).await, "{phase:?}");
+            let mut s = state::load(&path).unwrap().unwrap();
+            assert_eq!(
+                (s.phase, s.reason.as_str(), s.updated_at, s.reported),
+                (Phase::RolledBack, "rolled back by hand", 5000, false),
+                "{phase:?}"
+            );
+            // The tag names the old image again.
+            assert_eq!(*docker.tags.lock().unwrap(), [format!("sha256:old {REF}")]);
+            assert!(docker.removed().is_empty());
+            assert!(!dir.join("selfupdate").join("57").exists());
+            // Reported like any rollback: Wren, the ledger, the flag; and the
+            // next self-update may start.
+            assert!(matches!(
+                role(Some(s.clone()), crate::heartbeat::VERSION),
+                Role::Report(_)
+            ));
+            let wren = FakeWren::default();
+            report_to(&wren, &mut s, &path, &ledger).await.unwrap();
+            assert_eq!(
+                wren.posts().last().unwrap(),
+                "finish 57 rolled_back selfupdate.rolled_back"
+            );
+            assert_eq!(ledger_outcome(&ledger), "rolled_back");
+            let s = state::load(&path).unwrap().unwrap();
+            assert!(s.reported);
+            assert!(crate::selfupdate::prepare::may_start(Some(&s), 58).is_ok());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tag_already_back_is_left_and_a_stuck_helper_is_removed_first() {
+        let (dir, path, _) = left_by_hand("byhand-stuck", Phase::RollingBack);
+        let mut docker = after_break_glass().with(
+            "wren-agent-selfupdate-57",
+            json!({"State": {"Status": "restarting"}, "RestartCount": 9}),
+        );
+        docker.images = vec![(REF.into(), "sha256:old".into())];
+        assert!(settle_by_hand(&docker, &dir, 5000, true).await);
+        assert_eq!(docker.removed(), ["wren-agent-selfupdate-57"]);
+        assert!(docker.tags.lock().unwrap().is_empty());
+        assert_eq!(
+            state::load(&path).unwrap().unwrap().phase,
+            Phase::RolledBack
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_may_not_have_been_put_back_by_hand_is_left_alone() {
+        let cases: Vec<(&str, FakeDocker)> = vec![
+            // The helper still runs: it is mid-rollback and decides itself.
+            (
+                "helper",
+                after_break_glass().with(
+                    "wren-agent-selfupdate-57",
+                    json!({"State": {"Status": "running"}, "RestartCount": 0}),
+                ),
+            ),
+            // The renamed old container is still there.
+            (
+                "copy",
+                after_break_glass().with("wren-agent-wren-old-57", json!({"Id": "old-id"})),
+            ),
+            // The new agent's container is still there.
+            (
+                "new",
+                after_break_glass().with("new-id", json!({"Id": "new-id"})),
+            ),
+            // This process is not the container the run replaced.
+            (
+                "other",
+                after_break_glass().with(
+                    "old-short",
+                    json!({"Id": "other-id", "Name": "/wren-agent"}),
+                ),
+            ),
+            // The old container runs, but under another name.
+            (
+                "name",
+                after_break_glass()
+                    .with("old-short", json!({"Id": "old-id", "Name": "/somewhere"})),
+            ),
+            // This process can't find its own container.
+            ("noid", after_break_glass().running_as("")),
+            // Docker didn't answer.
+            ("docker", FakeDocker::new(&[], true).running_as("old-short")),
+        ];
+        for (name, docker) in cases {
+            let (dir, path, _) = left_by_hand(&format!("unsure-{name}"), Phase::RollingBack);
+            let before = state::load(&path).unwrap().unwrap();
+            assert!(!settle_by_hand(&docker, &dir, 5000, true).await, "{name}");
+            assert_eq!(state::load(&path).unwrap().unwrap(), before, "{name}");
+            assert!(docker.tags.lock().unwrap().is_empty(), "{name}");
+            assert!(docker.removed().is_empty(), "{name}");
+            assert!(dir.join("selfupdate").join("57").exists(), "{name}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // Not this agent's run to settle: the new agent's, a prepared one
+        // (settle_prepared's), and one that is over.
+        for (name, phase, from) in [
+            ("newer", Phase::NewStarted, "0.0.1"),
+            ("prepared", Phase::Prepared, crate::heartbeat::VERSION),
+            ("over", Phase::RollbackFailed, crate::heartbeat::VERSION),
+        ] {
+            let (dir, path, _) = left_by_hand(&format!("notours-{name}"), phase);
+            let mut s = state::load(&path).unwrap().unwrap();
+            s.from_version = from.into();
+            state::save(&path, &s).unwrap();
+            let docker = after_break_glass();
+            assert!(!settle_by_hand(&docker, &dir, 5000, true).await, "{name}");
+            assert_eq!(state::load(&path).unwrap().unwrap(), s, "{name}");
+            assert!(docker.tags.lock().unwrap().is_empty(), "{name}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
