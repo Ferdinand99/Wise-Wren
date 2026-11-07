@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.0...v0.10.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** bump vole-kit to 0.8.1 ([#61](https://github.com/Ferdinand99/Wise-Wren/issues/61)) ([576aa6e](https://github.com/Ferdinand99/Wise-Wren/commit/576aa6ee1285624236099664c60b2e3fc0536444))
+
 ## [0.10.0](https://github.com/Ferdinand99/Wise-Wren/compare/v0.9.2...v0.10.0) (2026-11-06)
 
 
