@@ -5,3 +5,15 @@ ignore = [
     # read askama.toml; it never sees untrusted input. Drop when askama moves off it.
     { id = "RUSTSEC-2026-0374", reason = "build-time only, via askama_derive; no untrusted input" },
 ]
+
+[sources]
+# Crates come from crates.io, with two git exceptions: vole-kit (from its release tag in the
+# Vigilant Vole repository) and deadpool-sqlite, a fork that supports rusqlite 0.41, which vole-kit
+# pulls in as well. Remove the fork when the crates.io release supports rusqlite 0.41 or newer.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/Ferdinand99/Vigilant-Vole",
+    "https://github.com/Ferdinand99/deadpool",
+]
