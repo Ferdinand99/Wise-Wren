@@ -622,8 +622,7 @@ dependencies = [
 [[package]]
 name = "deadpool"
 version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e98a7e119cd347f4201e1159b19831029e203e2d8b790547708e8157b4acf1e"
+source = "git+https://github.com/Ferdinand99/deadpool?rev=cb9ab33940fd64254660d61c85a1fc68d0f4a3b7#cb9ab33940fd64254660d61c85a1fc68d0f4a3b7"
 dependencies = [
  "deadpool-runtime",
  "tokio",
@@ -632,8 +631,7 @@ dependencies = [
 [[package]]
 name = "deadpool-runtime"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2657f61fb1dd8bf37a8d51093cc7cee4e77125b22f7753f49b289f831bec2bae"
+source = "git+https://github.com/Ferdinand99/deadpool?rev=cb9ab33940fd64254660d61c85a1fc68d0f4a3b7#cb9ab33940fd64254660d61c85a1fc68d0f4a3b7"
 dependencies = [
  "tokio",
 ]
@@ -641,8 +639,7 @@ dependencies = [
 [[package]]
 name = "deadpool-sqlite"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "008b02743f8fad68dc9bb2851c0a4a1d63190d8e3885c5dea20f8a0a2a6bff9a"
+source = "git+https://github.com/Ferdinand99/deadpool?rev=cb9ab33940fd64254660d61c85a1fc68d0f4a3b7#cb9ab33940fd64254660d61c85a1fc68d0f4a3b7"
 dependencies = [
  "deadpool",
  "deadpool-sync",
@@ -652,8 +649,7 @@ dependencies = [
 [[package]]
 name = "deadpool-sync"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e385cc95d3d582c328b36d1ff90feac061102b001894b555e6b465a2e0eaabbf"
+source = "git+https://github.com/Ferdinand99/deadpool?rev=cb9ab33940fd64254660d61c85a1fc68d0f4a3b7#cb9ab33940fd64254660d61c85a1fc68d0f4a3b7"
 dependencies = [
  "deadpool-runtime",
 ]
@@ -1473,9 +1469,9 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -1990,9 +1986,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -2840,8 +2836,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vole-kit"
-version = "0.8.1"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.1#dd0083560a270cc1cbfa6e6841adebbcb872699a"
+version = "0.8.2"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.2#af74370c06fd7b502871bb8e38dfecd89b7fe599"
 dependencies = [
  "argon2",
  "askama",
@@ -2877,8 +2873,8 @@ dependencies = [
 
 [[package]]
 name = "vole-kit-build"
-version = "0.8.1"
-source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.1#dd0083560a270cc1cbfa6e6841adebbcb872699a"
+version = "0.8.2"
+source = "git+https://github.com/Ferdinand99/Vigilant-Vole?tag=vole-kit-v0.8.2#af74370c06fd7b502871bb8e38dfecd89b7fe599"
 
 [[package]]
 name = "walkdir"
