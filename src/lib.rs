@@ -33,6 +33,7 @@ pub mod runs;
 pub mod schedule;
 pub mod server;
 pub mod servers;
+pub mod target_tokens;
 pub mod targets;
 pub mod texts;
 pub mod updates_notify;
@@ -181,7 +182,10 @@ pub fn router(wren: Wren) -> Router {
         .merge(run_pages::router())
         .merge(registries::router())
         .merge(vv_pages::router())
-        .merge(api::router())
+        // A target token (src/target_tokens.rs) is held to its one target
+        // here, after `require_auth` has said who it is.
+        .merge(api::router().route_layer(from_fn_with_state(core.clone(), target_tokens::guard)))
+        .merge(target_tokens::router())
         .merge(kit_pages::router())
         .route_layer(from_fn_with_state(core.clone(), guard::require_auth));
     // Programs, not browsers: the machine headers on every answer.

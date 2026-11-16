@@ -141,6 +141,7 @@ pub static KIT: KitConfig = KitConfig {
             SettingsTab::SECURITY,
             SettingsTab::TOKENS,
             crate::channels::TAB,
+            crate::target_tokens::TAB,
             crate::registries::TAB,
             crate::vv_pages::TAB,
         ],
@@ -154,7 +155,7 @@ pub static KIT: KitConfig = KitConfig {
         duration: "duration",
         url_example: "https://example.com/hooks/wren…",
     },
-    token_scopes: &[],
+    token_scopes: &[crate::target_tokens::SCOPE],
     // Site name, public URL, time zone and language.
     general: Some(&GeneralSettings::CORE_ONLY),
     // The signed-in footer links the running version to its release notes.

@@ -60,6 +60,55 @@ Updates page, target page, `POST /api/v1/targets/{id}/approve` or the MCP tool `
   reach. Approving several together skips those and says how many. The API answers `409` with the reason
   (`blocked_reason` on every target).
 
+## Target tokens
+
+A service that offers an **Update now** button (Sylo's, for one) must be able to approve an update. Giving it a normal
+write token would let it approve or change anything in Wren if the service were ever compromised. A **target token**
+can only read and approve **one** target.
+
+Make one under **Settings → Target tokens** (editors and admins): name it, pick the target from the list and choose
+when it expires. The token (`ww_…`) is shown once. It is an API token with the scope `target:approve` and one target;
+it is listed on **Settings → API tokens** as "Approve one target", and either page can revoke it. The scope can't be
+picked on the API tokens page itself: a token made there has no target, and is refused everywhere.
+
+For its own target a target token may call:
+
+| Route | What it does |
+|---|---|
+| `GET /api/v1/targets/{id}` | the target, with its `version_key` and `blocked_reason` |
+| `GET /api/v1/updates` | the targets with a new version, **only this target** (empty when it has none) |
+| `GET /api/v1/runs/{id}` | a run **of this target**, with its steps |
+| `POST /api/v1/targets/{id}/approve` | approve the update now (send the `version_key` you saw) |
+| `POST /api/v1/targets/{id}/schedule` | approve it for a later time |
+
+Everything else answers `403`: other targets and their runs, the lists, every other action (skip, snooze, mode,
+cancel, rollback …), servers, settings, notification channels, the Hedgerow app's routes and MCP. The same rules
+for approvals apply as for anyone: `409` with the reason when the agent would refuse the update, a different
+`version_key` is refused, and the approval lapses if a newer version appears first.
+
+A target token never exceeds its owner: approving and scheduling need the owner to be an editor or an admin (an
+owner who is a viewer, or later demoted, gets `403`). It stops working when the owner is disabled or deleted, when it
+expires or is revoked, and when its target is deleted.
+
+The approval is logged (the actions list) and shown on the run as `<owner> via token "<name>"`, so the token
+that approved it is named.
+
+Sylo's **Update now**, as a request:
+
+```bash
+# Is there an update for this target, and which version?
+curl -H "Authorization: Bearer $WREN_TARGET_TOKEN" https://wren.example.com/api/v1/targets/7
+
+# Approve exactly that version.
+curl -X POST -H "Authorization: Bearer $WREN_TARGET_TOKEN" -H "Content-Type: application/json" \
+  -d '{"version_key": "ww-test-container=sha256:4f90b33d…"}' \
+  https://wren.example.com/api/v1/targets/7/approve
+# {"run_id": 12, "status": "queued"}
+
+# Follow the run (status queued, running, succeeded, rolled_back, failed …).
+curl -H "Authorization: Bearer $WREN_TARGET_TOKEN" https://wren.example.com/api/v1/runs/12
+```
+
 ## Scheduled updates
 
 Approve **for a time** on the target page (`POST /api/v1/targets/{id}/schedule`): approve during the day, update
