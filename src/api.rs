@@ -62,6 +62,20 @@ fn intro(out: &mut String, base: &str) {
 
 fn nothing(_: &mut String) {}
 
+/// The target token section of the Markdown reference.
+fn target_tokens_section(out: &mut String) {
+    out.push_str(TARGET_TOKENS_DOC);
+}
+
+/// What a target token (scope `target:approve`) may do.
+const TARGET_TOKENS_DOC: &str = "## Target tokens
+
+A target token carries the scope `target:approve` and one target. It may read and approve that target and nothing else, so a service that offers an \"Update now\" button can be given a token that cannot approve or change anything more. Make one under Settings → Target tokens (an editor or admin picks the target and confirms their password); it is shown once. The user it belongs to must be an editor or admin to approve.
+
+Allowed, for the token's own target: `GET /api/v1/targets/{id}`, `GET /api/v1/updates` (only that target), `GET /api/v1/runs/{id}` (only its runs) and `POST /api/v1/targets/{id}/approve`. Every other route, every other target and run, and MCP answer `403`. The approval is logged and shown as `<user> via token #<id> \"<name>\"`.
+
+";
+
 /// Wren's own documented endpoints, in display order.
 const OWN_ROUTES: &[RouteDoc] = &[
         r("GET", "/api/v1/servers", "viewer", "Servers", "List the servers with their agents' status (online, offline, waiting for the agent, no token) and what each agent last reported.")
@@ -87,7 +101,7 @@ const OWN_ROUTES: &[RouteDoc] = &[
             .res(r#"{"check_interval_hours": 12}"#),
         r("GET", "/api/v1/targets", "viewer", "Targets", "List what Wren watches on every server (or `?server_id=`): containers, Unraid template containers, Compose stacks and script stacks, with the current and available version and the status `current`, `update` or `unknown`.")
             .res(TARGETS_EXAMPLE),
-        r("GET", "/api/v1/targets/{id}", "viewer", "Targets", "One target with its mode (`mode`: its own, or `null` for the server's; `effective_mode`), health period, `require_vv`, skip and snooze, whether Wren never updates it (its own and Vigilant Vole's images) and its linked Vigilant Vole monitors.")
+        r("GET", "/api/v1/targets/{id}", "viewer", "Targets", "One target with its mode (`mode`: its own, or `null` for the server's; `effective_mode`), health period, `require_vv`, skip and snooze, whether Wren never updates it (its own and Vigilant Vole's images) and its linked Vigilant Vole monitors. A target token (scope `target:approve`) may read its own target.")
             .res(r#"{"id": 7, "name": "ww-test-container", "status": "update", "version_key": "ww-test-container=sha256:4f90…", "mode": null, "effective_mode": "approve", "updates_itself": false, "health_seconds": null, "require_vv": false, "require_snapshot": false, "skipped": false, "snoozed_until": null, "wren_never_updates": false, "awaiting_auto_confirmation": false, "monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
         r("POST", "/api/v1/targets/{id}/check", "editor", "Targets", "Check now for one target (its server's agent sends a fresh inventory first).")
             .res(r#"{"checking": true}"#),
@@ -101,13 +115,13 @@ const OWN_ROUTES: &[RouteDoc] = &[
             .res(r#"{"monitors": [{"id": 3, "kind": "tag", "ref": "media", "label": "media"}]}"#),
         r("DELETE", "/api/v1/targets/{id}/monitors/{link}", "admin", "Vigilant Vole", "Remove a monitor link.")
             .res(r#"{"monitors": []}"#),
-        r("GET", "/api/v1/updates", "viewer", "Targets", "List the targets with a new version (status `update`), with release notes when Wren found them.")
+        r("GET", "/api/v1/updates", "viewer", "Targets", "List the targets with a new version (status `update`), with release notes when Wren found them. A target token sees only its own target here.")
             .res(TARGETS_EXAMPLE),
         r("GET", "/api/v1/runs", "viewer", "Runs", "List update runs, newest first (`?target_id=`, `?server_id=`, `?limit=`, at most 500). Status: `queued` (approved, waiting for the agent), `running`, `succeeded`, `rolled_back` (the update failed and was undone), `failed` (nothing changed), `rollback_failed` (needs a person), `refused` (by the agent's own `agent.toml`), `cancelled` or `lapsed` (a newer version appeared before it started).")
             .res(RUNS_EXAMPLE),
-        r("GET", "/api/v1/runs/{id}", "viewer", "Runs", "One run with each step (`preflight`, `stop`, `snapshot`, `update`, `health`, `rollback`): status, duration and the end of its log.")
+        r("GET", "/api/v1/runs/{id}", "viewer", "Runs", "One run with each step (`preflight`, `stop`, `snapshot`, `update`, `health`, `rollback`): status, duration and the end of its log. A target token may read the runs of its own target.")
             .res(RUN_EXAMPLE),
-        r("POST", "/api/v1/targets/{id}/approve", "editor", "Runs", "Approve the target's available update now. Send `{\"version_key\": \"…\"}` (the target's `version_key`) to approve exactly the version you saw: a different one is refused, and if a newer version appears before the run starts, the approval lapses. Refused for `notify` targets; `409` with the reason when the server's agent would refuse it (the target's `blocked_reason`: not allowed by its `[updates]`, a stack folder outside its roots, files it can't reach). Needs an API token with write access.")
+        r("POST", "/api/v1/targets/{id}/approve", "editor", "Runs", "Approve the target's available update now. Send `{\"version_key\": \"…\"}` (the target's `version_key`) to approve exactly the version you saw: a different one is refused, and if a newer version appears before the run starts, the approval lapses. Refused for `notify` targets; `409` with the reason when the server's agent would refuse it (the target's `blocked_reason`: not allowed by its `[updates]`, a stack folder outside its roots, files it can't reach). Needs an API token with write access, or a target token (scope `target:approve`) for this very target, which may do nothing else (see Target tokens).")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…"}"#)
             .res(r#"{"run_id": 12, "status": "queued"}"#),
         r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule. `409` as for approve.")
@@ -245,7 +259,7 @@ const ERROR_CODES: &[ErrorCode] = &[
 pub static DOCS: DocsSpec = DocsSpec {
     routes: &ALL_ROUTES,
     openapi_title: "Wise Wren API",
-    openapi_description: "REST API for Wise Wren. Authenticate with `Authorization: Bearer ww_…`. Reads need any token; writes need a token with write access (a session cookie is never enough) of an editor or, where marked, an admin.",
+    openapi_description: "REST API for Wise Wren. Authenticate with `Authorization: Bearer ww_…`. Reads need any token; writes need a token with write access (a session cookie is never enough) of an editor or, where marked, an admin. A target token (scope `target:approve`, made under Settings → Target tokens) is the one exception: it can read and approve a single target (`GET /api/v1/targets/{id}`, `GET /api/v1/updates`, `GET /api/v1/runs/{id}`, `POST /api/v1/targets/{id}/approve`) and gets 403 everywhere else.",
     bearer_description: "API token (ww_…)",
     credentials: &[Credential {
         access: "agent token",
@@ -262,7 +276,7 @@ pub static DOCS: DocsSpec = DocsSpec {
     config_document: None,
     curl_path_param: curl_param,
     markdown_intro: intro,
-    markdown_middle: nothing,
+    markdown_middle: target_tokens_section,
     markdown_outro: nothing,
     page_subtitle: "tokens.sub",
     openapi_path: "/api/v1/openapi.json",
@@ -425,17 +439,27 @@ async fn targets_route(
     ))
 }
 
-async fn updates_route(State(core): State<Core>, _user: CurrentUser) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        target_list(
-            &core,
-            Filter {
-                server_id: None,
-                updates_only: true,
-            },
-        )
-        .await?,
-    ))
+/// The targets with a new version. A target token (`target_tokens`) sees
+/// only its own.
+async fn updates_route(
+    State(core): State<Core>,
+    _user: CurrentUser,
+    scoped: Option<Extension<crate::target_tokens::Scoped>>,
+) -> ApiResult<Json<Value>> {
+    let filter = Filter {
+        server_id: None,
+        updates_only: true,
+    };
+    // Filtered before it becomes JSON, so no change to the answer's shape
+    // can let a target token see the others.
+    let only = scoped.map(|Extension(s)| s.target_id);
+    let rows = core.with_conn(move |c| targets::list(c, filter)).await?;
+    let rows: Vec<Value> = rows
+        .iter()
+        .filter(|t| only.is_none_or(|id| t.id == id))
+        .map(target_json)
+        .collect();
+    Ok(Json(json!({ "targets": rows })))
 }
 
 /// The servers as the API and MCP give them, each with where its agent

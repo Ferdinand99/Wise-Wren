@@ -53,6 +53,8 @@ src/
   api.rs              # API reference (DocsSpec), targets, updates, runs, approvals, schedules, modes; MCP tools
   api_settings.rs     # REST for servers and agent tokens, Check now, intervals, registries, VV, monitor links,
                       # notification channels
+  target_tokens.rs    # target tokens: the scope `target:approve`, the guard that holds such a token to its one
+                      # target (deny by default), Settings → Target tokens
   fetch.rs            # guarded fetch of user-influenced URLs (public addresses only, pinned DNS, redirects
                       # re-checked, size and time caps)
 templates/            # Wren's pages (extend kit/layout.html)
@@ -63,7 +65,8 @@ agent/src/            # config.rs (agent.toml), docker.rs (socket, CLI), discove
                       # jobs.rs (job channel, the re-check), run.rs (the run), snapshot.rs, lib.rs (the loops)
 tests/                # wren.rs (in-process app), discovery.rs (targets, checks, notifications against fakes),
                       # agent.rs (the real agent against Wren), runs.rs (approvals, jobs, runs),
-                      # vv.rs (VV windows and health against a fake VV, schedules, auto mode), i18n.rs
+                      # vv.rs (VV windows and health against a fake VV, schedules, auto mode), i18n.rs,
+                      # target_tokens.rs (the one-target API token)
 Dockerfile            # targets `server` and `agent`
 docker/               # the server's entrypoint (PUID/PGID), the agent's PHP setting
 ```

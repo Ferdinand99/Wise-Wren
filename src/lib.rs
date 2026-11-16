@@ -33,6 +33,7 @@ pub mod runs;
 pub mod schedule;
 pub mod server;
 pub mod servers;
+pub mod target_tokens;
 pub mod targets;
 pub mod texts;
 pub mod updates_notify;
@@ -182,7 +183,12 @@ pub fn router(wren: Wren) -> Router {
         .merge(registries::router())
         .merge(vv_pages::router())
         .merge(api::router())
+        .merge(target_tokens::router())
         .merge(kit_pages::router())
+        // A target token (src/target_tokens.rs) is held to its one target for
+        // every route of the app, not only the API's: this layer runs after
+        // `require_auth` (below) has said who the caller is.
+        .route_layer(from_fn_with_state(core.clone(), target_tokens::guard))
         .route_layer(from_fn_with_state(core.clone(), guard::require_auth));
     // Programs, not browsers: the machine headers on every answer.
     let machines = Router::new()

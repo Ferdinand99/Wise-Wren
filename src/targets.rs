@@ -159,6 +159,15 @@ pub fn apply(
         [server_id],
     )?;
     tx.execute(&format!("DELETE {vanished}"), [server_id])?;
+    // A target token waits for its target like the settings do, and no longer.
+    tx.execute(
+        "DELETE FROM api_token_targets
+         WHERE NOT EXISTS (SELECT 1 FROM targets t WHERE t.server_id = api_token_targets.server_id
+                             AND t.kind = api_token_targets.kind AND t.name = api_token_targets.name)
+           AND NOT EXISTS (SELECT 1 FROM target_memory m WHERE m.server_id = api_token_targets.server_id
+                             AND m.kind = api_token_targets.kind AND m.name = api_token_targets.name)",
+        [],
+    )?;
     tx.commit()
 }
 

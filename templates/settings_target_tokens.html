@@ -1,0 +1,97 @@
+{% extends "kit/settings_layout.html" %}
+{% import "kit/macros.html" as m %}
+
+{% block settings_content %}
+{% call m::page_header(tr("target_tokens.title"), tr("target_tokens.sub")) %}{% endcall %}
+
+{%- if let Some(c) = created %}
+<section class="section" aria-labelledby="created-title">
+  {% call m::section_head(tr("tokens.your_new"), "", "created-title") %}{% endcall %}
+  {{ m::callout("warning", tr("tokens.copy_now"), tr("sec.shown_once")) }}
+  <div class="card stack-sm">
+    <p class="muted">“{{ c.name }}”</p>
+    {{ m::copy_field("created-token", c.token) }}
+    <p class="help">{{ tr("tokens.send_bearer") }}</p>
+    <p class="help">{{ tr("target_tokens.example") }}</p>
+    <pre class="code"><code>curl -X POST -H "Authorization: Bearer {{ c.token }}" {% if base_url.is_empty() %}http://your-host{% else %}{{ base_url }}{% endif %}/api/v1/targets/{{ c.target_id }}/approve</code></pre>
+  </div>
+</section>
+{%- endif %}
+
+<section class="section" aria-labelledby="tokens-title">
+  {% call m::section_head(tr("target_tokens.yours"), "", "tokens-title") %}{% endcall %}
+  {%- if rows.is_empty() %}
+  <div class="card card-flush">
+    {{ m::empty_state("key", tr("target_tokens.empty_title"), tr("target_tokens.empty_text")) }}
+  </div>
+  {%- else %}
+  <div class="card card-flush">
+    <div class="table-wrap">
+      <table class="table table-stack" id="target-tokens">
+        <thead><tr><th>{{ tr("common.name") }}</th><th>{{ tr("target_tokens.target") }}</th><th>{{ tr("login.username") }}</th><th>{{ tr("tokens.last_used") }}</th><th>{{ tr("detail.expires") }}</th><th><span class="vh">{{ tr("common.actions") }}</span></th></tr></thead>
+        <tbody>
+          {%- for t in rows %}
+          <tr id="token-{{ t.id }}">
+            <td class="td-primary">{{ t.name }} <span class="mono muted">{{ t.prefix }}…</span></td>
+            <td data-label="{{ tr("target_tokens.target") }}"><span class="badge badge-brand">{{ tr("target_tokens.scope") }}</span> {{ t.target }}{% if t.gone %} <span class="pill status-paused">{{ tr("target_tokens.gone") }}</span>{% endif %}</td>
+            <td data-label="{{ tr("login.username") }}">{{ t.user }}</td>
+            <td data-label="{{ tr("tokens.last_used") }}">{% match t.last_used_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}</td>
+            <td data-label="{{ tr("detail.expires") }}">{% if t.expired %}<span class="pill status-paused">{{ tr("tokens.expired") }}</span>{% else %}{% match t.expires_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}{% endif %}</td>
+            <td class="td-actions">
+              <button type="button" class="btn btn-danger btn-sm" hx-delete="/settings/tokens/{{ t.id }}"
+                hx-target="#token-{{ t.id }}" hx-swap="outerHTML" hx-confirm="{{ tr1("tokens.revoke_q", "name", t.name) }}"
+                data-confirm-label="{{ tr("tokens.revoke") }}" data-confirm-message="{{ tr("tokens.revoke_msg") }}">{{ tr("tokens.revoke") }}</button>
+            </td>
+          </tr>
+          {%- endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {%- endif %}
+</section>
+
+<h2 class="section-title">{{ tr("target_tokens.new") }}</h2>
+{%- if choices.is_empty() %}
+<div class="card card-flush">
+  {{ m::empty_state("server", tr("target_tokens.no_targets_title"), tr("target_tokens.no_targets_text")) }}
+</div>
+{%- else %}
+<form class="form form-narrow" method="post" action="/settings/target-tokens">
+  <div class="card">
+    {%- if !error.is_empty() %}
+    {{ m::callout("danger", error) }}
+    {%- endif %}
+    {{ m::field_text("name", tr("common.name"), form_name, "text", tr("tokens.name_placeholder"), tr("tokens.name_help"), true) }}
+    <div class="field">
+      <label class="label" for="tt-target">{{ tr("target_tokens.target") }}</label>
+      <select id="tt-target" name="target" required aria-describedby="tt-target-help">
+        <option value="">{{ tr("target_tokens.choose") }}</option>
+        {%- for c in choices %}
+        <option value="{{ c.id }}"{% if c.id == form_target %} selected{% endif %}>{{ c.label }}</option>
+        {%- endfor %}
+      </select>
+      <p class="help" id="tt-target-help">{{ tr("target_tokens.target_help") }}</p>
+    </div>
+    <div class="field">
+      <label class="label" for="tt-expires">{{ tr("detail.expires") }}</label>
+      <select id="tt-expires" name="expires">
+        <option value="30">{{ tr("tokens.in_30") }}</option>
+        <option value="90" selected>{{ tr("tokens.in_90") }}</option>
+        <option value="365">{{ tr("tokens.in_365") }}</option>
+        <option value="never">{{ tr("common.never") }}</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="label" for="tt-password">{{ tr("sec.your_password") }}</label>
+      <input id="tt-password" name="current_password" type="password" required maxlength="1024" autocomplete="current-password" aria-describedby="tt-password-help">
+      <p class="help" id="tt-password-help">{{ tr("target_tokens.password_help") }}</p>
+    </div>
+  </div>
+  <div class="form-actions">
+    {{ m::button(tr("tokens.create")) }}
+  </div>
+</form>
+{%- endif %}
+<p class="section-foot">{{ tr("target_tokens.foot") }}</p>
+{% endblock %}
