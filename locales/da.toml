@@ -643,4 +643,4 @@ empty_text = "Opret et, så en tjeneste kan godkende opdateringen af ét enkelt 
 no_targets_title = "Ingen mål endnu"
 no_targets_text = "Mål dukker op, når en agent har rapporteret sine containere."
 err_target = "Vælg et mål."
-foot = "Et mål-token kan ikke læse eller ændre andet end sit eget mål, selv om ejeren kan. Godkendelse kræver, at ejeren er redaktør eller admin. Tilbagekald det her eller under API-token."
+foot = "Et mål-token kan ikke læse eller ændre andet end sit eget mål, selv om den, der oprettede det, kan. Godkendelse kræver, at personen er redaktør eller admin. Tilbagekald det her eller under API-token."

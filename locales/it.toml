@@ -646,4 +646,4 @@ empty_text = "Creane uno per far approvare a un servizio l’aggiornamento di un
 no_targets_title = "Ancora nessuna destinazione"
 no_targets_text = "Le destinazioni compaiono quando un agente ha segnalato i suoi container."
 err_target = "Scegli una destinazione."
-foot = "Un token di destinazione non può leggere né modificare altro che la propria destinazione, anche se il suo proprietario può. Per approvare, il proprietario deve essere editor o amministratore. Revocalo qui o in Token API."
+foot = "Un token di destinazione non può leggere né modificare altro che la propria destinazione, anche se la persona che lo ha creato può. Per approvare, quella persona deve essere editor o amministratore. Revocalo qui o in Token API."

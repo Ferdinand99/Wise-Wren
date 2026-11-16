@@ -12,7 +12,7 @@
 //! | Route | Allowed when |
 //! |---|---|
 //! | `GET /api/v1/targets/{id}` | `id` is the token's target |
-//! | `POST /api/v1/targets/{id}/approve`, `/schedule` | the same, and the token's owner is an editor or admin |
+//! | `POST /api/v1/targets/{id}/approve`, `/schedule` | the same, and the user the token belongs to is an editor or admin |
 //! | `GET /api/v1/updates` | always, but the answer holds only the token's target |
 //! | `GET /api/v1/runs/{id}` | the run belongs to the token's target |
 //!
@@ -22,7 +22,7 @@
 //! token with the scope but no target (the target was deleted, or the token
 //! came from the plain API tokens page) is refused everywhere.
 //!
-//! The approval is logged and stored as `<owner> via token "<name>"`, so the
+//! The approval is logged and stored as `<user> via token "<name>"`, so the
 //! actions list and the run's "requested by" name the token.
 //!
 //! Tokens are made here (Settings → Target tokens), where the target is
@@ -193,7 +193,7 @@ pub async fn guard(State(core): State<Core>, mut request: Request, next: Next) -
     }
     // The routes below ask for an editor when they write: this token is
     // allowed that, for these two actions on its own target (never more than
-    // its owner is). The name is what the log and the run record.
+    // the user it belongs to is). The name is what the log and the run record.
     user.role = Role::Editor;
     user.username = format!("{} via token \"{name}\"", user.username);
     request.extensions_mut().insert(user);
@@ -219,7 +219,7 @@ struct Row {
     id: i64,
     name: String,
     prefix: String,
-    owner: String,
+    user: String,
     target: String,
     last_used_at: Option<String>,
     expires_at: Option<String>,
@@ -271,7 +271,7 @@ async fn rows(core: &Core, user: &CurrentUser) -> ApiResult<Vec<Row>> {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 prefix: r.get(2)?,
-                owner: r.get(3)?,
+                user: r.get(3)?,
                 target: format!("{server} / {target}"),
                 last_used_at: r.get(6)?,
                 expires_at: r.get(7)?,

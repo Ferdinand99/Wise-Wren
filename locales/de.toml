@@ -643,4 +643,4 @@ empty_text = "Erstelle eines, damit ein Dienst das Update eines einzelnen Ziels 
 no_targets_title = "Noch keine Ziele"
 no_targets_text = "Ziele erscheinen, sobald ein Agent seine Container gemeldet hat."
 err_target = "Wähle ein Ziel."
-foot = "Ein Ziel-Token kann nur sein eigenes Ziel lesen oder ändern, auch wenn sein Besitzer mehr darf. Zum Freigeben muss der Besitzer Editor oder Admin sein. Widerrufe es hier oder unter API-Token."
+foot = "Ein Ziel-Token kann nur sein eigenes Ziel lesen oder ändern, auch wenn die Person, die es erstellt hat, mehr darf. Zum Freigeben muss diese Person Editor oder Admin sein. Widerrufe es hier oder unter API-Token."

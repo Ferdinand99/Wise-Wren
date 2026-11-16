@@ -1,7 +1,7 @@
 //! Target tokens: an API token that may read and approve one target and
 //! nothing else (src/target_tokens.rs). Every allowed route works for the
 //! token's own target; every other route, other targets and other targets'
-//! runs are refused, even for an owner who may do more.
+//! runs are refused, even for a user who may do more.
 
 mod common;
 
@@ -366,7 +366,7 @@ async fn everything_else_is_refused() {
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 
     // A session cookie never works as a target token, and a plain read
-    // token of the same owner still reads everything (not a target token).
+    // token of the same user still reads everything (not a target token).
     let read = api_token(&w.app, editor, TokenScope::Read).await;
     assert_eq!(
         bearer(&w.app, "GET", &format!("/api/v1/targets/{b}"), &read)
@@ -377,14 +377,14 @@ async fn everything_else_is_refused() {
 }
 
 #[tokio::test]
-async fn approving_needs_an_editor_owner() {
+async fn approving_needs_an_editor() {
     let w = world().await;
     let viewer = add_user(&w.app, "vi", "viewer").await;
     let token = target_token(&w.app, viewer, w.a, "Sylo").await;
     // It reads…
     let res = bearer(&w.app, "GET", &format!("/api/v1/targets/{}", w.a), &token).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    // …but its owner may not approve, so neither may it.
+    // …but the user may not approve, so neither may it.
     let runs = w.app.count("SELECT COUNT(*) FROM runs").await;
     let res = call(
         &w.app,
@@ -415,7 +415,7 @@ async fn approving_needs_an_editor_owner() {
     .await;
     assert_eq!(res.status, StatusCode::FORBIDDEN, "{}", res.body);
 
-    // An admin owner approves as an editor and no more (no mode change).
+    // A token of an admin approves as an editor and no more (no mode change).
     let admin_id = w
         .app
         .count("SELECT id FROM users WHERE username = 'admin'")
@@ -587,7 +587,7 @@ async fn the_target_tokens_page_makes_revokes_and_hides_them() {
     let res = bearer(&w.app, "GET", &format!("/api/v1/targets/{}", w.b), &token).await;
     assert_eq!(res.status, StatusCode::FORBIDDEN);
 
-    // The list shows it to its owner (and the admin), not to another editor.
+    // The list shows it to the user who made it (and the admin), not to another editor.
     let page = ed.get("/settings/target-tokens").await;
     assert!(page.body.contains("Sylo") && page.body.contains("LANBox / ww-test-a"));
     let page = other.get("/settings/target-tokens").await;

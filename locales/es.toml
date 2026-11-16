@@ -646,4 +646,4 @@ empty_text = "Crea uno para que un servicio apruebe la actualización de un úni
 no_targets_title = "Aún no hay destinos"
 no_targets_text = "Los destinos aparecen cuando un agente ha informado de sus contenedores."
 err_target = "Elige un destino."
-foot = "Un token de destino no puede leer ni cambiar nada que no sea su propio destino, aunque su propietario pueda. Para aprobar, su propietario debe ser editor o administrador. Revócalo aquí o en Tokens de API."
+foot = "Un token de destino no puede leer ni cambiar nada que no sea su propio destino, aunque la persona que lo creó pueda. Para aprobar, esa persona debe ser editor o administrador. Revócalo aquí o en Tokens de API."

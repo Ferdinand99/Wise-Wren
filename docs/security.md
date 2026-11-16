@@ -121,7 +121,7 @@ tag. Verification in the agent may follow later.
   channel settings).
 - **Target tokens** (`ww_…` with the scope `target:approve`, Settings → Target tokens): an API token bound to one target.
   It may read that target, its runs and the update list (that target only) and approve or schedule its update, and
-  gets `403` on every other route and on MCP; it is never more than its owner (approving needs an editor or admin).
+  gets `403` on every other route and on MCP; it is never more than the user it belongs to (approving needs an editor or admin).
   Meant for a service with an "Update now" button, so that a compromised service can approve one update and nothing
   else. The log and the run name the token. See [Updates](updates.md#target-tokens).
 - **Registry passwords and the Vigilant Vole token** are sealed with AES-256-GCM under a key derived from the

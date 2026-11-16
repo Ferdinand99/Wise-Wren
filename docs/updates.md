@@ -86,11 +86,11 @@ cancel, rollback …), servers, settings, notification channels, the Hedgerow ap
 for approvals apply as for anyone: `409` with the reason when the agent would refuse the update, a different
 `version_key` is refused, and the approval lapses if a newer version appears first.
 
-A target token never exceeds its owner: approving and scheduling need the owner to be an editor or an admin (an
-owner who is a viewer, or later demoted, gets `403`). It stops working when the owner is disabled or deleted, when it
+A target token never exceeds the user it belongs to: approving and scheduling need that user to be an editor or an admin (a
+viewer, or an editor demoted later, gets `403`). It stops working when that user is disabled or deleted, when it
 expires or is revoked, and when its target is deleted.
 
-The approval is logged (the actions list) and shown on the run as `<owner> via token "<name>"`, so the token
+The approval is logged (the actions list) and shown on the run as `<user> via token "<name>"`, so the token
 that approved it is named.
 
 Sylo's **Update now**, as a request:

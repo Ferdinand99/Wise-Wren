@@ -649,4 +649,4 @@ empty_text = "Create one to let a service approve the update of a single target.
 no_targets_title = "No targets yet"
 no_targets_text = "Targets appear once an agent has reported its containers."
 err_target = "Choose a target."
-foot = "A target token can’t read or change anything but its own target, even if its owner may. Approving needs its owner to be an editor or an admin. Revoke it here or under API tokens."
+foot = "A target token can’t read or change anything but its own target, even if the person who made it may. Approving needs that person to be an editor or an admin. Revoke it here or under API tokens."

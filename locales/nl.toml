@@ -643,4 +643,4 @@ empty_text = "Maak er een zodat een dienst de update van één enkel doel kan go
 no_targets_title = "Nog geen doelen"
 no_targets_text = "Doelen verschijnen zodra een agent zijn containers heeft gemeld."
 err_target = "Kies een doel."
-foot = "Een doeltoken kan niets lezen of wijzigen behalve zijn eigen doel, ook al mag de eigenaar dat wel. Goedkeuren vereist dat de eigenaar editor of beheerder is. Trek het hier in of onder API-tokens."
+foot = "Een doeltoken kan niets lezen of wijzigen behalve zijn eigen doel, ook al mag de maker dat wel. Goedkeuren vereist dat de maker editor of beheerder is. Trek het hier in of onder API-tokens."

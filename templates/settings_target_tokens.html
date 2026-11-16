@@ -28,13 +28,13 @@
   <div class="card card-flush">
     <div class="table-wrap">
       <table class="table table-stack" id="target-tokens">
-        <thead><tr><th>{{ tr("common.name") }}</th><th>{{ tr("target_tokens.target") }}</th><th>{{ tr("tokens.owner") }}</th><th>{{ tr("tokens.last_used") }}</th><th>{{ tr("detail.expires") }}</th><th><span class="vh">{{ tr("common.actions") }}</span></th></tr></thead>
+        <thead><tr><th>{{ tr("common.name") }}</th><th>{{ tr("target_tokens.target") }}</th><th>{{ tr("login.username") }}</th><th>{{ tr("tokens.last_used") }}</th><th>{{ tr("detail.expires") }}</th><th><span class="vh">{{ tr("common.actions") }}</span></th></tr></thead>
         <tbody>
           {%- for t in rows %}
           <tr id="token-{{ t.id }}">
             <td class="td-primary">{{ t.name }} <span class="mono muted">{{ t.prefix }}…</span></td>
             <td data-label="{{ tr("target_tokens.target") }}"><span class="badge badge-brand">{{ tr("target_tokens.scope") }}</span> {{ t.target }}</td>
-            <td data-label="{{ tr("tokens.owner") }}">{{ t.owner }}</td>
+            <td data-label="{{ tr("login.username") }}">{{ t.user }}</td>
             <td data-label="{{ tr("tokens.last_used") }}">{% match t.last_used_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}</td>
             <td data-label="{{ tr("detail.expires") }}">{% if t.expired %}<span class="pill status-paused">{{ tr("tokens.expired") }}</span>{% else %}{% match t.expires_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}{% endif %}</td>
             <td class="td-actions">

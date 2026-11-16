@@ -646,4 +646,4 @@ empty_text = "Crées-en un pour qu’un service approuve la mise à jour d’une
 no_targets_title = "Aucune cible pour l’instant"
 no_targets_text = "Les cibles apparaissent dès qu’un agent a signalé ses conteneurs."
 err_target = "Choisis une cible."
-foot = "Un jeton de cible ne peut lire ni modifier autre chose que sa propre cible, même si son propriétaire le peut. Pour approuver, son propriétaire doit être éditeur ou admin. Révoque-le ici ou dans Jetons d’API."
+foot = "Un jeton de cible ne peut lire ni modifier autre chose que sa propre cible, même si la personne qui l’a créé le peut. Pour approuver, cette personne doit être éditeur ou admin. Révoque-le ici ou dans Jetons d’API."

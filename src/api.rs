@@ -70,9 +70,9 @@ fn target_tokens_section(out: &mut String) {
 /// What a target token (scope `target:approve`) may do.
 const TARGET_TOKENS_DOC: &str = "## Target tokens
 
-A target token carries the scope `target:approve` and one target. It may read and approve that target and nothing else, so a service that offers an \"Update now\" button can be given a token that cannot approve or change anything more. Make one under Settings → Target tokens (an editor or admin picks the target); it is shown once. Its owner must be an editor or admin to approve.
+A target token carries the scope `target:approve` and one target. It may read and approve that target and nothing else, so a service that offers an \"Update now\" button can be given a token that cannot approve or change anything more. Make one under Settings → Target tokens (an editor or admin picks the target); it is shown once. The user it belongs to must be an editor or admin to approve.
 
-Allowed, for the token's own target: `GET /api/v1/targets/{id}`, `GET /api/v1/updates` (only that target), `GET /api/v1/runs/{id}` (only its runs), `POST /api/v1/targets/{id}/approve` and `POST /api/v1/targets/{id}/schedule`. Every other route, every other target and run, and MCP answer `403`. The approval is logged and shown as `<owner> via token \"<name>\"`.
+Allowed, for the token's own target: `GET /api/v1/targets/{id}`, `GET /api/v1/updates` (only that target), `GET /api/v1/runs/{id}` (only its runs), `POST /api/v1/targets/{id}/approve` and `POST /api/v1/targets/{id}/schedule`. Every other route, every other target and run, and MCP answer `403`. The approval is logged and shown as `<user> via token \"<name>\"`.
 
 ";
 
