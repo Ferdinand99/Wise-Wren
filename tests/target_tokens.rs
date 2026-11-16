@@ -35,18 +35,33 @@ struct World {
     key_c: String,
     /// An admin's write token, for setting things up.
     admin: String,
+    /// The server's agent token.
+    agent: String,
+}
+
+/// An inventory with these containers (`ww-test-a` runs `ww-test/a`).
+async fn send_inventory(app: &App, agent: &str, names: &[&str]) {
+    let containers: Vec<Value> = names
+        .iter()
+        .map(|n| {
+            let short = n.strip_prefix("ww-test-").unwrap();
+            container(n, &format!("localhost:5056/ww-test/{short}:latest"))
+        })
+        .collect();
+    let res = post_json(
+        app,
+        "/api/agent/v1/inventory",
+        agent,
+        json!({ "containers": containers }),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
 }
 
 async fn world() -> World {
     let app = App::new().await;
     let (_, agent) = app.add_server("LANBox").await;
-    let inv = json!({"containers": [
-        container("ww-test-a", "localhost:5056/ww-test/a:latest"),
-        container("ww-test-b", "localhost:5056/ww-test/b:latest"),
-        container("ww-test-c", "localhost:5056/ww-test/c:latest"),
-    ]});
-    let res = post_json(&app, "/api/agent/v1/inventory", &agent, inv).await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    send_inventory(&app, &agent, &["ww-test-a", "ww-test-b", "ww-test-c"]).await;
     for image in [
         "localhost:5056/ww-test/a:latest",
         "localhost:5056/ww-test/b:latest",
@@ -80,6 +95,7 @@ async fn world() -> World {
     );
     World {
         app,
+        agent,
         a,
         b,
         c,
@@ -109,7 +125,8 @@ async fn target_token(app: &App, user_id: i64, target_id: i64, name: &'static st
             )?;
             vole_kit::db::api_tokens::add_scope(c, id, SCOPE_NAME)?;
             c.execute(
-                "INSERT INTO api_token_targets (token_id, target_id) VALUES (?1, ?2)",
+                "INSERT INTO api_token_targets (token_id, server_id, kind, name)
+                 SELECT ?1, server_id, kind, name FROM targets WHERE id = ?2",
                 rusqlite::params![id, target_id],
             )?;
             Ok(())
@@ -166,7 +183,11 @@ async fn every_allowed_route_works_for_the_tokens_own_target() {
     assert_eq!(res.json()["status"], "queued");
 
     // The log and the run name the token.
-    let who = r#"ed via token "Sylo Update now""#;
+    let token_id = w
+        .app
+        .count("SELECT id FROM api_tokens WHERE name = 'Sylo Update now'")
+        .await;
+    let who = format!(r#"ed via token #{token_id} "Sylo Update now""#);
     assert_eq!(
         w.app
             .count_sql(format!(
@@ -180,32 +201,6 @@ async fn every_allowed_route_works_for_the_tokens_own_target() {
     let res = bearer(&w.app, "GET", &format!("/api/v1/runs/{run}"), &token).await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
     assert_eq!(res.json()["requested_by"], who);
-
-    // Schedule another target's worth: its own, later.
-    let token_c = target_token(&w.app, editor, w.c, "Sylo C").await;
-    let soon = jiff::Timestamp::now()
-        .checked_add(jiff::SignedDuration::from_hours(24))
-        .unwrap()
-        .to_string();
-    let res = call(
-        &w.app,
-        "POST",
-        &format!("/api/v1/targets/{}/schedule", w.c),
-        &token_c,
-        json!({"version_key": w.key_c, "at": soon}),
-    )
-    .await;
-    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
-    assert!(res.json()["scheduled_for"].is_string());
-    let run_c = res.json()["run_id"].as_i64().unwrap();
-    assert_eq!(
-        w.app
-            .count_sql(format!(
-                "SELECT COUNT(*) FROM actions WHERE action = 'schedule' AND username = 'ed via token \"Sylo C\"' AND run_id = {run_c}"
-            ))
-            .await,
-        1
-    );
 }
 
 #[tokio::test]
@@ -264,6 +259,11 @@ async fn everything_else_is_refused() {
             json!({"at": "2099-01-01T00:00:00Z"}),
         ),
         // Its own target's other actions.
+        (
+            "POST",
+            format!("/api/v1/targets/{a}/schedule"),
+            json!({"version_key": w.key_a, "at": "2099-01-01T00:00:00Z"}),
+        ),
         ("POST", format!("/api/v1/targets/{a}/skip"), json!({})),
         (
             "POST",
@@ -475,29 +475,7 @@ async fn a_token_without_a_target_is_refused_everywhere() {
         assert_eq!(res.status, StatusCode::FORBIDDEN, "{method} {path}");
     }
 
-    // When the target goes, the token goes dead with it; revoking removes
-    // the binding.
-    let token = target_token(&w.app, editor, w.b, "b").await;
-    assert_eq!(
-        bearer(&w.app, "GET", &format!("/api/v1/targets/{}", w.b), &token)
-            .await
-            .status,
-        StatusCode::OK
-    );
-    w.app
-        .exec(format!("DELETE FROM targets WHERE id = {}", w.b))
-        .await;
-    assert_eq!(
-        w.app.count("SELECT COUNT(*) FROM api_token_targets").await,
-        0,
-        "the binding goes with the target"
-    );
-    assert_eq!(
-        bearer(&w.app, "GET", &format!("/api/v1/targets/{}", w.b), &token)
-            .await
-            .status,
-        StatusCode::FORBIDDEN
-    );
+    // Revoking removes the binding with the token.
     let token = target_token(&w.app, editor, w.a, "a").await;
     w.app.exec("DELETE FROM api_tokens".to_string()).await;
     assert_eq!(
@@ -509,6 +487,86 @@ async fn a_token_without_a_target_is_refused_everywhere() {
             .await
             .status,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+/// A container that is re-created or left out of one scan comes back as a
+/// new target row: its token waits for it (like its other settings), and
+/// works again when it returns. After the 30 days the settings are kept,
+/// the binding goes too.
+#[tokio::test]
+async fn a_token_waits_for_its_target_to_come_back() {
+    let w = world().await;
+    let editor = add_user(&w.app, "ed", "editor").await;
+    let token = target_token(&w.app, editor, w.b, "b").await;
+    let get = |id: i64| {
+        let (app, token) = (&w.app, &token);
+        async move {
+            bearer(app, "GET", &format!("/api/v1/targets/{id}"), token)
+                .await
+                .status
+        }
+    };
+    assert_eq!(get(w.b).await, StatusCode::OK);
+
+    // Left out of one inventory: refused while it is gone, listed as such.
+    send_inventory(&w.app, &w.agent, &["ww-test-a", "ww-test-c"]).await;
+    assert_eq!(
+        w.app
+            .count("SELECT COUNT(*) FROM targets WHERE name = 'ww-test-b'")
+            .await,
+        0
+    );
+    assert_eq!(get(w.b).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        bearer(&w.app, "GET", "/api/v1/updates", &token)
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        w.app.count("SELECT COUNT(*) FROM api_token_targets").await,
+        1
+    );
+    let mut admin = Web::new(&w.app, "root", "admin").await;
+    assert!(
+        admin
+            .get("/settings/target-tokens")
+            .await
+            .body
+            .contains("Target missing")
+    );
+
+    // Back (as a new row): the same token works for it, the old id doesn't.
+    send_inventory(&w.app, &w.agent, &["ww-test-a", "ww-test-b", "ww-test-c"]).await;
+    let new_b = w
+        .app
+        .count("SELECT id FROM targets WHERE name = 'ww-test-b'")
+        .await;
+    assert_ne!(new_b, w.b, "a new row");
+    assert_eq!(get(new_b).await, StatusCode::OK);
+    assert_eq!(get(w.b).await, StatusCode::FORBIDDEN);
+    assert_eq!(get(w.a).await, StatusCode::FORBIDDEN);
+
+    // Gone for more than the 30 days its settings are kept: the binding goes.
+    send_inventory(&w.app, &w.agent, &["ww-test-a", "ww-test-c"]).await;
+    w.app
+        .exec("UPDATE target_memory SET gone_at = datetime('now', '-31 days')".to_string())
+        .await;
+    send_inventory(&w.app, &w.agent, &["ww-test-a", "ww-test-c"]).await;
+    assert_eq!(
+        w.app.count("SELECT COUNT(*) FROM api_token_targets").await,
+        0
+    );
+    send_inventory(&w.app, &w.agent, &["ww-test-a", "ww-test-b", "ww-test-c"]).await;
+    let newest_b = w
+        .app
+        .count("SELECT id FROM targets WHERE name = 'ww-test-b'")
+        .await;
+    assert_eq!(
+        get(newest_b).await,
+        StatusCode::FORBIDDEN,
+        "a new target again"
     );
 }
 
@@ -530,10 +588,38 @@ async fn the_target_tokens_page_makes_revokes_and_hides_them() {
     }
     // Nothing to pick: refused, nothing made.
     for form in [
-        vec![("name", "x"), ("target", ""), ("expires", "90")],
-        vec![("name", "x"), ("target", "999"), ("expires", "90")],
-        vec![("name", ""), ("target", "1"), ("expires", "90")],
-        vec![("name", "x"), ("target", "1"), ("expires", "1")],
+        vec![
+            ("name", "x"),
+            ("target", ""),
+            ("expires", "90"),
+            ("current_password", common::PASSWORD),
+        ],
+        vec![
+            ("name", "x"),
+            ("target", "999"),
+            ("expires", "90"),
+            ("current_password", common::PASSWORD),
+        ],
+        vec![
+            ("name", ""),
+            ("target", "1"),
+            ("expires", "90"),
+            ("current_password", common::PASSWORD),
+        ],
+        vec![
+            ("name", "x"),
+            ("target", "1"),
+            ("expires", "1"),
+            ("current_password", common::PASSWORD),
+        ],
+        // Right form, but no or a wrong password.
+        vec![("name", "x"), ("target", "1"), ("expires", "90")],
+        vec![
+            ("name", "x"),
+            ("target", "1"),
+            ("expires", "90"),
+            ("current_password", "not-the-password"),
+        ],
     ] {
         let res = ed.post("/settings/target-tokens", &form).await;
         assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{form:?}");
@@ -546,7 +632,12 @@ async fn the_target_tokens_page_makes_revokes_and_hides_them() {
     let res = viewer
         .post(
             "/settings/target-tokens",
-            &[("name", "x"), ("target", &a), ("expires", "90")],
+            &[
+                ("name", "x"),
+                ("target", &a),
+                ("expires", "90"),
+                ("current_password", common::PASSWORD),
+            ],
         )
         .await;
     assert_eq!(res.status, StatusCode::FORBIDDEN);
@@ -554,7 +645,12 @@ async fn the_target_tokens_page_makes_revokes_and_hides_them() {
     let res = ed
         .post(
             "/settings/target-tokens",
-            &[("name", "Sylo"), ("target", &a), ("expires", "90")],
+            &[
+                ("name", "Sylo"),
+                ("target", &a),
+                ("expires", "90"),
+                ("current_password", common::PASSWORD),
+            ],
         )
         .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.body);
@@ -572,13 +668,13 @@ async fn the_target_tokens_page_makes_revokes_and_hides_them() {
     // It is a target token for the picked target, read-only, expiring.
     assert_eq!(
         w.app
-            .count_sql(format!(
+            .count_sql(
                 "SELECT COUNT(*) FROM api_token_targets b JOIN api_tokens t ON t.id = b.token_id
                  JOIN api_token_scopes s ON s.token_id = t.id
-                 WHERE b.target_id = {} AND t.scope = 'read' AND t.expires_at IS NOT NULL
-                   AND s.scope = 'target:approve'",
-                w.a
-            ))
+                 WHERE b.name = 'ww-test-a' AND t.scope = 'read' AND t.expires_at IS NOT NULL
+                   AND s.scope = 'target:approve'"
+                    .to_string()
+            )
             .await,
         1
     );
@@ -640,7 +736,6 @@ async fn the_reference_lists_the_scope() {
     for (path, method) in [
         ("/api/v1/targets/{id}", "get"),
         ("/api/v1/targets/{id}/approve", "post"),
-        ("/api/v1/targets/{id}/schedule", "post"),
         ("/api/v1/updates", "get"),
         ("/api/v1/runs/{id}", "get"),
     ] {
@@ -655,4 +750,182 @@ async fn the_reference_lists_the_scope() {
             "{method} {path} doesn't mention target tokens"
         );
     }
+}
+
+#[tokio::test]
+async fn a_target_token_counts_against_the_token_cap() {
+    let w = world().await;
+    let mut ed = Web::new(&w.app, "ed", "editor").await;
+    let id = w
+        .app
+        .count("SELECT id FROM users WHERE username = 'ed'")
+        .await;
+    // The kit's cap is 50 tokens of any kind per user.
+    for _ in 0..50 {
+        api_token(&w.app, id, TokenScope::Read).await;
+    }
+    let a = w.a.to_string();
+    let res = ed
+        .post(
+            "/settings/target-tokens",
+            &[
+                ("name", "one too many"),
+                ("target", &a),
+                ("expires", "90"),
+                ("current_password", common::PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", res.body);
+    assert_eq!(
+        w.app.count("SELECT COUNT(*) FROM api_token_targets").await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn the_audit_name_carries_the_token_id_and_no_quotes() {
+    let w = world().await;
+    let editor = add_user(&w.app, "ed", "editor").await;
+    let token = target_token(&w.app, editor, w.a, "Sylo\" approved by \"root\nx").await;
+    let res = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/targets/{}/approve", w.a),
+        &token,
+        json!({"version_key": w.key_a}),
+    )
+    .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let id = w
+        .app
+        .count("SELECT id FROM api_tokens WHERE name LIKE 'Sylo%'")
+        .await;
+    let run = res.json()["run_id"].as_i64().unwrap();
+    let res = bearer(&w.app, "GET", &format!("/api/v1/runs/{run}"), &token).await;
+    assert_eq!(
+        res.json()["requested_by"],
+        format!("ed via token #{id} \"Sylo' approved by 'rootx\"")
+    );
+}
+
+#[tokio::test]
+async fn heads_expired_tokens_disabled_users_and_the_web_pages() {
+    let w = world().await;
+    let editor = add_user(&w.app, "ed", "editor").await;
+    let token = target_token(&w.app, editor, w.a, "Sylo").await;
+    let runs = w.app.count("SELECT COUNT(*) FROM runs").await;
+
+    // HEAD on the allowed GET routes is not one of the five routes.
+    let (a, b) = (w.a, w.b);
+    for path in [
+        format!("/api/v1/targets/{a}"),
+        "/api/v1/updates".to_string(),
+    ] {
+        let res = call(&w.app, "HEAD", &path, &token, json!({})).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "HEAD {path}");
+    }
+
+    // The pages of the web UI take no Bearer token (only the API does).
+    for (method, path) in [
+        ("POST", format!("/targets/{b}/approve")),
+        ("POST", format!("/targets/{a}/approve")),
+        ("GET", "/updates".to_string()),
+        ("GET", format!("/targets/{a}")),
+        ("GET", "/settings/target-tokens".to_string()),
+    ] {
+        let res = call(&w.app, method, &path, &token, json!({})).await;
+        assert!(
+            [
+                StatusCode::UNAUTHORIZED,
+                StatusCode::FORBIDDEN,
+                StatusCode::SEE_OTHER
+            ]
+            .contains(&res.status),
+            "{method} {path}: {}",
+            res.status
+        );
+    }
+    assert_eq!(w.app.count("SELECT COUNT(*) FROM runs").await, runs);
+
+    // Expired, or the user disabled: not a token any more.
+    let get = |token: String| {
+        let app = &w.app;
+        async move {
+            bearer(app, "GET", &format!("/api/v1/targets/{a}"), &token)
+                .await
+                .status
+        }
+    };
+    assert_eq!(get(token.clone()).await, StatusCode::OK);
+    w.app
+        .exec("UPDATE api_tokens SET expires_at = datetime('now', '-1 second')".to_string())
+        .await;
+    assert_eq!(get(token.clone()).await, StatusCode::UNAUTHORIZED);
+    w.app
+        .exec("UPDATE api_tokens SET expires_at = NULL".to_string())
+        .await;
+    assert_eq!(get(token.clone()).await, StatusCode::OK);
+    w.app
+        .exec(format!("UPDATE users SET active = 0 WHERE id = {editor}"))
+        .await;
+    assert_eq!(get(token).await, StatusCode::UNAUTHORIZED);
+}
+
+/// Every documented route of the API, except the four a target token may
+/// use, is refused for it (with its own target's and run's ids filled in), so
+/// a route added later is covered without touching this test.
+#[tokio::test]
+async fn no_documented_route_but_the_open_ones_is_open() {
+    const OPEN: &[(&str, &str)] = &[
+        ("GET", "/api/v1/targets/{id}"),
+        ("POST", "/api/v1/targets/{id}/approve"),
+        ("GET", "/api/v1/updates"),
+        ("GET", "/api/v1/runs/{id}"),
+    ];
+    let w = world().await;
+    let editor = add_user(&w.app, "ed", "editor").await;
+    let token = target_token(&w.app, editor, w.a, "Sylo").await;
+    let res = call(
+        &w.app,
+        "POST",
+        &format!("/api/v1/targets/{}/approve", w.a),
+        &token,
+        json!({"version_key": w.key_a}),
+    )
+    .await;
+    let run_a = res.json()["run_id"].as_i64().unwrap();
+    let mut tried = 0;
+    for route in wise_wren::api::DOCS
+        .routes
+        .iter()
+        .filter(|r| r.path.starts_with("/api/v1/"))
+    {
+        if OPEN.contains(&(route.method, route.path)) {
+            continue;
+        }
+        let id = if route.path.starts_with("/api/v1/runs/") {
+            run_a
+        } else {
+            w.a
+        };
+        let path = route
+            .path
+            .replace("{id}", &id.to_string())
+            .replace("{link}", "1")
+            .replace("{ref}", "x");
+        let res = call(&w.app, route.method, &path, &token, json!({})).await;
+        assert_eq!(
+            res.status,
+            StatusCode::FORBIDDEN,
+            "{} {}: {}",
+            route.method,
+            route.path,
+            res.body
+        );
+        tried += 1;
+    }
+    assert!(tried > 30, "only {tried} routes were tried");
+    // Nothing the refused calls could have done happened.
+    assert_eq!(w.app.count("SELECT COUNT(*) FROM runs").await, 1);
 }

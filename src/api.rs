@@ -70,9 +70,9 @@ fn target_tokens_section(out: &mut String) {
 /// What a target token (scope `target:approve`) may do.
 const TARGET_TOKENS_DOC: &str = "## Target tokens
 
-A target token carries the scope `target:approve` and one target. It may read and approve that target and nothing else, so a service that offers an \"Update now\" button can be given a token that cannot approve or change anything more. Make one under Settings → Target tokens (an editor or admin picks the target); it is shown once. The user it belongs to must be an editor or admin to approve.
+A target token carries the scope `target:approve` and one target. It may read and approve that target and nothing else, so a service that offers an \"Update now\" button can be given a token that cannot approve or change anything more. Make one under Settings → Target tokens (an editor or admin picks the target and confirms their password); it is shown once. The user it belongs to must be an editor or admin to approve.
 
-Allowed, for the token's own target: `GET /api/v1/targets/{id}`, `GET /api/v1/updates` (only that target), `GET /api/v1/runs/{id}` (only its runs), `POST /api/v1/targets/{id}/approve` and `POST /api/v1/targets/{id}/schedule`. Every other route, every other target and run, and MCP answer `403`. The approval is logged and shown as `<user> via token \"<name>\"`.
+Allowed, for the token's own target: `GET /api/v1/targets/{id}`, `GET /api/v1/updates` (only that target), `GET /api/v1/runs/{id}` (only its runs) and `POST /api/v1/targets/{id}/approve`. Every other route, every other target and run, and MCP answer `403`. The approval is logged and shown as `<user> via token #<id> \"<name>\"`.
 
 ";
 
@@ -124,7 +124,7 @@ const OWN_ROUTES: &[RouteDoc] = &[
         r("POST", "/api/v1/targets/{id}/approve", "editor", "Runs", "Approve the target's available update now. Send `{\"version_key\": \"…\"}` (the target's `version_key`) to approve exactly the version you saw: a different one is refused, and if a newer version appears before the run starts, the approval lapses. Refused for `notify` targets; `409` with the reason when the server's agent would refuse it (the target's `blocked_reason`: not allowed by its `[updates]`, a stack folder outside its roots, files it can't reach). Needs an API token with write access, or a target token (scope `target:approve`) for this very target, which may do nothing else (see Target tokens).")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…"}"#)
             .res(r#"{"run_id": 12, "status": "queued"}"#),
-        r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule. `409` as for approve. A target token (scope `target:approve`) may schedule its own target.")
+        r("POST", "/api/v1/targets/{id}/schedule", "editor", "Schedules", "Approve the target's available update for a later time: `at` is RFC 3339 with an offset, or `YYYY-MM-DD HH:MM:SS` in UTC; at most 90 days ahead. Send `version_key` as for approve: the approval is for exactly that version and lapses if a newer one appears first. When the target has linked Vigilant Vole monitors, Wren creates a planned maintenance window in VV ahead of time and moves or deletes it with the schedule. `409` as for approve.")
             .req(r#"{"version_key": "ww-test-container=sha256:4f90b33d…", "at": "2026-10-24T03:00:00+02:00"}"#)
             .res(r#"{"run_id": 14, "status": "queued", "scheduled_for": "2026-10-24 01:00:00"}"#),
         r("POST", "/api/v1/runs/{id}/reschedule", "editor", "Schedules", "Move a scheduled run that hasn't started (`at` as for schedule). Its planned window in Vigilant Vole moves with it. A scheduled agent update (`kind` `agent_update`) can only be moved by an admin; anyone else gets `403`.")
@@ -259,7 +259,7 @@ const ERROR_CODES: &[ErrorCode] = &[
 pub static DOCS: DocsSpec = DocsSpec {
     routes: &ALL_ROUTES,
     openapi_title: "Wise Wren API",
-    openapi_description: "REST API for Wise Wren. Authenticate with `Authorization: Bearer ww_…`. Reads need any token; writes need a token with write access (a session cookie is never enough) of an editor or, where marked, an admin. A target token (scope `target:approve`, made under Settings → Target tokens) is the one exception: it can read and approve a single target (`GET /api/v1/targets/{id}`, `GET /api/v1/updates`, `GET /api/v1/runs/{id}`, `POST /api/v1/targets/{id}/approve` and `/schedule`) and gets 403 everywhere else.",
+    openapi_description: "REST API for Wise Wren. Authenticate with `Authorization: Bearer ww_…`. Reads need any token; writes need a token with write access (a session cookie is never enough) of an editor or, where marked, an admin. A target token (scope `target:approve`, made under Settings → Target tokens) is the one exception: it can read and approve a single target (`GET /api/v1/targets/{id}`, `GET /api/v1/updates`, `GET /api/v1/runs/{id}`, `POST /api/v1/targets/{id}/approve`) and gets 403 everywhere else.",
     bearer_description: "API token (ww_…)",
     credentials: &[Credential {
         access: "agent token",
@@ -446,20 +446,20 @@ async fn updates_route(
     _user: CurrentUser,
     scoped: Option<Extension<crate::target_tokens::Scoped>>,
 ) -> ApiResult<Json<Value>> {
-    let mut list = target_list(
-        &core,
-        Filter {
-            server_id: None,
-            updates_only: true,
-        },
-    )
-    .await?;
-    if let Some(Extension(scoped)) = scoped
-        && let Some(rows) = list["targets"].as_array_mut()
-    {
-        rows.retain(|t| t["id"].as_i64() == Some(scoped.target_id));
-    }
-    Ok(Json(list))
+    let filter = Filter {
+        server_id: None,
+        updates_only: true,
+    };
+    // Filtered before it becomes JSON, so no change to the answer's shape
+    // can let a target token see the others.
+    let only = scoped.map(|Extension(s)| s.target_id);
+    let rows = core.with_conn(move |c| targets::list(c, filter)).await?;
+    let rows: Vec<Value> = rows
+        .iter()
+        .filter(|t| only.is_none_or(|id| t.id == id))
+        .map(target_json)
+        .collect();
+    Ok(Json(json!({ "targets": rows })))
 }
 
 /// The servers as the API and MCP give them, each with where its agent

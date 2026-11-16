@@ -12,18 +12,24 @@
 //! | Route | Allowed when |
 //! |---|---|
 //! | `GET /api/v1/targets/{id}` | `id` is the token's target |
-//! | `POST /api/v1/targets/{id}/approve`, `/schedule` | the same, and the user the token belongs to is an editor or admin |
+//! | `POST /api/v1/targets/{id}/approve` | the same, and the user the token belongs to is an editor or admin |
 //! | `GET /api/v1/updates` | always, but the answer holds only the token's target |
 //! | `GET /api/v1/runs/{id}` | the run belongs to the token's target |
 //!
 //! Everything else answers 403: other targets and runs, servers, settings,
 //! the lists, every other action, the push routes, the reference pages.
 //! `/mcp` is out of reach too (a token that can't read can't use MCP). A
-//! token with the scope but no target (the target was deleted, or the token
-//! came from the plain API tokens page) is refused everywhere.
+//! token with the scope but no target (the token came from the plain API tokens
+//! page), or whose target is missing from the inventory for now, is refused
+//! everywhere; the binding is by (server, kind, name) like `target_memory`, so
+//! the token works again when the target returns.
 //!
-//! The approval is logged and stored as `<user> via token "<name>"`, so the
-//! actions list and the run's "requested by" name the token.
+//! The approval is logged and stored as `<user> via token #<id> "<name>"`, so the
+//! actions list and the run's "requested by" name the token (the id tells two
+//! tokens of the same name apart).
+//!
+//! Making a token asks for the creator's password, like the API tokens page
+//! does for tokens that outlast a stolen session.
 //!
 //! Tokens are made here (Settings → Target tokens), where the target is
 //! picked, and revoked here or on the API tokens page.
@@ -39,7 +45,7 @@ use axum_extra::extract::cookie::SignedCookieJar;
 use rusqlite::{OptionalExtension, params};
 use serde::Deserialize;
 use vole_kit::auth::{AuthMethod, CurrentUser, ExtraScope, Role, Scopes, TokenScope, tokens};
-use vole_kit::db::api_tokens;
+use vole_kit::db::{api_tokens, users as db_users};
 use vole_kit::http::{ApiError, ApiResult, HtmlTemplate};
 use vole_kit::i18n::{self, Tr as _};
 use vole_kit::page::{PageCtx, SettingsTab, TabAccess, flash};
@@ -69,8 +75,9 @@ pub const TAB: SettingsTab = SettingsTab {
     access: TabAccess::Editors,
 };
 
-/// Per-user cap, like the kit's for API tokens.
-const MAX_PER_USER: i64 = 50;
+/// The kit's cap of API tokens per user (`MAX_TOKENS_PER_USER`); a target token
+/// counts against it with the others.
+const MAX_TOKENS_PER_USER: usize = 50;
 /// Allowed expiry choices in days (`None` = never), as on the API tokens page.
 const EXPIRY_CHOICES: &[(&str, Option<i64>)] = &[
     ("30", Some(30)),
@@ -120,7 +127,7 @@ fn classify(method: &Method, path: &str) -> Route {
     let parts: Vec<&str> = rest.split('/').collect();
     let found = match (method, parts.as_slice()) {
         (&Method::GET, ["targets", id]) => id_of(id).map(|id| Route::Target { id, write: false }),
-        (&Method::POST, ["targets", id, "approve" | "schedule"]) => {
+        (&Method::POST, ["targets", id, "approve"]) => {
             id_of(id).map(|id| Route::Target { id, write: true })
         }
         (&Method::GET, ["updates"]) => Some(Route::Updates),
@@ -150,23 +157,29 @@ pub async fn guard(State(core): State<Core>, mut request: Request, next: Next) -
     else {
         return ApiError::Forbidden.into_response();
     };
+    // The token's target, found by its identity as it is now (none while
+    // it is missing from the inventory), and the token's name.
     let found = core
         .with_conn(move |c| {
             c.query_row(
-                "SELECT b.target_id, t.name FROM api_token_targets b
-                 JOIN api_tokens t ON t.id = b.token_id WHERE b.token_id = ?1",
+                "SELECT t.id, k.name FROM api_token_targets b
+                 JOIN api_tokens k ON k.id = b.token_id
+                 LEFT JOIN targets t ON t.server_id = b.server_id AND t.kind = b.kind AND t.name = b.name
+                 WHERE b.token_id = ?1",
                 [token_id],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()
         })
         .await;
     let (target_id, name) = match found {
-        Ok(Some(bound)) => bound,
-        Ok(None) => return refused(token_id, &request),
+        Ok(Some((Some(target), name))) => (target, name),
+        Ok(_) => return refused(token_id, &request),
         Err(e) => return e.into_response(),
     };
-    let allowed = match classify(request.method(), request.uri().path()) {
+    let route = classify(request.method(), request.uri().path());
+    let writes = matches!(route, Route::Target { write: true, .. });
+    let allowed = match route {
         Route::Target { id, write } if id == target_id => {
             // Approving is an editor's job, whatever the token says.
             !write || user.may_act_as(Role::Editor)
@@ -191,11 +204,20 @@ pub async fn guard(State(core): State<Core>, mut request: Request, next: Next) -
     if !allowed {
         return refused(token_id, &request);
     }
-    // The routes below ask for an editor when they write: this token is
-    // allowed that, for these two actions on its own target (never more than
-    // the user it belongs to is). The name is what the log and the run record.
-    user.role = Role::Editor;
-    user.username = format!("{} via token \"{name}\"", user.username);
+    // The one write a target token may make is an approval, and for that it
+    // is an editor (it was checked above that the user is one); it never is
+    // more than the user it belongs to. The name is what the log and the run
+    // record: the token's id tells tokens of one name apart, and no quote or
+    // control character in the name can fake another entry.
+    if writes {
+        user.role = Role::Editor;
+    }
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c == '"' { '\'' } else { c })
+        .collect();
+    user.username = format!("{} via token #{token_id} \"{name}\"", user.username);
     request.extensions_mut().insert(user);
     request.extensions_mut().insert(Scoped { target_id });
     next.run(request).await
@@ -224,6 +246,8 @@ struct Row {
     last_used_at: Option<String>,
     expires_at: Option<String>,
     expired: bool,
+    /// Its target is missing from the inventory for now.
+    gone: bool,
 }
 
 struct Choice {
@@ -255,13 +279,14 @@ async fn rows(core: &Core, user: &CurrentUser) -> ApiResult<Vec<Row>> {
     let (all, uid) = (user.is_admin(), user.id);
     core.with_conn(move |c| {
         c.prepare(
-            "SELECT t.id, t.name, t.prefix, u.username, s.name, g.name, t.last_used_at, t.expires_at,
-                    (t.expires_at IS NOT NULL AND t.expires_at <= datetime('now'))
+            "SELECT t.id, t.name, t.prefix, u.username, s.name, b.name, t.last_used_at, t.expires_at,
+                    (t.expires_at IS NOT NULL AND t.expires_at <= datetime('now')),
+                    NOT EXISTS (SELECT 1 FROM targets g WHERE g.server_id = b.server_id
+                                  AND g.kind = b.kind AND g.name = b.name)
              FROM api_token_targets b
              JOIN api_tokens t ON t.id = b.token_id
              JOIN users u ON u.id = t.user_id
-             JOIN targets g ON g.id = b.target_id
-             JOIN servers s ON s.id = g.server_id
+             JOIN servers s ON s.id = b.server_id
              WHERE ?1 OR t.user_id = ?2
              ORDER BY t.created_at DESC, t.id DESC",
         )?
@@ -276,6 +301,7 @@ async fn rows(core: &Core, user: &CurrentUser) -> ApiResult<Vec<Row>> {
                 last_used_at: r.get(6)?,
                 expires_at: r.get(7)?,
                 expired: r.get(8)?,
+                gone: r.get(9)?,
             })
         })?
         .collect()
@@ -351,6 +377,47 @@ struct CreateForm {
     target: String,
     #[serde(default)]
     expires: String,
+    /// The creator's current password: a target token can approve updates,
+    /// so it outlasts a stolen session like a write token does.
+    #[serde(default)]
+    current_password: String,
+}
+
+/// Checks the signed-in user's password, as the kit does for tokens that
+/// outlast a stolen session (its helper isn't public, but the pieces are):
+/// the same per-account budget of wrong guesses (`reauth:<id>`), counted
+/// before the password is checked. `Err` is the text for the form.
+async fn confirm_password(
+    core: &Core,
+    user: &CurrentUser,
+    password: String,
+) -> ApiResult<Result<(), String>> {
+    if password.is_empty() {
+        return Ok(Err(i18n::t("sec.reauth_needed").into()));
+    }
+    let key = format!("reauth:{}", user.id);
+    if let Err(wait) = core.limits.account.reserve(&key, std::time::Instant::now()) {
+        let secs = wait.as_secs().max(1).to_string();
+        return Ok(Err(i18n::tf("sec.too_many_secs", &[("n", &secs)])));
+    }
+    let id = user.id;
+    let record = match core.with_conn(move |c| db_users::get_user(c, id)).await {
+        Ok(Some(record)) => record,
+        other => {
+            // Not a guess: don't count it.
+            core.limits.account.release(&key);
+            return Err(other.err().unwrap_or(ApiError::Unauthorized));
+        }
+    };
+    if password.len() <= vole_kit::auth::MAX_PASSWORD_LEN
+        && vole_kit::auth::verify_password_async(record.password_hash, password).await?
+    {
+        core.limits.account.clear(&key);
+        Ok(Ok(()))
+    } else {
+        // Already counted by `reserve`.
+        Ok(Err(i18n::t("sec.wrong_password").into()))
+    }
 }
 
 async fn create(
@@ -366,56 +433,52 @@ async fn create(
         .iter()
         .find(|(key, _)| *key == form.expires.trim())
         .map(|(_, days)| *days);
-    let exists = match target_id {
-        Some(id) => core
-            .with_conn(move |c| targets::get(c, id))
-            .await?
-            .is_some(),
-        None => false,
+    // The target's identity, which is what the token is bound to.
+    let target = match target_id {
+        Some(id) => core.with_conn(move |c| targets::get(c, id)).await?,
+        None => None,
     };
     let uid = user.id;
-    let count: i64 = core
-        .with_conn(move |c| {
-            c.query_row(
-                "SELECT COUNT(*) FROM api_token_targets b JOIN api_tokens t ON t.id = b.token_id
-                 WHERE t.user_id = ?1",
-                [uid],
-                |r| r.get(0),
-            )
-        })
-        .await?;
+    let count = core
+        .with_conn(move |c| api_tokens::list_for_user(c, uid))
+        .await?
+        .len();
     let error = if name.is_empty() || name.chars().count() > 80 {
-        Some(i18n::t("tokens.err_name"))
-    } else if !exists {
-        Some(i18n::t("target_tokens.err_target"))
+        Some(i18n::t("tokens.err_name").to_string())
+    } else if target.is_none() {
+        Some(i18n::t("target_tokens.err_target").to_string())
     } else if expires.is_none() {
-        Some(i18n::t("tokens.err_expiry"))
-    } else if count >= MAX_PER_USER {
-        Some(i18n::t("tokens.err_limit"))
+        Some(i18n::t("tokens.err_expiry").to_string())
+    } else if count >= MAX_TOKENS_PER_USER {
+        Some(i18n::t("tokens.err_limit").to_string())
     } else {
-        None
+        // Last, so that a form that is wrong anyway doesn't cost a guess.
+        confirm_password(&core, &user, form.current_password)
+            .await?
+            .err()
     };
-    if let Some(error) = error {
+    let (Some(target), None) = (target, &error) else {
         let (jar, response) = render(
             &core,
             &user,
             jar,
             None,
-            error.to_string(),
+            error.unwrap_or_default(),
             (form.name, target_id.unwrap_or(0)),
         )
         .await?;
         let mut response = response;
         *response.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
         return Ok((jar, response).into_response());
-    }
-    let (target_id, expires_in) = (target_id.unwrap_or(0), expires.flatten());
+    };
+    let expires_in = expires.flatten();
     let token = tokens::generate();
     let (hash, prefix, stored_name) = (
         tokens::hash(&token),
         tokens::display_prefix(&token),
         name.clone(),
     );
+    let (server_id, kind, target_name) = (target.server_id, target.kind, target.name);
     core.with_conn(move |c| {
         let tx = c.transaction()?;
         let id = api_tokens::insert(
@@ -429,18 +492,18 @@ async fn create(
         )?;
         api_tokens::add_scope(&tx, id, SCOPE_NAME)?;
         tx.execute(
-            "INSERT INTO api_token_targets (token_id, target_id) VALUES (?1, ?2)",
-            params![id, target_id],
+            "INSERT INTO api_token_targets (token_id, server_id, kind, name) VALUES (?1, ?2, ?3, ?4)",
+            params![id, server_id, kind, target_name],
         )?;
         tx.commit()
     })
     .await?;
-    tracing::info!(user = %user.username, token = %name, target_id, "target token created");
+    tracing::info!(user = %user.username, token = %name, target_id = target.id, "target token created");
     let jar = flash(jar, "success", i18n::t("tokens.created"));
     let created = Created {
         token,
         name,
-        target_id,
+        target_id: target.id,
     };
     let (jar, response) = render(
         &core,
@@ -467,10 +530,6 @@ mod tests {
             classify(&M::POST, "/api/v1/targets/7/approve"),
             target(7, true)
         );
-        assert_eq!(
-            classify(&M::POST, "/api/v1/targets/7/schedule"),
-            target(7, true)
-        );
         assert_eq!(classify(&M::GET, "/api/v1/updates"), Route::Updates);
         assert_eq!(classify(&M::GET, "/api/v1/runs/12"), Route::Run(12));
         for (method, path) in [
@@ -479,6 +538,7 @@ mod tests {
             (M::GET, "/api/v1/targets/7/"),
             (M::GET, "/api/v1/targets/7/approve"),
             (M::POST, "/api/v1/targets/7"),
+            (M::POST, "/api/v1/targets/7/schedule"),
             (M::POST, "/api/v1/targets/7/skip"),
             (M::POST, "/api/v1/targets/7/mode"),
             (M::POST, "/api/v1/targets/7/monitors"),

@@ -33,7 +33,7 @@
           {%- for t in rows %}
           <tr id="token-{{ t.id }}">
             <td class="td-primary">{{ t.name }} <span class="mono muted">{{ t.prefix }}…</span></td>
-            <td data-label="{{ tr("target_tokens.target") }}"><span class="badge badge-brand">{{ tr("target_tokens.scope") }}</span> {{ t.target }}</td>
+            <td data-label="{{ tr("target_tokens.target") }}"><span class="badge badge-brand">{{ tr("target_tokens.scope") }}</span> {{ t.target }}{% if t.gone %} <span class="pill status-paused">{{ tr("target_tokens.gone") }}</span>{% endif %}</td>
             <td data-label="{{ tr("login.username") }}">{{ t.user }}</td>
             <td data-label="{{ tr("tokens.last_used") }}">{% match t.last_used_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}</td>
             <td data-label="{{ tr("detail.expires") }}">{% if t.expired %}<span class="pill status-paused">{{ tr("tokens.expired") }}</span>{% else %}{% match t.expires_at %}{% when Some(at) %}{{ m::time_ago(at) }}{% when None %}{{ tr("common.never") }}{% endmatch %}{% endif %}</td>
@@ -81,6 +81,11 @@
         <option value="365">{{ tr("tokens.in_365") }}</option>
         <option value="never">{{ tr("common.never") }}</option>
       </select>
+    <div class="field">
+      <label class="label" for="tt-password">{{ tr("sec.your_password") }}</label>
+      <input id="tt-password" name="current_password" type="password" required maxlength="1024" autocomplete="current-password" aria-describedby="tt-password-help">
+      <p class="help" id="tt-password-help">{{ tr("target_tokens.password_help") }}</p>
+    </div>
     </div>
   </div>
   <div class="form-actions">
