@@ -15,8 +15,10 @@ status pages, and VV's monitors become part of the health check:
 - A linked **group** stands for its child monitors (nested groups too; a paused group and its children are left
   out): Wren judges the children by their own results and never by the group's, which says nothing while its
   children are in maintenance. A child that has no result at all (a push monitor, a monitor an agent checks) doesn't
-  hold the update back as long as other monitors have results; the run log names it as not judged. If no monitor has
-  any result, nothing is confirmed and the update isn't called healthy.
+  hold the update back as long as other monitors have results; the run log names it as not judged, and for such a
+  monitor one `up` since the update is enough. A child that VV can check on demand but that has no fresh result
+  after the check keeps the update waiting. If no monitor has any result, nothing is confirmed and the update
+  isn't called healthy.
 
 ## Needs Vigilant Vole 0.9.0 or later
 

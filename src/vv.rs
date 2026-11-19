@@ -197,6 +197,13 @@ impl Monitor {
     pub fn is_group(&self) -> bool {
         self.kind == "group"
     }
+
+    /// Wren can ask VV to check it on demand. A push monitor reports when
+    /// its sender does, and an agent-checked monitor has no local results,
+    /// so for those only what VV has recorded can be read.
+    pub fn checkable(&self) -> bool {
+        self.kind != "push" && !self.agent_checked
+    }
 }
 
 /// Seconds VV's clock may differ from Wren's before it counts: the `Date`
@@ -1130,6 +1137,8 @@ pub struct Watched {
     pub samples: Vec<Sample>,
     /// It is judged only because a linked group has it as a child.
     pub via_group: bool,
+    /// Wren can ask VV for a fresh check ([`Monitor::checkable`]).
+    pub checkable: bool,
 }
 
 /// The rules: from `t0` (the start of the health step) every monitor needs
@@ -1139,11 +1148,15 @@ pub struct Watched {
 /// A `down` after `t0 + need` fails at once; past `t0 + 2·need + 300 s`
 /// anything that isn't confirmed fails too. Anything else waits.
 ///
-/// A child of a linked group that has no result at all (a push monitor, one
-/// that an agent checks, a long interval) doesn't hold the verdict back while
-/// other monitors do have results: it is named in the log as not judged. When
-/// no monitor has any result, nothing is confirmed and the verdict is not
-/// `Ok`.
+/// A monitor that Wren can't have checked on demand (push, agent-checked)
+/// reports when it reports: one `up` since `t0` is enough, as long as it
+/// isn't followed by anything else for the period. If such a monitor is only
+/// a child of a linked group and has no result at all, it doesn't hold the
+/// verdict back while other monitors have results: it is named in the log as
+/// not judged. A monitor that can be checked on demand never gets that
+/// leniency: with no fresh result after the check Wren asked for, the verdict
+/// stays open (and fails at the deadline). When no monitor has any result,
+/// nothing is confirmed and the verdict is not `Ok`.
 pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[Watched]) -> Verdict {
     let deadline = t0 + 2 * need + 300;
     let mut waiting = Vec::new();
@@ -1155,7 +1168,7 @@ pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[Watched]) -> Verdict {
         let mut s: Vec<Sample> = w.samples.iter().copied().filter(|x| x.at >= t0).collect();
         s.sort_by_key(|x| x.at);
         let Some(last) = s.last() else {
-            if w.via_group {
+            if w.via_group && !w.checkable {
                 unjudged.push(name.clone());
             } else {
                 waiting.push(format!("{name}: no result yet"));
@@ -1176,12 +1189,24 @@ pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[Watched]) -> Verdict {
             ));
             continue;
         }
-        let first = s
-            .iter()
-            .rposition(|x| !x.up)
-            .map_or(s.first(), |i| s.get(i + 1))
-            .map_or(last.at, |x| x.at);
-        let span = last.at - first;
+        let (first, end) = if w.checkable {
+            // Two results a period apart (the first after the last result
+            // that wasn't up), not one.
+            let first = s
+                .iter()
+                .rposition(|x| !x.up)
+                .map_or(s.first(), |i| s.get(i + 1))
+                .map_or(last.at, |x| x.at);
+            (first, last.at)
+        } else {
+            // Up since `t0`, or since the first up after the last break.
+            let first = s
+                .iter()
+                .rposition(|x| !x.up)
+                .map_or(t0, |i| s.get(i + 1).map_or(now, |x| x.at));
+            (first, now)
+        };
+        let span = end - first;
         if span >= need {
             good.push(name.clone());
         } else {
@@ -1352,7 +1377,7 @@ async fn monitor_verdict(wren: &Wren, info: &RunInfo, t0: i64, need: i64, now: i
     let ask: Vec<usize> = (0..active.len())
         .filter(|&i| {
             let m = active[i].monitor;
-            m.kind != "push" && !m.agent_checked && stale(&fetched[i])
+            m.checkable() && stale(&fetched[i])
         })
         .collect();
     if !ask.is_empty() {
@@ -1378,6 +1403,7 @@ async fn monitor_verdict(wren: &Wren, info: &RunInfo, t0: i64, need: i64, now: i
             name: j.monitor.name.clone(),
             samples,
             via_group: j.via_group,
+            checkable: j.monitor.checkable(),
         })
         .collect();
     verdict(now, t0, need, &monitors)
@@ -1431,6 +1457,14 @@ mod tests {
             name: name.into(),
             samples,
             via_group,
+            checkable: true,
+        }
+    }
+    /// A push or agent-checked monitor.
+    fn silent(name: &str, via_group: bool, samples: Vec<Sample>) -> Watched {
+        Watched {
+            checkable: false,
+            ..watch(name, via_group, samples)
         }
     }
 
@@ -1506,32 +1540,57 @@ mod tests {
     #[test]
     fn a_group_child_without_results_does_not_hold_the_verdict() {
         let confirmed = watch("web", true, vec![up(1010), up(1200)]);
-        let silent = watch("cron", true, vec![]);
+        let cron = silent("cron", true, vec![]);
         // Another monitor has results: the silent one is named, not judged.
-        let v = verdict(1210, 1000, 180, &[confirmed.clone(), silent.clone()]);
+        let v = verdict(1210, 1000, 180, &[confirmed.clone(), cron.clone()]);
         assert!(
             matches!(&v, Verdict::Ok(l) if l.contains("not judged: cron")),
             "{v:?}"
         );
         // A directly linked monitor without results still holds it back.
-        let direct = watch("cron", false, vec![]);
+        let direct = silent("cron", false, vec![]);
         assert!(matches!(
             verdict(1210, 1000, 180, &[confirmed.clone(), direct]),
+            Verdict::Wait(_)
+        ));
+        // So does a child that can be checked on demand: it had its check
+        // and has no fresh result, so it is not "not judged" ...
+        let slow = watch("api", true, vec![]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), slow.clone()]),
+            Verdict::Wait(_)
+        ));
+        // ... and at the deadline it fails the run.
+        assert!(matches!(
+            verdict(1660, 1000, 180, &[confirmed.clone(), slow]),
+            Verdict::Failed(_)
+        ));
+        // A push child with a single up since the update is enough, however
+        // long its interval; it needs no second result.
+        let beat = silent("cron", true, vec![up(1100)]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), beat]),
+            Verdict::Ok(_)
+        ));
+        // ... unless it was down afterwards.
+        let bad_beat = silent("cron", true, vec![up(1100), down(1150)]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), bad_beat]),
             Verdict::Wait(_)
         ));
         // A group child that is down fails like any other.
         let bad = watch("api", true, vec![up(1010), down(1190)]);
         assert!(matches!(
-            verdict(1200, 1000, 180, &[confirmed, silent.clone(), bad]),
+            verdict(1200, 1000, 180, &[confirmed, cron.clone(), bad]),
             Verdict::Failed(_)
         ));
         // No monitor with any result: never ok, and failed at the deadline.
         assert!(matches!(
-            verdict(1210, 1000, 180, std::slice::from_ref(&silent)),
+            verdict(1210, 1000, 180, std::slice::from_ref(&cron)),
             Verdict::Wait(_)
         ));
         assert!(matches!(
-            verdict(1660, 1000, 180, std::slice::from_ref(&silent)),
+            verdict(1660, 1000, 180, std::slice::from_ref(&cron)),
             Verdict::Failed(_)
         ));
     }

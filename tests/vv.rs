@@ -1102,6 +1102,60 @@ async fn a_group_child_that_cannot_report_does_not_roll_the_update_back() {
 }
 
 #[tokio::test]
+async fn a_checkable_child_without_a_fresh_result_keeps_the_verdict_open() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    // 11 is up for the period; 12 (http) has no result and VV can't check it
+    // now (409, or the check timed out): it is not "not judged", Wren asks
+    // again on the next poll and the run waits ...
+    fake.lock().unwrap().beats = vec![(11, beat(68, "up")), (11, beat(5, "up"))];
+    for _ in 0..2 {
+        let v = ask(&app, &token, id).await;
+        assert_eq!(v["verdict"], "wait", "{v}");
+        assert!(v["log"].as_str().unwrap().contains("Sylo api"), "{v}");
+    }
+    assert_eq!(
+        checks(&fake),
+        vec!["/api/v1/monitors/12/check".to_string(); 2]
+    );
+    // ... until the check works.
+    fake.lock().unwrap().check_result = Some("up");
+    fake.lock().unwrap().beats.push((12, beat(68, "up")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "ok");
+    // Without it, it fails at the deadline.
+    fake.lock().unwrap().check_result = None;
+    fake.lock().unwrap().beats.retain(|(m, _)| *m != 12);
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-1000 seconds') WHERE run_id = {id} AND step = 'health'"
+    ))
+    .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn a_push_child_with_one_up_is_enough_and_a_silent_one_is_not_judged() {
+    let mut monitors = sylo();
+    monitors.push(mon(13, "Sylo cron", "push", Some(10)));
+    let (app, token, id, fake) = group_run(monitors).await;
+    fake.lock().unwrap().check_result = Some("up");
+    // The push monitor (interval 10 minutes) reported once since the update.
+    fake.lock().unwrap().beats = vec![
+        (11, beat(68, "up")),
+        (11, beat(5, "up")),
+        (12, beat(68, "up")),
+        (12, beat(4, "up")),
+        (13, beat(40, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert!(!v["log"].as_str().unwrap().contains("not judged"), "{v}");
+    // It is never asked for a check.
+    assert!(checks(&fake).is_empty(), "{:?}", writes(&fake));
+    // A down from it after that is a down like any other.
+    fake.lock().unwrap().beats.push((13, beat(1, "down")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
 async fn a_group_with_no_result_from_any_child_is_not_ok() {
     let monitors = vec![
         mon(10, "Sylo", "group", None),
