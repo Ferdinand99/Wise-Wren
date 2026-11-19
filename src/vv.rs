@@ -36,6 +36,12 @@ use crate::schedule::{db_time, parse_db_time};
 pub const URL_KEY: &str = "vv_url";
 pub const TOKEN_KEY: &str = "vv_token";
 const AAD: &[u8] = b"vv-token";
+/// Fresh checks Wren asks VV for at the same time during the health check.
+const CHECK_PARALLEL: usize = 8;
+/// One such check, and all of them together: the agent gives its monitors
+/// request 45 s in all.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const CHECK_BUDGET: Duration = Duration::from_secs(15);
 /// Each request to VV.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 /// What an older VV can't do (shown in the run log; the UI translates it).
@@ -178,16 +184,65 @@ pub struct Monitor {
     pub active: bool,
     /// The monitor JSON has `raw_status` (VV 0.9.0 and later).
     pub has_raw: bool,
+    /// VV's `monitor_type` (`http`, `group`, `push`, …).
+    pub kind: String,
+    /// The group this monitor belongs to.
+    pub parent_id: Option<i64>,
+    /// One remote agent checks it (`check_from_agent_id`): VV records no
+    /// local results and can't check it on demand.
+    pub agent_checked: bool,
+}
+
+impl Monitor {
+    pub fn is_group(&self) -> bool {
+        self.kind == "group"
+    }
+
+    /// Wren can ask VV to check it on demand. A push monitor reports when
+    /// its sender does, and an agent-checked monitor has no local results,
+    /// so for those only what VV has recorded can be read.
+    pub fn checkable(&self) -> bool {
+        self.kind != "push" && !self.agent_checked
+    }
+}
+
+/// Seconds VV's clock may differ from Wren's before it counts: the `Date`
+/// header has whole-second resolution, and the request takes a moment.
+const SKEW_NOISE: i64 = 5;
+const NO_SKEW: i64 = i64::MIN;
+
+/// An HTTP `Date` header as Unix seconds.
+fn http_date(raw: &str) -> Option<i64> {
+    jiff::fmt::rfc2822::parse(raw)
+        .ok()
+        .map(|z| z.timestamp().as_second())
 }
 
 pub struct Client<'a> {
     http: &'a reqwest::Client,
     conn: Conn,
+    /// VV's clock minus Wren's, from the latest answer's `Date` header.
+    skew: std::sync::atomic::AtomicI64,
 }
 
 impl<'a> Client<'a> {
     pub fn new(http: &'a reqwest::Client, conn: Conn) -> Client<'a> {
-        Client { http, conn }
+        Client {
+            http,
+            conn,
+            skew: std::sync::atomic::AtomicI64::new(NO_SKEW),
+        }
+    }
+
+    /// VV's clock minus Wren's clock in seconds (0 when unknown or within
+    /// the noise). Results carry VV's time, so the health step's start and
+    /// "now" are moved into it before they are compared.
+    pub fn skew(&self) -> i64 {
+        match self.skew.load(std::sync::atomic::Ordering::Relaxed) {
+            NO_SKEW => 0,
+            s if s.abs() <= SKEW_NOISE => 0,
+            s => s,
+        }
     }
 
     async fn call(
@@ -209,6 +264,17 @@ impl<'a> Client<'a> {
             .await
             .map_err(|e| VvError::Unreachable(e.without_url().to_string()))?;
         let status = res.status();
+        if let Some(vv_now) = res
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+            .and_then(http_date)
+        {
+            self.skew.store(
+                vv_now - Timestamp::now().as_second(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         let text = res.text().await.unwrap_or_default();
         if !status.is_success() {
             let msg = serde_json::from_str::<Value>(&text)
@@ -267,6 +333,9 @@ impl<'a> Client<'a> {
                         .unwrap_or_default(),
                     active: m["active"].as_bool().unwrap_or(true),
                     has_raw: m.as_object().is_some_and(|o| o.contains_key("raw_status")),
+                    kind: m["monitor_type"].as_str().unwrap_or_default().to_string(),
+                    parent_id: m["parent_id"].as_i64(),
+                    agent_checked: m["check_from_agent_id"].as_i64().is_some(),
                 })
             })
             .collect())
@@ -293,6 +362,20 @@ impl<'a> Client<'a> {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Asks VV to run a check now (`POST /monitors/{id}/check`); the result
+    /// is recorded like a scheduled one. VV refuses it for paused, push,
+    /// group and agent-checked monitors, which is fine: the caller ignores
+    /// the answer and reads the results afterwards.
+    pub async fn check_now(&self, id: i64) -> Result<(), VvError> {
+        self.call(
+            reqwest::Method::POST,
+            &format!("/api/v1/monitors/{id}/check"),
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// The status pages that show any of `ids` (the list leaves the
@@ -515,6 +598,53 @@ pub fn resolve<'m>(links: &[Link], all: &'m [Monitor]) -> Vec<&'m Monitor> {
         })
         .collect();
     out.sort_by_key(|m| m.id);
+    out
+}
+
+/// A monitor the health check judges, and whether it came in through a
+/// linked group rather than a link of its own.
+#[derive(Debug, Clone, Copy)]
+pub struct Judged<'m> {
+    pub monitor: &'m Monitor,
+    pub via_group: bool,
+}
+
+/// What the health check judges: the linked monitors with every group
+/// replaced by its child monitors (nested groups too), each monitor once, by
+/// id. A monitor that is linked itself counts as linked, also when a group
+/// has it as a child. A paused group is left out with its children.
+///
+/// A group's own result says nothing during maintenance: VV has reported a
+/// group whose children are all in maintenance as `down`. The children's
+/// real results are the evidence, so a group is never judged by its own.
+pub fn judged<'m>(found: &[&'m Monitor], all: &'m [Monitor]) -> Vec<Judged<'m>> {
+    let mut out: Vec<Judged> = found
+        .iter()
+        .filter(|m| !m.is_group())
+        .map(|m| Judged {
+            monitor: m,
+            via_group: false,
+        })
+        .collect();
+    let mut have: std::collections::HashSet<i64> = out.iter().map(|j| j.monitor.id).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<&Monitor> = found.iter().copied().filter(|m| m.is_group()).collect();
+    while let Some(g) = todo.pop() {
+        if !g.active || !seen.insert(g.id) {
+            continue;
+        }
+        for c in all.iter().filter(|c| c.parent_id == Some(g.id)) {
+            if c.is_group() {
+                todo.push(c);
+            } else if have.insert(c.id) {
+                out.push(Judged {
+                    monitor: c,
+                    via_group: true,
+                });
+            }
+        }
+    }
+    out.sort_by_key(|j| j.monitor.id);
     out
 }
 
@@ -1000,22 +1130,52 @@ pub struct Sample {
     pub down: bool,
 }
 
+/// A monitor's results for [`verdict`].
+#[derive(Debug, Clone)]
+pub struct Watched {
+    pub name: String,
+    pub samples: Vec<Sample>,
+    /// It is judged only because a linked group has it as a child.
+    pub via_group: bool,
+    /// Wren can ask VV for a fresh check ([`Monitor::checkable`]).
+    pub checkable: bool,
+}
+
 /// The rules: from `t0` (the start of the health step) every monitor needs
-/// results, the latest `up`, and `up` without a break for `need` seconds
-/// (counted from `t0`, or from the first `up` after the last other result).
-/// A `down` after `t0 + need` fails at once; past `t0 + 2·need + 300 s` it
-/// fails too. Anything else waits.
-pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[(String, Vec<Sample>)]) -> Verdict {
+/// results, the latest `up`, and `up` without a break for `need` seconds: at
+/// least two results that far apart, the first after `t0` or after the last
+/// result that wasn't `up`. One result alone proves nothing about a period.
+/// A `down` after `t0 + need` fails at once; past `t0 + 2·need + 300 s`
+/// anything that isn't confirmed fails too. Anything else waits.
+///
+/// A monitor that Wren can't have checked on demand (push, agent-checked)
+/// reports when it reports: one `up` since `t0` is enough, as long as it
+/// isn't followed by anything else for the period. If such a monitor is only
+/// a child of a linked group and has no result at all, it doesn't hold the
+/// verdict back while other monitors have results: it is named in the log as
+/// not judged. A monitor that can be checked on demand never gets that
+/// leniency: with no fresh result after the check Wren asked for, the verdict
+/// stays open (and fails at the deadline). When no monitor has any result,
+/// nothing is confirmed and the verdict is not `Ok`.
+pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[Watched]) -> Verdict {
     let deadline = t0 + 2 * need + 300;
     let mut waiting = Vec::new();
     let mut good = Vec::new();
-    for (name, samples) in monitors {
-        let mut s: Vec<Sample> = samples.iter().copied().filter(|x| x.at >= t0).collect();
+    let mut unjudged = Vec::new();
+    let mut evidence = false;
+    for w in monitors {
+        let name = &w.name;
+        let mut s: Vec<Sample> = w.samples.iter().copied().filter(|x| x.at >= t0).collect();
         s.sort_by_key(|x| x.at);
         let Some(last) = s.last() else {
-            waiting.push(format!("{name}: no result yet"));
+            if w.via_group && !w.checkable {
+                unjudged.push(name.clone());
+            } else {
+                waiting.push(format!("{name}: no result yet"));
+            }
             continue;
         };
+        evidence = true;
         if last.down && last.at >= t0 + need {
             return Verdict::Failed(format!(
                 "{name} is down in Vigilant Vole {} s after the update",
@@ -1029,21 +1189,40 @@ pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[(String, Vec<Sample>)])
             ));
             continue;
         }
-        let since = s
-            .iter()
-            .rposition(|x| !x.up)
-            .map_or(t0, |i| s.get(i + 1).map_or(now, |x| x.at));
-        if now - since >= need {
+        let (first, end) = if w.checkable {
+            // Two results a period apart (the first after the last result
+            // that wasn't up), not one.
+            let first = s
+                .iter()
+                .rposition(|x| !x.up)
+                .map_or(s.first(), |i| s.get(i + 1))
+                .map_or(last.at, |x| x.at);
+            (first, last.at)
+        } else {
+            // Up since `t0`, or since the first up after the last break.
+            let first = s
+                .iter()
+                .rposition(|x| !x.up)
+                .map_or(t0, |i| s.get(i + 1).map_or(now, |x| x.at));
+            (first, now)
+        };
+        let span = end - first;
+        if span >= need {
             good.push(name.clone());
         } else {
-            waiting.push(format!("{name}: up for {} of {need} s", now - since));
+            waiting.push(format!("{name}: up for {span} of {need} s"));
         }
     }
+    if !evidence && waiting.is_empty() {
+        // Only monitors without a result: nothing is confirmed.
+        waiting.push(format!("no result yet: {}", unjudged.join(", ")));
+    }
     if waiting.is_empty() {
-        return Verdict::Ok(format!(
-            "Up in Vigilant Vole for {need} s: {}.",
-            good.join(", ")
-        ));
+        let mut log = format!("Up in Vigilant Vole for {need} s: {}.", good.join(", "));
+        if !unjudged.is_empty() {
+            log.push_str(&format!(" No result, not judged: {}.", unjudged.join(", ")));
+        }
+        return Verdict::Ok(log);
     }
     if now >= deadline {
         return Verdict::Failed(format!(
@@ -1053,6 +1232,21 @@ pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[(String, Vec<Sample>)])
         ));
     }
     Verdict::Wait(waiting.join("; "))
+}
+
+/// A result as evidence: `up`, `down` or `pending` is a real result. Anything
+/// else (`maintenance`, no `raw_status`) is not evidence either way and is
+/// left out, so it neither fails nor confirms the update.
+fn sample(at: &str, raw: &Value) -> Option<Sample> {
+    let raw = raw.as_str()?;
+    if !matches!(raw, "up" | "down" | "pending") {
+        return None;
+    }
+    Some(Sample {
+        at: unix(at)?,
+        up: raw == "up",
+        down: raw == "down",
+    })
 }
 
 fn unix(raw: &str) -> Option<i64> {
@@ -1092,15 +1286,7 @@ pub async fn check_monitors(wren: &Wren, server_id: i64, run_id: i64) -> Option<
     let now = Timestamp::now().as_second();
     let t0s = t0.as_deref().and_then(unix).unwrap_or(now);
     let need = job_health.unwrap_or(info.health);
-    let v = monitor_verdict(
-        wren,
-        &info,
-        t0.as_deref().unwrap_or_default(),
-        t0s,
-        need,
-        now,
-    )
-    .await;
+    let v = monitor_verdict(wren, &info, t0s, need, now).await;
     let (status, log) = (
         match &v {
             Verdict::Wait(_) => "running",
@@ -1117,14 +1303,7 @@ pub async fn check_monitors(wren: &Wren, server_id: i64, run_id: i64) -> Option<
     Some(v)
 }
 
-async fn monitor_verdict(
-    wren: &Wren,
-    info: &RunInfo,
-    since: &str,
-    t0: i64,
-    need: i64,
-    now: i64,
-) -> Verdict {
+async fn monitor_verdict(wren: &Wren, info: &RunInfo, t0: i64, need: i64, now: i64) -> Verdict {
     if info.links.is_empty() {
         return Verdict::Skipped(
             "No Vigilant Vole monitors are linked to this target: the container checks decide."
@@ -1155,38 +1334,87 @@ async fn monitor_verdict(
     if found.iter().any(|m| !m.has_raw) {
         return Verdict::Skipped(TOO_OLD.into());
     }
-    let active: Vec<&&Monitor> = found.iter().filter(|m| m.active).collect();
+    // Groups are judged by their children, and only the active ones count.
+    let active: Vec<Judged> = judged(&found, &all)
+        .into_iter()
+        .filter(|j| j.monitor.active)
+        .collect();
     if active.is_empty() {
-        return Verdict::Skipped(
-            "None of the linked monitors is active in Vigilant Vole: the container checks decide."
-                .into(),
-        );
-    }
-    let since = if since.is_empty() {
-        db_time(Timestamp::from_second(t0).unwrap_or_else(|_| Timestamp::now()))
-    } else {
-        since.to_string()
-    };
-    let mut monitors = Vec::new();
-    for m in active {
-        let results = match client.results(m.id, &since).await {
-            Ok(r) => r,
-            Err(e) => return unreachable(e.to_string()),
+        let why =
+            "None of the linked monitors, or their child monitors, is active in Vigilant Vole";
+        return if info.require_vv {
+            Verdict::Failed(format!(
+                "{why}; this target requires Vigilant Vole, so its health can't be confirmed"
+            ))
+        } else {
+            Verdict::Skipped(format!("{why}: the container checks decide."))
         };
-        let samples = results
-            .iter()
-            .filter_map(|(at, raw)| {
-                let raw = raw.as_str().unwrap_or_default();
-                Some(Sample {
-                    at: unix(at)?,
-                    up: raw == "up",
-                    down: raw == "down",
-                })
-            })
-            .collect();
-        monitors.push((m.name.clone(), samples));
     }
+    // Results carry VV's clock: move the health step's start into it.
+    let t0 = t0 + client.skew();
+    let since = db_time(Timestamp::from_second(t0).unwrap_or_else(|_| Timestamp::now()));
+    let mut fetched = Vec::new();
+    for j in &active {
+        match client.results(j.monitor.id, &since).await {
+            Ok(r) => fetched.push(samples(&r)),
+            Err(e) => return unreachable(e.to_string()),
+        }
+    }
+    // Ask for a fresh check where the newest result is missing or older than
+    // half the period, instead of waiting for the monitor's interval: a
+    // period needs two results that far apart. Push monitors, monitors an
+    // agent checks and monitors VV refuses to check (paused, 409) are read
+    // as they are. The checks run together under one budget, so the agent's
+    // request stays well inside its own timeout however large a group is.
+    let mut now = Timestamp::now().as_second() + client.skew();
+    let stale = |s: &[Sample]| {
+        s.iter()
+            .filter(|x| x.at >= t0)
+            .map(|x| x.at)
+            .max()
+            .is_none_or(|latest| now - latest > need / 2)
+    };
+    let ask: Vec<usize> = (0..active.len())
+        .filter(|&i| {
+            let m = active[i].monitor;
+            m.checkable() && stale(&fetched[i])
+        })
+        .collect();
+    if !ask.is_empty() {
+        use futures_util::StreamExt as _;
+        let c = &client;
+        let all_checks = futures_util::stream::iter(ask.iter().map(|&i| active[i].monitor.id))
+            .for_each_concurrent(CHECK_PARALLEL, |id| async move {
+                let _ = tokio::time::timeout(CHECK_TIMEOUT, c.check_now(id)).await;
+            });
+        let _ = tokio::time::timeout(CHECK_BUDGET, all_checks).await;
+        for &i in &ask {
+            match client.results(active[i].monitor.id, &since).await {
+                Ok(r) => fetched[i] = samples(&r),
+                Err(e) => return unreachable(e.to_string()),
+            }
+        }
+        now = Timestamp::now().as_second() + client.skew();
+    }
+    let monitors: Vec<Watched> = active
+        .iter()
+        .zip(fetched)
+        .map(|(j, samples)| Watched {
+            name: j.monitor.name.clone(),
+            samples,
+            via_group: j.via_group,
+            checkable: j.monitor.checkable(),
+        })
+        .collect();
     verdict(now, t0, need, &monitors)
+}
+
+/// The results of a monitor that count as evidence.
+fn samples(results: &[(String, Value)]) -> Vec<Sample> {
+    results
+        .iter()
+        .filter_map(|(at, raw)| sample(at, raw))
+        .collect()
 }
 
 /// `POST /api/agent/v1/runs/{id}/monitors` → `{"verdict", "log"}`.
@@ -1224,13 +1452,44 @@ mod tests {
         }
     }
 
+    fn watch(name: &str, via_group: bool, samples: Vec<Sample>) -> Watched {
+        Watched {
+            name: name.into(),
+            samples,
+            via_group,
+            checkable: true,
+        }
+    }
+    /// A push or agent-checked monitor.
+    fn silent(name: &str, via_group: bool, samples: Vec<Sample>) -> Watched {
+        Watched {
+            checkable: false,
+            ..watch(name, via_group, samples)
+        }
+    }
+
     #[test]
     fn monitor_verdict_rules() {
-        let m = |s: Vec<Sample>| vec![("web".to_string(), s)];
-        // Up all along for the period.
+        let m = |s: Vec<Sample>| vec![watch("web", false, s)];
+        // Two results a period apart, up all along: ok.
+        assert!(matches!(
+            verdict(1210, 1000, 180, &m(vec![up(1020), up(1100), up(1200)])),
+            Verdict::Ok(_)
+        ));
+        // Results closer together than the period: wait.
         assert!(matches!(
             verdict(1180, 1000, 180, &m(vec![up(1020), up(1080)])),
-            Verdict::Ok(_)
+            Verdict::Wait(_)
+        ));
+        // One result alone proves no period, however late it comes.
+        assert!(matches!(
+            verdict(1180, 1000, 180, &m(vec![up(1175)])),
+            Verdict::Wait(_)
+        ));
+        // ... and it is not enough at the deadline either.
+        assert!(matches!(
+            verdict(1660, 1000, 180, &m(vec![up(1655)])),
+            Verdict::Failed(_)
         ));
         // Results from before the update don't count.
         assert!(matches!(
@@ -1246,6 +1505,16 @@ mod tests {
             verdict(1250, 1000, 180, &m(vec![down(1005), up(1065), up(1245)])),
             Verdict::Ok(_)
         ));
+        // A down in the window starts it over.
+        assert!(matches!(
+            verdict(
+                1250,
+                1000,
+                180,
+                &m(vec![up(1010), down(1100), up(1105), up(1245)])
+            ),
+            Verdict::Wait(_)
+        ));
         // Down after the period: fails at once.
         assert!(matches!(
             verdict(1200, 1000, 180, &m(vec![up(1020), down(1190)])),
@@ -1260,9 +1529,70 @@ mod tests {
             verdict(1660, 1000, 180, &m(vec![])),
             Verdict::Failed(_)
         ));
-        // Every monitor counts.
-        let two = vec![("a".to_string(), vec![up(1010)]), ("b".to_string(), vec![])];
-        assert!(matches!(verdict(1180, 1000, 180, &two), Verdict::Wait(_)));
+        // Every monitor with a link of its own counts.
+        let two = vec![
+            watch("a", false, vec![up(1010), up(1200)]),
+            watch("b", false, vec![]),
+        ];
+        assert!(matches!(verdict(1210, 1000, 180, &two), Verdict::Wait(_)));
+    }
+
+    #[test]
+    fn a_group_child_without_results_does_not_hold_the_verdict() {
+        let confirmed = watch("web", true, vec![up(1010), up(1200)]);
+        let cron = silent("cron", true, vec![]);
+        // Another monitor has results: the silent one is named, not judged.
+        let v = verdict(1210, 1000, 180, &[confirmed.clone(), cron.clone()]);
+        assert!(
+            matches!(&v, Verdict::Ok(l) if l.contains("not judged: cron")),
+            "{v:?}"
+        );
+        // A directly linked monitor without results still holds it back.
+        let direct = silent("cron", false, vec![]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), direct]),
+            Verdict::Wait(_)
+        ));
+        // So does a child that can be checked on demand: it had its check
+        // and has no fresh result, so it is not "not judged" ...
+        let slow = watch("api", true, vec![]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), slow.clone()]),
+            Verdict::Wait(_)
+        ));
+        // ... and at the deadline it fails the run.
+        assert!(matches!(
+            verdict(1660, 1000, 180, &[confirmed.clone(), slow]),
+            Verdict::Failed(_)
+        ));
+        // A push child with a single up since the update is enough, however
+        // long its interval; it needs no second result.
+        let beat = silent("cron", true, vec![up(1100)]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), beat]),
+            Verdict::Ok(_)
+        ));
+        // ... unless it was down afterwards.
+        let bad_beat = silent("cron", true, vec![up(1100), down(1150)]);
+        assert!(matches!(
+            verdict(1210, 1000, 180, &[confirmed.clone(), bad_beat]),
+            Verdict::Wait(_)
+        ));
+        // A group child that is down fails like any other.
+        let bad = watch("api", true, vec![up(1010), down(1190)]);
+        assert!(matches!(
+            verdict(1200, 1000, 180, &[confirmed, cron.clone(), bad]),
+            Verdict::Failed(_)
+        ));
+        // No monitor with any result: never ok, and failed at the deadline.
+        assert!(matches!(
+            verdict(1210, 1000, 180, std::slice::from_ref(&cron)),
+            Verdict::Wait(_)
+        ));
+        assert!(matches!(
+            verdict(1660, 1000, 180, std::slice::from_ref(&cron)),
+            Verdict::Failed(_)
+        ));
     }
 
     #[test]
@@ -1273,6 +1603,9 @@ mod tests {
             tags: vec![tag.into()],
             active: true,
             has_raw: true,
+            kind: "http".into(),
+            parent_id: None,
+            agent_checked: false,
         };
         let all = vec![m(1, "web"), m(2, "Wren"), m(3, "wren")];
         let l = |kind: &str, r: &str| Link {
@@ -1293,5 +1626,77 @@ mod tests {
         );
         assert_eq!(normal_url("ftp://x"), None);
         assert_eq!(normal_url("http://owner:secret@10.0.3.26:3001"), None);
+    }
+
+    #[test]
+    fn groups_are_judged_by_their_children() {
+        let m = |id, kind: &str, parent_id, active| Monitor {
+            id,
+            name: format!("m{id}"),
+            tags: vec![],
+            active,
+            has_raw: true,
+            kind: kind.into(),
+            parent_id,
+            agent_checked: false,
+        };
+        let all = vec![
+            m(1, "group", None, true),
+            m(2, "http", Some(1), true),
+            m(3, "group", Some(1), true),
+            m(4, "tcp", Some(3), true),
+            m(5, "http", None, true),
+            m(6, "group", None, true),
+            // A group inside itself and two groups inside each other.
+            m(7, "group", Some(7), true),
+            m(8, "group", Some(9), true),
+            m(9, "group", Some(8), true),
+            m(10, "http", Some(9), true),
+            // A paused group with an active child, and a child of it.
+            m(11, "group", None, false),
+            m(12, "http", Some(11), true),
+        ];
+        let by = |ids: &[usize]| -> Vec<&Monitor> { ids.iter().map(|i| &all[*i]).collect() };
+        let ids = |v: Vec<Judged>| v.iter().map(|j| j.monitor.id).collect::<Vec<_>>();
+        // The group stands for its children, nested groups included.
+        let j = judged(&by(&[0]), &all);
+        assert_eq!(ids(j), vec![2, 4]);
+        assert!(judged(&by(&[0]), &all).iter().all(|j| j.via_group));
+        // Each monitor once, also when linked both ways; a link of its own
+        // wins over the group.
+        let j = judged(&by(&[0, 1, 4]), &all);
+        assert_eq!(ids(j.clone()), vec![2, 4, 5]);
+        assert_eq!(
+            j.iter().map(|j| j.via_group).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        // A group without children has nothing to judge.
+        assert!(judged(&by(&[5]), &all).is_empty());
+        // Cycles end: a group in itself, and two groups in each other.
+        assert!(judged(&by(&[6]), &all).is_empty());
+        assert_eq!(ids(judged(&by(&[7]), &all)), vec![10]);
+        assert_eq!(ids(judged(&by(&[7, 8]), &all)), vec![10]);
+        // A paused group is not expanded.
+        assert!(judged(&by(&[10]), &all).is_empty());
+    }
+
+    #[test]
+    fn vv_time_is_read_from_the_date_header() {
+        assert_eq!(
+            http_date("Thu, 19 Nov 2026 16:56:22 GMT"),
+            Some(1_795_107_382)
+        );
+        assert_eq!(http_date("yesterday"), None);
+    }
+
+    #[test]
+    fn only_real_results_are_evidence() {
+        let at = "2026-11-19 10:00:00";
+        assert_eq!(sample(at, &json!("up")).map(|s| s.up), Some(true));
+        assert_eq!(sample(at, &json!("down")).map(|s| s.down), Some(true));
+        let pending = sample(at, &json!("pending")).unwrap();
+        assert!(!pending.up && !pending.down);
+        assert_eq!(sample(at, &json!("maintenance")), None);
+        assert_eq!(sample(at, &Value::Null), None);
     }
 }

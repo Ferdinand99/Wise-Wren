@@ -32,6 +32,10 @@ struct Vv {
     beats: Vec<(i64, Value)>,
     /// Every write: (method, path, body).
     writes: Vec<(String, String, Value)>,
+    /// What a check-now records as a heartbeat: `raw_status`.
+    check_result: Option<&'static str>,
+    /// Seconds this VV's clock is ahead of the test's (answers' `Date`).
+    skew: i64,
     next: i64,
 }
 
@@ -70,6 +74,25 @@ async fn fake_vv(raw: bool) -> (String, Shared) {
             .collect();
         Json(json!({"data": data, "next_cursor": null}))
     }
+    async fn check(State(s): State<Shared>, Path(id): Path<i64>) -> StatusCode {
+        let mut s = s.lock().unwrap();
+        s.writes.push((
+            "POST".into(),
+            format!("/api/v1/monitors/{id}/check"),
+            Value::Null,
+        ));
+        match s.check_result {
+            Some(raw) => {
+                let at = schedule::db_time(Timestamp::now());
+                s.beats.push((
+                    id,
+                    json!({"checked_at": at, "status": "maintenance", "raw_status": raw}),
+                ));
+                StatusCode::OK
+            }
+            None => StatusCode::CONFLICT,
+        }
+    }
     async fn pages() -> Json<Value> {
         Json(json!({"data": [{"id": 5, "title": "Status"}], "next_cursor": null}))
     }
@@ -97,15 +120,34 @@ async fn fake_vv(raw: bool) -> (String, Shared) {
             .push((method.to_string(), format!("/api/v1/maintenance/{id}"), b));
         Json(json!({"id": id}))
     }
+    /// VV's own clock in the `Date` header when it differs from ours.
+    async fn clock(
+        State(s): State<Shared>,
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        let mut res = next.run(req).await;
+        let skew = s.lock().unwrap().skew;
+        if skew != 0 {
+            let at = (Timestamp::now() + jiff::SignedDuration::from_secs(skew))
+                .to_zoned(jiff::tz::TimeZone::UTC);
+            let date = jiff::fmt::rfc2822::to_string(&at).unwrap();
+            res.headers_mut()
+                .insert(header::DATE, date.parse().unwrap());
+        }
+        res
+    }
     let app = Router::new()
         .route("/api/v1/me", get(me))
         .route("/api/v1/health", get(health))
         .route("/api/v1/monitors", get(monitors))
         .route("/api/v1/monitors/{id}/heartbeats", get(beats))
+        .route("/api/v1/monitors/{id}/check", axum::routing::post(check))
         .route("/api/v1/status-pages", get(pages))
         .route("/api/v1/status-pages/5", get(page))
         .route("/api/v1/maintenance", axum::routing::post(create))
         .route("/api/v1/maintenance/{id}", patch(change).delete(change))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), clock))
         .with_state(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -845,7 +887,7 @@ async fn monitors_endpoint_uses_raw_status() {
     fake.lock().unwrap().beats = vec![
         (
             1,
-            json!({"checked_at": ago(65), "status": "maintenance", "raw_status": "up"}),
+            json!({"checked_at": ago(68), "status": "maintenance", "raw_status": "up"}),
         ),
         (
             1,
@@ -898,4 +940,312 @@ async fn old_vv_falls_back_to_container_checks() {
     );
     let page = web.get("/schedules").await;
     assert_eq!(page.status, StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Groups during maintenance
+// ---------------------------------------------------------------------------
+
+fn mon(id: i64, name: &str, kind: &str, parent: Option<i64>) -> Value {
+    json!({"id": id, "name": name, "active": true, "status": "maintenance",
+        "maintenance": true, "raw_status": "up", "monitor_type": kind,
+        "parent_id": parent, "check_from_agent_id": null, "tags": []})
+}
+
+/// A group (id 10, linked to the target) with two child monitors (11, 12) in
+/// a fake VV that, like VV before its fix, reports the group as `down`
+/// while all its children are in maintenance.
+fn sylo() -> Vec<Value> {
+    vec![
+        mon(10, "Sylo", "group", None),
+        mon(11, "Sylo web", "http", Some(10)),
+        mon(12, "Sylo api", "tcp", Some(10)),
+    ]
+}
+
+/// A run of target `ww-test-a`, linked to monitor 10, whose health step began
+/// 70 s ago with a health period of 60 s, against a fake VV with `monitors`.
+async fn group_run(monitors: Vec<Value>) -> (App, String, i64, Shared) {
+    let (url, fake) = fake_vv(true).await;
+    fake.lock().unwrap().monitors = monitors;
+    let (app, _, token) = setup().await;
+    connect(&app, &url).await;
+    let a = target(&app, "ww-test-a").await;
+    link(&app, a.id, "monitor", "10").await;
+    let id = approve(&app, a.id, None).await.unwrap();
+    assert_eq!(poll_run(&app, &token).await, Some(id));
+    step(&app, &token, id, "health", "running").await;
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-70 seconds') WHERE run_id = {id} AND step = 'health';
+         UPDATE runs SET job = '{{\"health_seconds\": 60}}' WHERE id = {id};"
+    ))
+    .await;
+    (app, token, id, fake)
+}
+
+fn beat(ago: i64, raw: &str) -> Value {
+    let at = schedule::db_time(Timestamp::now() - jiff::SignedDuration::from_secs(ago));
+    json!({"checked_at": at, "status": "maintenance", "raw_status": raw})
+}
+
+/// The paths of the check-now requests VV got, in order.
+fn checks(vv: &Shared) -> Vec<String> {
+    let mut c: Vec<String> = writes(vv)
+        .into_iter()
+        .map(|(_, p, _)| p)
+        .filter(|p| p.contains("/check"))
+        .collect();
+    c.sort();
+    c
+}
+
+#[tokio::test]
+async fn group_in_maintenance_is_judged_by_its_children() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    // The group's own result is `down` ("All monitors in maintenance"), but
+    // both children are really up since the update: healthy.
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "down")),
+        (11, beat(68, "up")),
+        (11, beat(5, "up")),
+        (12, beat(68, "up")),
+        (12, beat(4, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert!(v["log"].as_str().unwrap().contains("Sylo web"), "{v}");
+    // Neither the group nor anything else got a check-now: both children
+    // had recent results.
+    assert!(checks(&fake).is_empty(), "{:?}", writes(&fake));
+}
+
+#[tokio::test]
+async fn group_with_a_child_that_is_down_after_the_update_fails() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "up")),
+        (11, beat(65, "up")),
+        (11, beat(5, "up")),
+        (12, beat(60, "up")),
+        (12, beat(4, "down")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "failed", "{v}");
+    assert!(v["log"].as_str().unwrap().contains("Sylo api"), "{v}");
+}
+
+#[tokio::test]
+async fn maintenance_results_are_not_evidence_and_need_two_checks_a_period_apart() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    // Only results from before the update, and a result without `raw_status`
+    // in between: nothing counts, so Wren asks VV to check now.
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "down")),
+        (11, beat(300, "up")),
+        (12, beat(20, "maintenance")),
+    ];
+    fake.lock().unwrap().check_result = Some("up");
+    let v = ask(&app, &token, id).await;
+    // One fresh result per child proves no period: wait, not ok and not
+    // failed.
+    assert_eq!(v["verdict"], "wait", "{v}");
+    assert_eq!(
+        checks(&fake),
+        vec![
+            "/api/v1/monitors/11/check".to_string(),
+            "/api/v1/monitors/12/check".to_string()
+        ]
+    );
+    // A period later (the results from the first checks are now 61 s old
+    // and older than half the period) the next check completes it.
+    fake.lock().unwrap().writes.clear();
+    fake.lock().unwrap().beats = vec![
+        (11, beat(61, "up")),
+        (12, beat(61, "up")),
+        (10, beat(5, "down")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert_eq!(checks(&fake).len(), 2, "{:?}", writes(&fake));
+    // VV can't check on demand (409): still waiting, not an error.
+    fake.lock().unwrap().check_result = None;
+    fake.lock().unwrap().beats.clear();
+    assert_eq!(ask(&app, &token, id).await["verdict"], "wait");
+}
+
+#[tokio::test]
+async fn a_group_child_that_cannot_report_does_not_roll_the_update_back() {
+    let mut monitors = sylo();
+    monitors.push(mon(13, "Sylo cron", "push", Some(10)));
+    let mut agent = mon(14, "Sylo remote", "http", Some(10));
+    agent["check_from_agent_id"] = json!(3);
+    monitors.push(agent);
+    let (app, token, id, fake) = group_run(monitors).await;
+    fake.lock().unwrap().check_result = Some("up");
+    // The http children are up; the push child and the agent-checked child
+    // have no results at all (VV records none for them locally).
+    fake.lock().unwrap().beats = vec![
+        (11, beat(68, "up")),
+        (11, beat(5, "up")),
+        (12, beat(68, "up")),
+        (12, beat(4, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    let log = v["log"].as_str().unwrap();
+    assert!(log.contains("not judged: Sylo cron, Sylo remote"), "{v}");
+    // Neither of them was asked for a check.
+    assert!(checks(&fake).is_empty(), "{:?}", writes(&fake));
+    // A child that is really down still fails the run.
+    fake.lock().unwrap().beats.push((12, beat(1, "down")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn a_checkable_child_without_a_fresh_result_keeps_the_verdict_open() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    // 11 is up for the period; 12 (http) has no result and VV can't check it
+    // now (409, or the check timed out): it is not "not judged", Wren asks
+    // again on the next poll and the run waits ...
+    fake.lock().unwrap().beats = vec![(11, beat(68, "up")), (11, beat(5, "up"))];
+    for _ in 0..2 {
+        let v = ask(&app, &token, id).await;
+        assert_eq!(v["verdict"], "wait", "{v}");
+        assert!(v["log"].as_str().unwrap().contains("Sylo api"), "{v}");
+    }
+    assert_eq!(
+        checks(&fake),
+        vec!["/api/v1/monitors/12/check".to_string(); 2]
+    );
+    // ... until the check works.
+    fake.lock().unwrap().check_result = Some("up");
+    fake.lock().unwrap().beats.push((12, beat(68, "up")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "ok");
+    // Without it, it fails at the deadline.
+    fake.lock().unwrap().check_result = None;
+    fake.lock().unwrap().beats.retain(|(m, _)| *m != 12);
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-1000 seconds') WHERE run_id = {id} AND step = 'health'"
+    ))
+    .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn a_push_child_with_one_up_is_enough_and_a_silent_one_is_not_judged() {
+    let mut monitors = sylo();
+    monitors.push(mon(13, "Sylo cron", "push", Some(10)));
+    let (app, token, id, fake) = group_run(monitors).await;
+    fake.lock().unwrap().check_result = Some("up");
+    // The push monitor (interval 10 minutes) reported once since the update.
+    fake.lock().unwrap().beats = vec![
+        (11, beat(68, "up")),
+        (11, beat(5, "up")),
+        (12, beat(68, "up")),
+        (12, beat(4, "up")),
+        (13, beat(40, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert!(!v["log"].as_str().unwrap().contains("not judged"), "{v}");
+    // It is never asked for a check.
+    assert!(checks(&fake).is_empty(), "{:?}", writes(&fake));
+    // A down from it after that is a down like any other.
+    fake.lock().unwrap().beats.push((13, beat(1, "down")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn a_group_with_no_result_from_any_child_is_not_ok() {
+    let monitors = vec![
+        mon(10, "Sylo", "group", None),
+        mon(13, "Sylo cron", "push", Some(10)),
+    ];
+    let (app, token, id, fake) = group_run(monitors).await;
+    fake.lock().unwrap().beats = vec![(10, beat(5, "down"))];
+    // Waiting, not ok ...
+    assert_eq!(ask(&app, &token, id).await["verdict"], "wait");
+    // ... and failed once the health check's time is out.
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-1000 seconds') WHERE run_id = {id} AND step = 'health'"
+    ))
+    .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn many_children_are_checked_together_and_within_the_budget() {
+    let mut monitors = vec![mon(10, "Sylo", "group", None)];
+    for i in 0..30 {
+        monitors.push(mon(100 + i, &format!("child {i}"), "http", Some(10)));
+    }
+    let (app, token, id, fake) = group_run(monitors).await;
+    fake.lock().unwrap().check_result = Some("up");
+    let t = std::time::Instant::now();
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "wait", "{v}");
+    assert_eq!(checks(&fake).len(), 30);
+    assert!(t.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[tokio::test]
+async fn results_are_read_in_vv_time_when_its_clock_is_off() {
+    let (app, token, id, fake) = group_run(sylo()).await;
+    // VV's clock is 10 minutes behind Wren's: its results carry its time.
+    fake.lock().unwrap().skew = -600;
+    let vv_beat = |ago: i64, raw: &str| {
+        let at = schedule::db_time(Timestamp::now() - jiff::SignedDuration::from_secs(600 + ago));
+        json!({"checked_at": at, "status": "maintenance", "raw_status": raw})
+    };
+    fake.lock().unwrap().beats = vec![
+        (11, vv_beat(68, "up")),
+        (11, vv_beat(5, "up")),
+        (12, vv_beat(68, "up")),
+        (12, vv_beat(4, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert!(checks(&fake).is_empty(), "{:?}", writes(&fake));
+    // A child that is down in VV's time fails as well.
+    fake.lock().unwrap().beats.push((12, vv_beat(1, "down")));
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn a_paused_or_empty_group_gives_nothing_to_judge() {
+    // A paused group is not expanded: nothing to judge, the container
+    // checks decide ...
+    let mut paused = sylo();
+    paused[0]["active"] = json!(false);
+    let (app, token, id, _fake) = group_run(paused).await;
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "skipped", "{v}");
+    // ... unless the target requires Vigilant Vole.
+    app.exec("UPDATE targets SET require_vv = 1".to_string())
+        .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+    // The same goes for a group without children.
+    let (app, token, id, _fake) = group_run(vec![mon(10, "Sylo", "group", None)]).await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "skipped");
+    app.exec("UPDATE targets SET require_vv = 1".to_string())
+        .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
+}
+
+#[tokio::test]
+async fn unreachable_vv_waits_then_leaves_it_to_the_container_checks() {
+    let (app, token, id, _fake) = group_run(sylo()).await;
+    connect(&app, "http://127.0.0.1:9").await;
+    // Within the deadline (health step + 2 x period + 300 s): wait.
+    assert_eq!(ask(&app, &token, id).await["verdict"], "wait");
+    // Past it: skipped, the container checks decide.
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-1000 seconds') WHERE run_id = {id} AND step = 'health'"
+    ))
+    .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "skipped");
+    // A target that requires Vigilant Vole fails instead.
+    app.exec("UPDATE targets SET require_vv = 1".to_string())
+        .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
 }

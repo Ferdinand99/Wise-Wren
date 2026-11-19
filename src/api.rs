@@ -178,7 +178,7 @@ const OWN_ROUTES: &[RouteDoc] = &[
         r("POST", "/api/agent/v1/runs/{id}/steps", "agent token", "Agents", "The agent reports a step of its running run. The answer to the `preflight` result is the last moment a run can be cancelled: nothing has stopped yet.")
             .req(r#"{"step": "preflight", "status": "ok", "log": "pulled localhost:5056/ww-test/app:4f90…", "duration_ms": 812}"#)
             .res(r#"{"cancel": false}"#),
-        r("POST", "/api/agent/v1/runs/{id}/monitors", "agent token", "Agents", "After its container checks passed, the agent asks whether the target's linked Vigilant Vole monitors are up: `ok`, `wait` (ask again in 10 s), `failed` (roll back) or `skipped` (no monitors, VV unreachable or too old: the container checks decide). Wren reads the monitors' real results during maintenance (`raw_status`) since the health step began.")
+        r("POST", "/api/agent/v1/runs/{id}/monitors", "agent token", "Agents", "After its container checks passed, the agent asks whether the target's linked Vigilant Vole monitors are up: `ok`, `wait` (ask again in 10 s), `failed` (roll back) or `skipped` (no monitors, VV unreachable or too old: the container checks decide). Wren reads the monitors' real results during maintenance (`raw_status`) since the health step began; a linked group is judged by its child monitors, never by its own result.")
             .res(r#"{"verdict": "wait", "log": "web: up for 40 of 180 s"}"#),
         r("POST", "/api/agent/v1/runs/{id}/finish", "agent token", "Agents", "The agent reports how its run ended: `succeeded`, `rolled_back`, `failed`, `rollback_failed`, `refused` or `cancelled`.")
             .req(r#"{"outcome": "rolled_back", "detail": "ww-test-container is unhealthy"}"#)
