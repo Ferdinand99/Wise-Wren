@@ -32,6 +32,8 @@ struct Vv {
     beats: Vec<(i64, Value)>,
     /// Every write: (method, path, body).
     writes: Vec<(String, String, Value)>,
+    /// What a check-now records as a heartbeat: `raw_status`.
+    check_result: Option<&'static str>,
     next: i64,
 }
 
@@ -70,6 +72,25 @@ async fn fake_vv(raw: bool) -> (String, Shared) {
             .collect();
         Json(json!({"data": data, "next_cursor": null}))
     }
+    async fn check(State(s): State<Shared>, Path(id): Path<i64>) -> StatusCode {
+        let mut s = s.lock().unwrap();
+        s.writes.push((
+            "POST".into(),
+            format!("/api/v1/monitors/{id}/check"),
+            Value::Null,
+        ));
+        match s.check_result {
+            Some(raw) => {
+                let at = schedule::db_time(Timestamp::now());
+                s.beats.push((
+                    id,
+                    json!({"checked_at": at, "status": "maintenance", "raw_status": raw}),
+                ));
+                StatusCode::OK
+            }
+            None => StatusCode::CONFLICT,
+        }
+    }
     async fn pages() -> Json<Value> {
         Json(json!({"data": [{"id": 5, "title": "Status"}], "next_cursor": null}))
     }
@@ -102,6 +123,7 @@ async fn fake_vv(raw: bool) -> (String, Shared) {
         .route("/api/v1/health", get(health))
         .route("/api/v1/monitors", get(monitors))
         .route("/api/v1/monitors/{id}/heartbeats", get(beats))
+        .route("/api/v1/monitors/{id}/check", axum::routing::post(check))
         .route("/api/v1/status-pages", get(pages))
         .route("/api/v1/status-pages/5", get(page))
         .route("/api/v1/maintenance", axum::routing::post(create))
@@ -898,4 +920,134 @@ async fn old_vv_falls_back_to_container_checks() {
     );
     let page = web.get("/schedules").await;
     assert_eq!(page.status, StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Groups during maintenance
+// ---------------------------------------------------------------------------
+
+/// A group (id 10, linked to the target) with two child monitors (11, 12) in
+/// a fake VV that, like VV before its fix, reports the group as `down`
+/// while all its children are in maintenance. The run's health step began 70
+/// s ago and the health period is 60 s.
+async fn group_run() -> (App, String, i64, Shared) {
+    let (url, fake) = fake_vv(true).await;
+    let mon = |id: i64, name: &str, kind: &str, parent: Option<i64>| {
+        json!({"id": id, "name": name, "active": true, "status": "maintenance",
+            "maintenance": true, "raw_status": "up", "monitor_type": kind,
+            "parent_id": parent, "tags": []})
+    };
+    fake.lock().unwrap().monitors = vec![
+        mon(10, "Sylo", "group", None),
+        mon(11, "Sylo web", "http", Some(10)),
+        mon(12, "Sylo api", "tcp", Some(10)),
+    ];
+    let (app, _, token) = setup().await;
+    connect(&app, &url).await;
+    let a = target(&app, "ww-test-a").await;
+    link(&app, a.id, "monitor", "10").await;
+    let id = approve(&app, a.id, None).await.unwrap();
+    assert_eq!(poll_run(&app, &token).await, Some(id));
+    step(&app, &token, id, "health", "running").await;
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-70 seconds') WHERE run_id = {id} AND step = 'health';
+         UPDATE runs SET job = '{{\"health_seconds\": 60}}' WHERE id = {id};"
+    ))
+    .await;
+    (app, token, id, fake)
+}
+
+fn beat(ago: i64, raw: &str) -> Value {
+    let at = schedule::db_time(Timestamp::now() - jiff::SignedDuration::from_secs(ago));
+    json!({"checked_at": at, "status": "maintenance", "raw_status": raw})
+}
+
+#[tokio::test]
+async fn group_in_maintenance_is_judged_by_its_children() {
+    let (app, token, id, fake) = group_run().await;
+    // The group's own result is `down` ("All monitors in maintenance"), but
+    // both children are really up since the update: healthy.
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "down")),
+        (11, beat(65, "up")),
+        (11, beat(5, "up")),
+        (12, beat(60, "up")),
+        (12, beat(4, "up")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "ok", "{v}");
+    assert!(v["log"].as_str().unwrap().contains("Sylo web"), "{v}");
+    // Neither the group nor anything else got a check-now: both children
+    // had results.
+    assert!(
+        writes(&fake).iter().all(|(_, p, _)| !p.contains("/check")),
+        "{:?}",
+        writes(&fake)
+    );
+}
+
+#[tokio::test]
+async fn group_with_a_child_that_is_down_after_the_update_fails() {
+    let (app, token, id, fake) = group_run().await;
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "up")),
+        (11, beat(65, "up")),
+        (11, beat(5, "up")),
+        (12, beat(60, "up")),
+        (12, beat(4, "down")),
+    ];
+    let v = ask(&app, &token, id).await;
+    assert_eq!(v["verdict"], "failed", "{v}");
+    assert!(v["log"].as_str().unwrap().contains("Sylo api"), "{v}");
+}
+
+#[tokio::test]
+async fn maintenance_results_are_not_evidence_and_trigger_a_fresh_check() {
+    let (app, token, id, fake) = group_run().await;
+    // Only results from before the update, and a result without `raw_status`
+    // in between: nothing counts, so Wren asks VV to check now.
+    fake.lock().unwrap().beats = vec![
+        (10, beat(5, "down")),
+        (11, beat(300, "up")),
+        (12, beat(20, "maintenance")),
+    ];
+    fake.lock().unwrap().check_result = Some("up");
+    let v = ask(&app, &token, id).await;
+    // The fresh checks are up: the container checks have held for the
+    // period already, and the monitors' results count from the health step.
+    assert_eq!(v["verdict"], "ok", "{v}");
+    let checked: Vec<String> = writes(&fake)
+        .into_iter()
+        .map(|(_, p, _)| p)
+        .filter(|p| p.contains("/check"))
+        .collect();
+    assert_eq!(
+        checked,
+        vec![
+            "/api/v1/monitors/11/check".to_string(),
+            "/api/v1/monitors/12/check".to_string()
+        ]
+    );
+    // VV can't check on demand (409): still waiting, not an error.
+    fake.lock().unwrap().check_result = None;
+    fake.lock().unwrap().beats.clear();
+    assert_eq!(ask(&app, &token, id).await["verdict"], "wait");
+}
+
+#[tokio::test]
+async fn unreachable_vv_waits_then_leaves_it_to_the_container_checks() {
+    let (app, token, id, _fake) = group_run().await;
+    connect(&app, "http://127.0.0.1:9").await;
+    // Within the deadline (health step + 2 x period + 300 s): wait.
+    assert_eq!(ask(&app, &token, id).await["verdict"], "wait");
+    // Past it: skipped, the container checks decide.
+    app.exec(format!(
+        "UPDATE run_steps SET started_at = datetime('now', '-1000 seconds') WHERE run_id = {id} AND step = 'health'"
+    ))
+    .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "skipped");
+    // A target that requires Vigilant Vole fails instead.
+    app.exec("UPDATE targets SET require_vv = 1".to_string())
+        .await;
+    assert_eq!(ask(&app, &token, id).await["verdict"], "failed");
 }

@@ -178,6 +178,16 @@ pub struct Monitor {
     pub active: bool,
     /// The monitor JSON has `raw_status` (VV 0.9.0 and later).
     pub has_raw: bool,
+    /// VV's `monitor_type` (`http`, `group`, `push`, …).
+    pub kind: String,
+    /// The group this monitor belongs to.
+    pub parent_id: Option<i64>,
+}
+
+impl Monitor {
+    pub fn is_group(&self) -> bool {
+        self.kind == "group"
+    }
 }
 
 pub struct Client<'a> {
@@ -267,6 +277,8 @@ impl<'a> Client<'a> {
                         .unwrap_or_default(),
                     active: m["active"].as_bool().unwrap_or(true),
                     has_raw: m.as_object().is_some_and(|o| o.contains_key("raw_status")),
+                    kind: m["monitor_type"].as_str().unwrap_or_default().to_string(),
+                    parent_id: m["parent_id"].as_i64(),
                 })
             })
             .collect())
@@ -293,6 +305,20 @@ impl<'a> Client<'a> {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Asks VV to run a check now (`POST /monitors/{id}/check`); the result
+    /// is recorded like a scheduled one. VV refuses it for paused, push,
+    /// group and agent-checked monitors, which is fine: the caller ignores
+    /// the answer and reads the results afterwards.
+    pub async fn check_now(&self, id: i64) -> Result<(), VvError> {
+        self.call(
+            reqwest::Method::POST,
+            &format!("/api/v1/monitors/{id}/check"),
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// The status pages that show any of `ids` (the list leaves the
@@ -514,6 +540,31 @@ pub fn resolve<'m>(links: &[Link], all: &'m [Monitor]) -> Vec<&'m Monitor> {
             })
         })
         .collect();
+    out.sort_by_key(|m| m.id);
+    out
+}
+
+/// What the health check judges: the linked monitors with every group
+/// replaced by its child monitors (nested groups too), each monitor once, by
+/// id.
+///
+/// A group's own result says nothing during maintenance: VV has reported a
+/// group whose children are all in maintenance as `down`. The children's
+/// real results are the evidence, so a group is never judged by its own.
+pub fn judged<'m>(found: &[&'m Monitor], all: &'m [Monitor]) -> Vec<&'m Monitor> {
+    let mut out: Vec<&Monitor> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<&Monitor> = found.to_vec();
+    while let Some(m) = todo.pop() {
+        if !seen.insert(m.id) {
+            continue;
+        }
+        if m.is_group() {
+            todo.extend(all.iter().filter(|c| c.parent_id == Some(m.id)));
+        } else {
+            out.push(m);
+        }
+    }
     out.sort_by_key(|m| m.id);
     out
 }
@@ -1055,6 +1106,21 @@ pub fn verdict(now: i64, t0: i64, need: i64, monitors: &[(String, Vec<Sample>)])
     Verdict::Wait(waiting.join("; "))
 }
 
+/// A result as evidence: `up`, `down` or `pending` is a real result. Anything
+/// else (`maintenance`, no `raw_status`) is not evidence either way and is
+/// left out, so it neither fails nor confirms the update.
+fn sample(at: &str, raw: &Value) -> Option<Sample> {
+    let raw = raw.as_str()?;
+    if !matches!(raw, "up" | "down" | "pending") {
+        return None;
+    }
+    Some(Sample {
+        at: unix(at)?,
+        up: raw == "up",
+        down: raw == "down",
+    })
+}
+
 fn unix(raw: &str) -> Option<i64> {
     parse_db_time(raw).map(|t| t.as_second())
 }
@@ -1155,10 +1221,14 @@ async fn monitor_verdict(
     if found.iter().any(|m| !m.has_raw) {
         return Verdict::Skipped(TOO_OLD.into());
     }
-    let active: Vec<&&Monitor> = found.iter().filter(|m| m.active).collect();
+    // Groups are judged by their children, and only the active ones count.
+    let active: Vec<&Monitor> = judged(&found, &all)
+        .into_iter()
+        .filter(|m| m.active)
+        .collect();
     if active.is_empty() {
         return Verdict::Skipped(
-            "None of the linked monitors is active in Vigilant Vole: the container checks decide."
+            "None of the linked monitors, or their child monitors, is active in Vigilant Vole: the container checks decide."
                 .into(),
         );
     }
@@ -1169,20 +1239,26 @@ async fn monitor_verdict(
     };
     let mut monitors = Vec::new();
     for m in active {
-        let results = match client.results(m.id, &since).await {
+        let mut results = match client.results(m.id, &since).await {
             Ok(r) => r,
             Err(e) => return unreachable(e.to_string()),
         };
+        // Nothing since the update yet: ask for a fresh check instead of
+        // waiting for the monitor's interval. VV refuses it for monitors it
+        // can't check on demand (push, agent); they are read as before.
+        let fresh = |r: &[(String, Value)]| {
+            r.iter()
+                .any(|(at, raw)| sample(at, raw).is_some_and(|x| x.at >= t0))
+        };
+        if !fresh(&results) && m.kind != "push" && client.check_now(m.id).await.is_ok() {
+            results = match client.results(m.id, &since).await {
+                Ok(r) => r,
+                Err(e) => return unreachable(e.to_string()),
+            };
+        }
         let samples = results
             .iter()
-            .filter_map(|(at, raw)| {
-                let raw = raw.as_str().unwrap_or_default();
-                Some(Sample {
-                    at: unix(at)?,
-                    up: raw == "up",
-                    down: raw == "down",
-                })
-            })
+            .filter_map(|(at, raw)| sample(at, raw))
             .collect();
         monitors.push((m.name.clone(), samples));
     }
@@ -1273,6 +1349,8 @@ mod tests {
             tags: vec![tag.into()],
             active: true,
             has_raw: true,
+            kind: "http".into(),
+            parent_id: None,
         };
         let all = vec![m(1, "web"), m(2, "Wren"), m(3, "wren")];
         let l = |kind: &str, r: &str| Link {
@@ -1293,5 +1371,45 @@ mod tests {
         );
         assert_eq!(normal_url("ftp://x"), None);
         assert_eq!(normal_url("http://owner:secret@10.0.3.26:3001"), None);
+    }
+
+    #[test]
+    fn groups_are_judged_by_their_children() {
+        let m = |id, kind: &str, parent_id| Monitor {
+            id,
+            name: format!("m{id}"),
+            tags: vec![],
+            active: true,
+            has_raw: true,
+            kind: kind.into(),
+            parent_id,
+        };
+        let all = vec![
+            m(1, "group", None),
+            m(2, "http", Some(1)),
+            m(3, "group", Some(1)),
+            m(4, "tcp", Some(3)),
+            m(5, "http", None),
+            m(6, "group", None),
+        ];
+        let by = |ids: &[usize]| -> Vec<&Monitor> { ids.iter().map(|i| &all[*i]).collect() };
+        let ids = |v: Vec<&Monitor>| v.iter().map(|m| m.id).collect::<Vec<_>>();
+        // The group stands for its children, nested groups included.
+        assert_eq!(ids(judged(&by(&[0]), &all)), vec![2, 4]);
+        // Each monitor once, also when linked both ways.
+        assert_eq!(ids(judged(&by(&[0, 1, 4]), &all)), vec![2, 4, 5]);
+        // A group without children has nothing to judge.
+        assert!(judged(&by(&[5]), &all).is_empty());
+    }
+
+    #[test]
+    fn only_real_results_are_evidence() {
+        let at = "2026-11-19 10:00:00";
+        assert_eq!(sample(at, &json!("up")).map(|s| s.up), Some(true));
+        assert_eq!(sample(at, &json!("down")).map(|s| s.down), Some(true));
+        let pending = sample(at, &json!("pending")).unwrap();
+        assert!(!pending.up && !pending.down);
+        assert_eq!(sample(at, &json!("maintenance")), None);
+        assert_eq!(sample(at, &Value::Null), None);
     }
 }

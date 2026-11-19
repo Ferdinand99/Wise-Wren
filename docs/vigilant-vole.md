@@ -9,6 +9,10 @@ status pages, and VV's monitors become part of the health check:
   schedule;
 - during the health check Wren reads the monitors' **real results during maintenance**: the update counts as
   healthy only when every linked monitor is up for the health period, and a monitor that stays down rolls it back.
+  A linked **group** stands for its child monitors (nested groups too): Wren judges the children by their own
+  results and never by the group's, which says nothing while its children are in maintenance. A monitor with no
+  result since the health step began is asked for a fresh check, and a result that only says `maintenance` is no
+  evidence either way.
 
 ## Needs Vigilant Vole 0.9.0 or later
 
@@ -31,6 +35,7 @@ run time). A target without links relies on its container checks, and its page s
 
 The run goes on without a window (the run's Maintenance window step says why, and a notification goes out), unless
 the target is set to **Require Vigilant Vole**: then the run is cancelled before anything stops. During the health
-check, three failed attempts in a row leave the decision to the container checks.
+check, Wren keeps asking for as long as the health check may run (twice the health period and five minutes);
+after that the container checks decide, or, for a target that requires Vigilant Vole, the run is rolled back.
 
 The agents never talk to VV and never see its token.
