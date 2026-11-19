@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.3](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.2...v0.10.3) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** bump lettre to 0.11.24 for the SMTP advisories ([#70](https://github.com/Ferdinand99/Wise-Wren/issues/70)) ([dc15c67](https://github.com/Ferdinand99/Wise-Wren/commit/dc15c67dc47fc153acca17fab94e55079c325a12))
+
 ## [0.10.2](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.1...v0.10.2) (2026-11-19)
 
 
