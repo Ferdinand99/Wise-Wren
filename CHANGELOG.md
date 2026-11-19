@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.1...v0.10.2) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** bump vole-kit to 0.8.2, rusqlite to 0.41 ([#65](https://github.com/Ferdinand99/Wise-Wren/issues/65)) ([f9d6528](https://github.com/Ferdinand99/Wise-Wren/commit/f9d652897368044ab98f17036663724194f56d23))
+* **vv:** judge linked groups by their child monitors during the health check ([#69](https://github.com/Ferdinand99/Wise-Wren/issues/69)) ([431cd6a](https://github.com/Ferdinand99/Wise-Wren/commit/431cd6a3fb3bfc0c3c9f92e12a6f2d8df6895147))
+
 ## [0.10.1](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.0...v0.10.1) (2026-11-07)
 
 
