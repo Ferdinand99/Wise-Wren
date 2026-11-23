@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.4](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.3...v0.10.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **deps:** update cookie and url for RUSTSEC-2026-0594 and RUSTSEC-2026-0592 ([#73](https://github.com/Ferdinand99/Wise-Wren/issues/73)) ([3eacfbb](https://github.com/Ferdinand99/Wise-Wren/commit/3eacfbbfef9c9a364a41eb2b04423c6393367712))
+
 ## [0.10.3](https://github.com/Ferdinand99/Wise-Wren/compare/v0.10.2...v0.10.3) (2026-11-19)
 
 

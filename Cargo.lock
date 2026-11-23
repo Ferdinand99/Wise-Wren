@@ -3107,7 +3107,7 @@ dependencies = [
 
 [[package]]
 name = "wise-wren"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "askama",
  "aws-lc-rs",
@@ -3138,7 +3138,7 @@ dependencies = [
 
 [[package]]
 name = "wren-agent"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "axum",
  "reqwest",
